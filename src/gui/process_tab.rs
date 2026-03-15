@@ -155,18 +155,21 @@ impl ProcessTab {
         self.bars.show(ui);
         ui.add_space(4.0);
 
-        // Keyboard shortcuts (process tab scope)
+        // Keyboard shortcuts — all ctx calls MUST be outside ui.input():
+        // ctx.input() holds the ContextImpl WRITE lock; calling ctx.read() or ctx.write()
+        // inside it causes write→read or write→write re-entrant deadlock (parking_lot panics
+        // after 10s with "Failed to acquire RwLock … Deadlock?").
         let filter_id = egui::Id::new("proc_filter");
-        ui.input(|i| {
-            // `/` focuses the filter field
-            if i.key_pressed(egui::Key::Slash) && !i.modifiers.any() {
-                ui.ctx().memory_mut(|m| m.request_focus(filter_id));
-            }
-            // F5 requests immediate repaint (force refresh)
-            if i.key_pressed(egui::Key::F5) {
-                ui.ctx().request_repaint();
-            }
-        });
+        let (f5_pressed, slash_pressed) = ui.input(|i| (
+            i.key_pressed(egui::Key::F5),
+            i.key_pressed(egui::Key::Slash) && !i.modifiers.any(),
+        ));
+        if slash_pressed {
+            ui.ctx().memory_mut(|m| m.request_focus(filter_id));
+        }
+        if f5_pressed {
+            ui.ctx().request_repaint();
+        }
 
         // Filter row + gaming mode toggle
         ui.horizontal(|ui| {
