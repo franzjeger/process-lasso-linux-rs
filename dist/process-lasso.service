@@ -6,7 +6,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.cargo/bin/process-lasso --minimized
+ExecStart=%h/.local/bin/process-lasso --minimized
 Restart=on-failure
 RestartSec=5
 
