@@ -26,7 +26,10 @@ fn make_icon_rgba() -> Vec<u8> {
 
 // ── System tray (KDE/freedesktop StatusNotifierItem via D-Bus) ─────────────────
 
-struct ProcessLassoTray;
+struct ProcessLassoTray {
+    state:  Arc<Mutex<monitor::AppState>>,
+    cmd_tx: crossbeam_channel::Sender<monitor::DaemonCmd>,
+}
 
 impl ksni::Tray for ProcessLassoTray {
     fn id(&self) -> String {
@@ -37,6 +40,35 @@ impl ksni::Tray for ProcessLassoTray {
     }
     fn title(&self) -> String {
         "Process Lasso".into()
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        let gaming_active = self.state.lock()
+            .map(|s| s.gaming_active)
+            .unwrap_or(false);
+
+        vec![
+            ksni::MenuItem::Checkmark(ksni::menu::CheckmarkItem {
+                label:   "Gaming Mode".into(),
+                checked: gaming_active,
+                activate: Box::new(|tray: &mut Self| {
+                    let currently = tray.state.lock()
+                        .map(|s| s.gaming_active)
+                        .unwrap_or(false);
+                    let _ = tray.cmd_tx.send(monitor::DaemonCmd::SetGamingMode {
+                        active:       !currently,
+                        elevate_nice: true,
+                    });
+                }),
+                ..Default::default()
+            }),
+            ksni::MenuItem::Separator,
+            ksni::MenuItem::Standard(ksni::menu::StandardItem {
+                label:    "Quit".into(),
+                activate: Box::new(|_| std::process::exit(0)),
+                ..Default::default()
+            }),
+        ]
     }
 }
 
@@ -59,24 +91,6 @@ fn main() {
 
     // Build icon RGBA once; reused for window decoration icon.
     let icon_rgba = make_icon_rgba();
-
-    // System tray via D-Bus StatusNotifierItem (KDE/freedesktop, no libxdo).
-    // Uses the installed process-lasso-linux icon from the hicolor theme.
-    let _tray_handle = if !args.no_tray {
-        use ksni::blocking::TrayMethods;
-        match ProcessLassoTray.spawn() {
-            Ok(h) => {
-                log::info!("SNI tray icon registered");
-                Some(h)
-            }
-            Err(e) => {
-                log::warn!("Tray icon unavailable: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     // Load config
     let cfg = config::load();
@@ -105,6 +119,27 @@ fn main() {
     // Spawn daemon thread
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     monitor::spawn(Arc::clone(&state), cmd_rx, cfg.clone(), Arc::clone(&rule_engine));
+
+    // System tray via D-Bus StatusNotifierItem (KDE/freedesktop, no libxdo).
+    // Spawned after state + cmd_tx exist so the menu can read/toggle gaming mode.
+    let _tray_handle = if !args.no_tray {
+        use ksni::blocking::TrayMethods;
+        match (ProcessLassoTray {
+            state:  Arc::clone(&state),
+            cmd_tx: cmd_tx.clone(),
+        }).spawn() {
+            Ok(h) => {
+                log::info!("SNI tray icon registered");
+                Some(h)
+            }
+            Err(e) => {
+                log::warn!("Tray icon unavailable: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Launch GUI
     // transparent: true enables per-pixel alpha compositing on Wayland/X11 so the

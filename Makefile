@@ -6,7 +6,7 @@ SYSTEMDDIR = $(HOME)/.config/systemd/user
 
 BINARY     = target/release/process-lasso
 
-.PHONY: build install uninstall enable disable
+.PHONY: build install reinstall uninstall enable disable
 
 build:
 	cargo build --release
@@ -22,6 +22,19 @@ install: build
 	install -Dm644 dist/process-lasso.service $(SYSTEMDDIR)/process-lasso.service
 	systemctl --user daemon-reload
 	@echo "Done. Run 'make enable' to autostart on login."
+
+reinstall: build
+	@echo "Installing binary…"
+	install -Dm755 $(BINARY) $(BINDIR)/process-lasso
+	@echo "Restarting process-lasso…"
+	@if systemctl --user is-active --quiet process-lasso.service; then \
+		systemctl --user restart process-lasso.service; \
+		echo "Restarted via systemd."; \
+	else \
+		pkill -x process-lasso 2>/dev/null || true; \
+		nohup $(BINDIR)/process-lasso &>/dev/null & \
+		echo "Restarted as background process."; \
+	fi
 
 uninstall:
 	rm -f $(BINDIR)/process-lasso
