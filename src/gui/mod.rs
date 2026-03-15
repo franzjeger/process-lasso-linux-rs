@@ -1,0 +1,9 @@
+pub mod cpu_bars;
+pub mod theme;
+pub mod dialogs;
+pub mod gaming_mode_tab;
+pub mod log_tab;
+pub mod probalance_tab;
+pub mod process_tab;
+pub mod rules_tab;
+pub mod settings_tab;

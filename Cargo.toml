@@ -1,0 +1,73 @@
+[package]
+name = "process-lasso-linux-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Process Lasso — Linux process manager with CPU affinity, ProBalance, and Gaming Mode"
+authors = ["franzjeger"]
+
+[[bin]]
+name = "process-lasso"
+path = "src/main.rs"
+
+[dependencies]
+# GUI
+eframe      = { version = "0.33" }  # default-features includes glow (OpenGL); no wgpu
+egui        = "0.33"
+egui_extras = "0.33"
+
+# Process enumeration
+procfs = "0.18"
+
+# Syscalls: sched_setaffinity, signal
+nix = { version = "0.29", features = ["sched", "process", "signal", "fs"] }
+
+# Serialisation
+serde = { version = "1", features = ["derive"] }
+toml  = "0.8"
+
+# UUIDs for rule IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Regex for rule matching
+regex = "1"
+
+# Logging
+log        = "0.4"
+env_logger = "0.11"
+
+# CLI flags
+clap = { version = "4", features = ["derive"] }
+
+# System tray via D-Bus StatusNotifierItem (KDE/freedesktop, no libxdo needed)
+ksni = { version = "0.3", features = ["blocking"] }
+
+# Multi-producer channels for GUI→daemon commands
+crossbeam-channel = "0.5"
+
+# Desktop notifications (D-Bus/zbus, no libnotify)
+notify-rust = { version = "4", features = ["z"] }
+
+# File dialogs (rules import/export)
+rfd = "0.15"
+
+# JSON (rules export/import)
+serde_json = "1"
+
+# Wayland compositor-side opacity via wp_alpha_modifier_v1
+# "system" enables Backend::from_foreign_display + ObjectId::from_ptr
+wayland-client   = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["staging", "client"] }
+wayland-backend  = { version = "0.3",  features = ["client_system"] }
+wayland-sys      = { version = "0.31", features = ["client"] }
+
+# Raw window handle (re-export from eframe's transitive dep, pinned to same version)
+raw-window-handle = "0.6"
+
+[build-dependencies]
+png = "0.17"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = true
