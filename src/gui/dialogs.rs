@@ -69,7 +69,7 @@ impl AffinityPicker {
             let offline_str = cpuset_to_cpulist(&self.offline);
             ui.colored_label(
                 Breeze::WARNING,
-                format!("⚠ CPUs {offline_str} are parked"),
+                format!("CPUs {offline_str} are parked"),
             );
             ui.add_space(2.0);
         }
@@ -297,6 +297,8 @@ impl AffinityDialog {
                 ViewportId::from_hash_of("affinity_dialog"),
                 ViewportBuilder::default()
                     .with_title(title_str)
+                    .with_app_id("argus-lasso")
+                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
                     .with_min_inner_size([500.0, 440.0])
                     .with_transparent(true)
                     .with_resizable(true),
@@ -310,7 +312,7 @@ impl AffinityDialog {
                             let offline_str = cpuset_to_cpulist(offline);
                             ui.colored_label(
                                 Breeze::WARNING,
-                                format!("⚠ CPUs {offline_str} are parked — disable Gaming Mode to use them."),
+                                format!("CPUs {offline_str} are parked — disable Gaming Mode to use them."),
                             );
                             ui.add_space(4.0);
                         }
@@ -462,6 +464,8 @@ impl NiceDialog {
                 ViewportId::from_hash_of("nice_dialog"),
                 ViewportBuilder::default()
                     .with_title(title_str)
+                    .with_app_id("argus-lasso")
+                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
                     .with_min_inner_size([380.0, 160.0])
                     .with_transparent(true)
                     .with_resizable(false),
@@ -541,6 +545,8 @@ impl IoNiceDialog {
                 ViewportId::from_hash_of("ionice_dialog"),
                 ViewportBuilder::default()
                     .with_title(title_str)
+                    .with_app_id("argus-lasso")
+                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
                     .with_min_inner_size([340.0, 160.0])
                     .with_transparent(true)
                     .with_resizable(false),
@@ -649,6 +655,8 @@ impl RuleEditDialog {
                 ViewportId::from_hash_of("rule_edit_dialog"),
                 ViewportBuilder::default()
                     .with_title(title_str)
+                    .with_app_id("argus-lasso")
+                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
                     .with_min_inner_size([540.0, 520.0])
                     .with_transparent(true)
                     .with_resizable(true),
@@ -798,6 +806,8 @@ impl RulePresetsDialog {
                 ViewportId::from_hash_of("rule_presets_dialog"),
                 ViewportBuilder::default()
                     .with_title("Rule Templates")
+                    .with_app_id("argus-lasso")
+                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
                     .with_min_inner_size([640.0, 360.0])
                     .with_transparent(true)
                     .with_resizable(true),
@@ -808,17 +818,50 @@ impl RulePresetsDialog {
                     }
                     egui::CentralPanel::default().show(ctx, |ui| {
                         ui.label("Select a preset to create a pre-filled rule:");
-                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        ui.add_space(4.0);
+                        // Header row
+                        let hdr_bg = ui.visuals().widgets.noninteractive.bg_fill;
+                        let hdr_col = ui.visuals().strong_text_color();
+                        egui::Frame::new().fill(hdr_bg).show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            egui::Grid::new("preset_hdr").num_columns(4).min_col_width(60.0)
+                                .spacing([16.0, 2.0]).show(ui, |ui| {
+                                for label in ["NAME", "PATTERN", "MATCH", "AFFINITY"] {
+                                    ui.label(egui::RichText::new(label).strong().color(hdr_col));
+                                }
+                                ui.end_row();
+                            });
+                        });
+                        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                             for (i, (name, pat, match_type, aff, _nice, _ioc, _iol)) in RULE_PRESETS.iter().enumerate() {
                                 let is_sel = *selected == Some(i);
-                                let text = format!("{name:<24} | {pat:<20} | {match_type:<10} | {}", aff.unwrap_or(""));
-                                let resp = ui.selectable_label(is_sel, &text);
-                                if resp.clicked() { *selected = Some(i); }
-                                if resp.double_clicked() {
-                                    *selected = Some(i);
-                                    close_as = Some(true);
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                }
+                                let bg = if is_sel {
+                                    ui.visuals().selection.bg_fill
+                                } else if i % 2 == 1 {
+                                    ui.visuals().faint_bg_color
+                                } else {
+                                    ui.visuals().extreme_bg_color
+                                };
+                                egui::Frame::new().fill(bg).show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    let resp = egui::Grid::new(("preset_row", i))
+                                        .num_columns(4)
+                                        .min_col_width(60.0)
+                                        .spacing([16.0, 2.0])
+                                        .show(ui, |ui| {
+                                            ui.label(*name);
+                                            ui.label(*pat);
+                                            ui.label(*match_type);
+                                            ui.label(aff.unwrap_or(""));
+                                            ui.end_row();
+                                        }).response;
+                                    if resp.clicked() { *selected = Some(i); }
+                                    if resp.double_clicked() {
+                                        *selected = Some(i);
+                                        close_as = Some(true);
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                });
                             }
                         });
                         ui.separator();
@@ -900,6 +943,8 @@ impl SteamGamePickerDialog {
                 ViewportId::from_hash_of("steam_game_picker"),
                 ViewportBuilder::default()
                     .with_title("Pick Steam Game")
+                    .with_app_id("argus-lasso")
+                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
                     .with_min_inner_size([560.0, 520.0])
                     .with_transparent(true)
                     .with_resizable(true),
@@ -1079,6 +1124,8 @@ impl LutrisGamePickerDialog {
                 ViewportId::from_hash_of("lutris_game_picker"),
                 ViewportBuilder::default()
                     .with_title("Pick Lutris Game")
+                    .with_app_id("argus-lasso")
+                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
                     .with_min_inner_size([560.0, 520.0])
                     .with_transparent(true)
                     .with_resizable(true),

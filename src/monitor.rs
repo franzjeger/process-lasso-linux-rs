@@ -17,6 +17,7 @@ use crossbeam_channel::Receiver;
 
 use crate::config::Config;
 use crate::cpu_park;
+use crate::hw_monitor::{HwCollector, HwMonitorData};
 use crate::probalance::{ProBalance, ProcSnapshot};
 use crate::rules::RuleEngine;
 use crate::utils;
@@ -26,7 +27,7 @@ use crate::utils;
 #[derive(Debug)]
 pub enum DaemonCmd {
     UpdateConfig(Config),
-    SetGamingMode { active: bool, elevate_nice: bool },
+    SetGamingMode { active: bool, elevate_nice: bool, park: bool },
     SetManualOverride { pid: u32, duration_secs: f64 },
     ResetAffinities,
     ReapplyDefaults,
@@ -37,12 +38,15 @@ pub enum DaemonCmd {
 #[derive(Debug, Clone)]
 pub struct ProcInfo {
     pub pid: u32,
+    pub ppid: u32,
     pub name: String,
     pub cpu_percent: f32,
     pub mem_rss: u64,   // bytes
     pub nice: i32,
     pub affinity: String,
     pub ionice: String,
+    pub disk_read_bps: u64,   // bytes/s
+    pub disk_write_bps: u64,  // bytes/s
     /// Reference-counted so GUI snapshot clones are O(1) for this field.
     pub cmdline: std::sync::Arc<String>,
 }
@@ -51,12 +55,15 @@ impl Default for ProcInfo {
     fn default() -> Self {
         Self {
             pid: 0,
+            ppid: 0,
             name: String::new(),
             cpu_percent: 0.0,
             mem_rss: 0,
             nice: 0,
             affinity: String::new(),
             ionice: String::new(),
+            disk_read_bps: 0,
+            disk_write_bps: 0,
             cmdline: std::sync::Arc::new(String::new()),
         }
     }
@@ -74,12 +81,36 @@ pub struct AppState {
     pub cpu_history: std::collections::VecDeque<f32>,
     /// Throttled PID set from ProBalance
     pub throttled_pids: HashSet<u32>,
+    /// Detailed throttle info for ProBalance tab live view
+    pub throttle_infos: Vec<crate::probalance::ThrottleInfo>,
     /// Log lines ring buffer (max 2000)
     pub log_lines: std::collections::VecDeque<String>,
     /// Current config (read by GUI for settings display)
     pub config: Config,
     /// Is Gaming Mode currently active?
     pub gaming_active: bool,
+    /// Hardware sensor data (updated every display_refresh_interval)
+    pub hw_monitor: HwMonitorData,
+    /// System-wide average CPU % (used by tray tooltip)
+    pub cpu_avg: f32,
+    /// Per-PID CPU usage history (last 30 samples)
+    pub proc_cpu_history: HashMap<u32, std::collections::VecDeque<f32>>,
+    /// CPU model string from /proc/cpuinfo
+    pub cpu_model: String,
+    /// PIDs manually suspended via SIGSTOP from the GUI
+    pub suspended_pids: std::collections::HashSet<u32>,
+}
+
+pub fn read_cpu_model() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.splitn(2, ':').nth(1))
+                .map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|| "Unknown CPU".to_string())
 }
 
 impl AppState {
@@ -135,6 +166,7 @@ fn run_loop(
     };
 
     let mut probalance = ProBalance::new(config.probalance.clone());
+    let mut hw_collector = HwCollector::new();
     let log_cb2 = log_cb.clone();
     probalance.set_log_callback(move |m| log_cb2(m));
 
@@ -145,7 +177,16 @@ fn run_loop(
         }
     }
 
+    // Startup log entry so users can see the log is working
+    log_cb(format!(
+        "Argus-Lasso started — ProBalance: {}  |  Display refresh: {}ms  |  Rule enforce: {}ms",
+        if config.probalance.enabled { "on" } else { "off" },
+        config.monitor.display_refresh_interval_ms,
+        config.monitor.rule_enforce_interval_ms,
+    ));
+
     let mut known_pids: HashSet<u32> = HashSet::new();
+    let mut first_snapshot = true;
     // Track previously throttled PIDs for change-based notifications
     let mut prev_throttled: HashSet<u32> = HashSet::new();
     // pid → original affinity set before we changed it; pruned every snapshot cycle
@@ -156,6 +197,10 @@ fn run_loop(
     let mut gaming_mode = false;
     let mut gaming_elevate_nice = false;
     let mut gaming_niced: HashMap<u32, i32> = HashMap::new();
+    // Disk I/O tracking: pid → (read_bytes, write_bytes) at last sample
+    let mut prev_io: HashMap<u32, (u64, u64)> = HashMap::new();
+    // HW alert cooldown: sensor_label → last alert time
+    let mut last_alert_times: HashMap<String, Instant> = HashMap::new();
 
     let tick = Duration::from_millis(500);
     let mut last_enforce = Instant::now();
@@ -176,11 +221,16 @@ fn run_loop(
                 DaemonCmd::UpdateConfig(cfg) => {
                     probalance.update_config(cfg.probalance.clone());
                     config = cfg.clone();
+                    log_cb(format!(
+                        "Config updated — ProBalance: {}  |  Notifications: {}",
+                        if config.probalance.enabled { "on" } else { "off" },
+                        if config.ui.notifications_enabled { "on" } else { "off" },
+                    ));
                     if let Ok(mut s) = state.lock() {
                         s.config = cfg;
                     }
                 }
-                DaemonCmd::SetGamingMode { active, elevate_nice } => {
+                DaemonCmd::SetGamingMode { active, elevate_nice, park } => {
                     gaming_mode = active;
                     gaming_elevate_nice = elevate_nice;
                     if !active && !gaming_niced.is_empty() {
@@ -188,6 +238,28 @@ fn run_loop(
                     }
                     if let Ok(mut s) = state.lock() {
                         s.gaming_active = active;
+                    }
+                    if park {
+                        if active {
+                            let topo = cpu_park::detect_topology();
+                            if topo.has_asymmetry() && cpu_park::is_helper_installed() {
+                                let to_park: HashSet<u32> = topo.non_preferred.iter().copied().collect();
+                                log_cb(format!("[Gaming Mode] Parking CPUs {:?}…", {
+                                    let mut v: Vec<_> = to_park.iter().copied().collect();
+                                    v.sort_unstable();
+                                    v
+                                }));
+                                if cpu_park::park_cpus(&to_park, |msg| log_cb(msg)) {
+                                    log_cb("[Gaming Mode] ACTIVE — non-preferred CPUs offline.".into());
+                                } else {
+                                    log_cb("[Gaming Mode] Parking failed — check log.".into());
+                                }
+                            }
+                        } else {
+                            log_cb("[Gaming Mode] Unparking all CPUs…".into());
+                            cpu_park::unpark_all(|msg| log_cb(msg));
+                            log_cb("[Gaming Mode] Disabled — all CPUs online.".into());
+                        }
                     }
                 }
                 DaemonCmd::SetManualOverride { pid, duration_secs } => {
@@ -214,7 +286,7 @@ fn run_loop(
         // ── Collect process snapshot (only when needed) ─────────────────────
         if needs_snapshot {
             let (new_snapshot, new_cpu_times, sys_total) =
-                collect_snapshot(&mut prev_cpu_times, prev_sys_total);
+                collect_snapshot(&mut prev_cpu_times, prev_sys_total, &mut prev_io);
             prev_cpu_times = new_cpu_times;
             prev_sys_total = sys_total;
             raw_snapshot = new_snapshot;
@@ -239,6 +311,10 @@ fn run_loop(
                         &log_cb,
                     );
                 }
+            }
+            if first_snapshot {
+                log_cb(format!("Initial scan: {} processes found.", raw_snapshot.len()));
+                first_snapshot = false;
             }
             known_pids = current_pids;
         }
@@ -275,7 +351,7 @@ fn run_loop(
 
             // Fire desktop notifications for newly throttled / restored PIDs
             let cur_throttled = probalance.throttled_pids();
-            if cur_throttled != prev_throttled {
+            if cur_throttled != prev_throttled && config.ui.notifications_enabled {
                 // Build a name lookup from the current snapshot
                 let name_map: HashMap<u32, &str> = raw_snapshot.iter()
                     .map(|p| (p.pid, p.name.as_str()))
@@ -299,8 +375,8 @@ fn run_loop(
                         .timeout(notify_rust::Timeout::Milliseconds(3000))
                         .show();
                 }
-                prev_throttled = cur_throttled;
             }
+            prev_throttled = cur_throttled;
 
             last_pb = now;
         }
@@ -309,6 +385,13 @@ fn run_loop(
         let refresh = Duration::from_millis(config.monitor.display_refresh_interval_ms);
         if now.duration_since(last_snapshot) >= refresh {
             let throttled = probalance.throttled_pids();
+            let pb_snap_for_infos: Vec<crate::probalance::ProcSnapshot> = raw_snapshot.iter()
+                .map(|p| crate::probalance::ProcSnapshot {
+                    pid: p.pid, name: p.name.clone(),
+                    cpu_percent: p.cpu_percent, nice: p.nice,
+                })
+                .collect();
+            let throttle_infos = probalance.throttle_infos(&pb_snap_for_infos);
             let cpu_percents = collect_cpu_percents();
             let avg = if cpu_percents.is_empty() {
                 0.0
@@ -316,15 +399,38 @@ fn run_loop(
                 cpu_percents.iter().sum::<f32>() / cpu_percents.len() as f32
             };
 
+            // Update hardware sensor readings
+            hw_collector.update();
+
+            // Check temperature alerts
+            check_hw_alerts(
+                &hw_collector.data,
+                &config.hw_alerts,
+                config.ui.notifications_enabled,
+                &mut last_alert_times,
+                &log_cb,
+            );
+
             if let Ok(mut s) = state.lock() {
                 s.snapshot = raw_snapshot.clone();
                 s.cpu_percents = cpu_percents;
                 s.cpu_generation = s.cpu_generation.wrapping_add(1);
                 s.throttled_pids = throttled;
+                s.throttle_infos = throttle_infos;
+                s.cpu_avg = avg;
                 s.cpu_history.push_back(avg);
                 while s.cpu_history.len() > 120 {
                     s.cpu_history.pop_front();
                 }
+                s.hw_monitor = hw_collector.data.clone();
+                // Update per-PID CPU history
+                let current_pids: std::collections::HashSet<u32> = raw_snapshot.iter().map(|p| p.pid).collect();
+                for p in &raw_snapshot {
+                    let hist = s.proc_cpu_history.entry(p.pid).or_insert_with(|| std::collections::VecDeque::with_capacity(30));
+                    hist.push_back(p.cpu_percent);
+                    while hist.len() > 30 { hist.pop_front(); }
+                }
+                s.proc_cpu_history.retain(|pid, _| current_pids.contains(pid));
             }
             last_snapshot = now;
         }
@@ -338,11 +444,13 @@ fn run_loop(
 fn collect_snapshot(
     prev_times: &mut HashMap<u32, u64>,
     prev_sys_total: u64,
+    prev_io: &mut HashMap<u32, (u64, u64)>,
 ) -> (Vec<ProcInfo>, HashMap<u32, u64>, u64) {
     use procfs::process::all_processes;
-        use procfs::WithCurrentSystemInfo;
+    use procfs::WithCurrentSystemInfo;
 
     let mut new_times: HashMap<u32, u64> = HashMap::new();
+    let mut new_io: HashMap<u32, (u64, u64)> = HashMap::new();
     let mut snapshot: Vec<ProcInfo> = Vec::new();
 
     // Read total system CPU jiffies for CPU% calculation
@@ -367,6 +475,7 @@ fn collect_snapshot(
             Err(_) => continue,
         };
 
+        let ppid = stat.ppid as u32;
         let comm = stat.comm.clone();
         let cmdline: Vec<String> = proc.cmdline().unwrap_or_default();
         let name = utils::resolve_name(&comm, &cmdline);
@@ -382,26 +491,56 @@ fn collect_snapshot(
         };
 
         let mem_rss = stat.rss_bytes().get();
-
         let nice = stat.nice as i32;
-
         let affinity = utils::get_affinity_str(pid);
-
         let ionice = read_ionice(pid);
+
+        // Disk I/O — read from /proc/<pid>/io; ignore permission errors
+        let (disk_read_bps, disk_write_bps) = read_proc_io(pid, prev_io, &mut new_io);
 
         snapshot.push(ProcInfo {
             pid,
+            ppid,
             name,
             cpu_percent,
             mem_rss,
             nice,
             affinity,
             ionice,
+            disk_read_bps,
+            disk_write_bps,
             cmdline: std::sync::Arc::new(cmdline.join(" ")),
         });
     }
 
+    *prev_io = new_io;
     (snapshot, new_times, sys_total)
+}
+
+fn read_proc_io(
+    pid: u32,
+    prev_io: &HashMap<u32, (u64, u64)>,
+    new_io: &mut HashMap<u32, (u64, u64)>,
+) -> (u64, u64) {
+    let text = match std::fs::read_to_string(format!("/proc/{pid}/io")) {
+        Ok(t) => t,
+        Err(_) => return (0, 0),
+    };
+    let mut read_bytes = 0u64;
+    let mut write_bytes = 0u64;
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("read_bytes: ") {
+            read_bytes = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("write_bytes: ") {
+            write_bytes = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let (prev_r, prev_w) = prev_io.get(&pid).copied().unwrap_or((read_bytes, write_bytes));
+    new_io.insert(pid, (read_bytes, write_bytes));
+    (
+        read_bytes.saturating_sub(prev_r),
+        write_bytes.saturating_sub(prev_w),
+    )
 }
 
 fn read_sys_cpu_total() -> u64 {
@@ -618,6 +757,50 @@ fn reapply_defaults(
         if actions.is_empty() {
             if utils::set_affinity(pid, &default_aff) {
                 log_cb(format!("[Default] affinity={default_aff} → {name}({pid})"));
+            }
+        }
+    }
+}
+
+// ── HW temperature alerts ────────────────────────────────────────────────────
+
+fn check_hw_alerts(
+    data: &HwMonitorData,
+    cfg: &crate::config::HwAlertConfig,
+    notifications_enabled: bool,
+    last_alert: &mut HashMap<String, Instant>,
+    log_cb: &impl Fn(String),
+) {
+    if !cfg.enabled {
+        return;
+    }
+    let threshold = cfg.temp_threshold_celsius;
+    let cooldown = Duration::from_secs(cfg.cooldown_secs);
+    let now = Instant::now();
+
+    for group in &data.groups {
+        for sensor in &group.sensors {
+            if sensor.unit != "°C" {
+                continue;
+            }
+            if sensor.value >= threshold {
+                let key = format!("{}/{}", group.name, sensor.label);
+                let last = last_alert.get(&key).copied().unwrap_or(Instant::now() - cooldown - Duration::from_secs(1));
+                if now.duration_since(last) >= cooldown {
+                    last_alert.insert(key.clone(), now);
+                    let msg = format!(
+                        "[HW Alert] {} — {} {:.0}{}  (threshold: {:.0}°C)",
+                        group.name, sensor.label, sensor.value, sensor.unit, threshold
+                    );
+                    log_cb(msg.clone());
+                    if notifications_enabled {
+                        let _ = notify_rust::Notification::new()
+                            .summary("Argus-Lasso — Temperature Alert")
+                            .body(&format!("{}: {:.0}°C (limit: {:.0}°C)", key, sensor.value, threshold))
+                            .timeout(notify_rust::Timeout::Milliseconds(5000))
+                            .show();
+                    }
+                }
             }
         }
     }

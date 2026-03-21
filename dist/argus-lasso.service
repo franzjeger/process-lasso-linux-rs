@@ -1,12 +1,12 @@
 [Unit]
-Description=Process Lasso — Linux process manager (GUI + daemon)
+Description=Argus-Lasso — Linux process manager (GUI + daemon)
 Documentation=https://github.com/franzjeger/process-lasso-linux-rs
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/process-lasso --minimized
+ExecStart=%h/.local/bin/argus-lasso --minimized
 Restart=on-failure
 RestartSec=5
 

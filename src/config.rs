@@ -1,4 +1,4 @@
-//! Load/save config from ~/.config/process-lasso-rs/config.toml
+//! Load/save config from ~/.config/argus-lasso/config.toml
 //!
 //! Config is stored as TOML. On load, missing keys are filled from
 //! DEFAULT_CONFIG via a deep-merge at the serde level (Option defaults).
@@ -87,6 +87,21 @@ pub struct UiConfig {
     pub theme: String,
     pub sort_column: String,
     pub sort_ascending: bool,
+    #[serde(default = "default_col_widths")]
+    pub col_widths: Vec<f32>,
+    /// Enable desktop notifications (ProBalance throttle, HW alerts, kill events).
+    pub notifications_enabled: bool,
+    /// HW Monitor column widths: [val, min, max, avg]
+    #[serde(default = "default_hw_mon_col_widths")]
+    pub hw_mon_col_widths: Vec<f32>,
+}
+
+fn default_col_widths() -> Vec<f32> {
+    vec![60.0, 0.0, 90.0, 75.0, 45.0, 110.0, 58.0, 85.0]
+}
+
+fn default_hw_mon_col_widths() -> Vec<f32> {
+    vec![100.0, 72.0, 72.0, 72.0]
 }
 
 impl Default for UiConfig {
@@ -97,7 +112,27 @@ impl Default for UiConfig {
             theme: "BreezeDark".into(),
             sort_column: "cpu_percent".into(),
             sort_ascending: false,
+            col_widths: default_col_widths(),
+            notifications_enabled: true,
+            hw_mon_col_widths: default_hw_mon_col_widths(),
         }
+    }
+}
+
+/// Temperature alert configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HwAlertConfig {
+    pub enabled: bool,
+    /// Fire a notification when any sensor reaches this temperature (°C).
+    pub temp_threshold_celsius: f32,
+    /// Minimum seconds between repeated alerts for the same sensor.
+    pub cooldown_secs: u64,
+}
+
+impl Default for HwAlertConfig {
+    fn default() -> Self {
+        Self { enabled: true, temp_threshold_celsius: 90.0, cooldown_secs: 60 }
     }
 }
 
@@ -170,6 +205,9 @@ pub struct Config {
     pub monitor: MonitorConfig,
     pub ui: UiConfig,
     pub gaming_mode: GamingModeConfig,
+    pub hw_alerts: HwAlertConfig,
+    /// Named rule sets: profile_name → list of rules.
+    pub rule_profiles: std::collections::HashMap<String, Vec<RuleConfig>>,
 }
 
 impl Default for Config {
@@ -182,6 +220,8 @@ impl Default for Config {
             monitor: MonitorConfig::default(),
             ui: UiConfig::default(),
             gaming_mode: GamingModeConfig::default(),
+            hw_alerts: HwAlertConfig::default(),
+            rule_profiles: std::collections::HashMap::new(),
         }
     }
 }
@@ -192,7 +232,7 @@ pub fn config_dir() -> PathBuf {
     let base = std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp"));
-    base.join(".config").join("process-lasso-rs")
+    base.join(".config").join("argus-lasso")
 }
 
 pub fn config_path() -> PathBuf {
@@ -201,8 +241,25 @@ pub fn config_path() -> PathBuf {
 
 // ── Load / Save ───────────────────────────────────────────────────────────────
 
+/// Migrate config from the old process-lasso-rs path to the new argus-lasso path.
+fn migrate_old_config() {
+    let Ok(home) = std::env::var("HOME") else { return };
+    let base = PathBuf::from(home);
+    let old_path = base.join(".config").join("process-lasso-rs").join("config.toml");
+    let new_path = config_path();
+    if old_path.exists() && !new_path.exists() {
+        if let Some(parent) = new_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if fs::copy(&old_path, &new_path).is_ok() {
+            log::info!("Migrated config from {} to {}", old_path.display(), new_path.display());
+        }
+    }
+}
+
 /// Load config from disk, filling missing keys with defaults via serde.
 pub fn load() -> Config {
+    migrate_old_config();
     let path = config_path();
     if path.exists() {
         match fs::read_to_string(&path) {

@@ -10,7 +10,10 @@ use crossbeam_channel::Sender;
 use crate::config::{self, Config};
 use crate::gui::dialogs::{AffinityDialog, IoNiceDialog, NiceDialog};
 use crate::gui::gaming_mode_tab::{GamingEvent, GamingModeTab};
+use crate::gui::bench_tab::BenchTab;
+use crate::gui::hw_monitor_tab::HwMonitorTab;
 use crate::gui::log_tab::LogTab;
+use crate::gui::overview_tab::OverviewTab;
 use crate::gui::probalance_tab::ProBalanceTab;
 use crate::gui::process_tab::{ProcessTab, TableAction};
 use crate::gui::rules_tab::RulesTab;
@@ -23,10 +26,13 @@ use crate::utils;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tab {
+    Overview,
     Processes,
     Rules,
     ProBalance,
     GamingMode,
+    HwMonitor,
+    Benchmark,
     Settings,
     Log,
 }
@@ -80,9 +86,9 @@ fn read_cpu_temp() -> Option<f32> {
     None
 }
 
-// ── ProcessLassoApp ───────────────────────────────────────────────────────────
+// ── ArgusLassoApp ─────────────────────────────────────────────────────────────
 
-pub struct ProcessLassoApp {
+pub struct ArgusLassoApp {
     state: Arc<Mutex<AppState>>,
     cmd_tx: Sender<DaemonCmd>,
     rule_engine: Arc<Mutex<RuleEngine>>,
@@ -92,6 +98,9 @@ pub struct ProcessLassoApp {
     rules_tab: RulesTab,
     probalance_tab: ProBalanceTab,
     gaming_mode_tab: GamingModeTab,
+    hw_monitor_tab: HwMonitorTab,
+    bench_tab: BenchTab,
+    overview_tab: OverviewTab,
     settings_tab: SettingsTab,
     log_tab: LogTab,
 
@@ -126,9 +135,13 @@ pub struct ProcessLassoApp {
 
     // CPU temperature read from hwmon sysfs
     cpu_temp: Option<f32>,
+    // Pending kill awaiting undo
+    pending_kill: Option<crate::gui::process_tab::PendingKill>,
+    // CPU model string for status bar
+    cpu_model: String,
 }
 
-impl ProcessLassoApp {
+impl ArgusLassoApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         state: Arc<Mutex<AppState>>,
@@ -179,22 +192,26 @@ impl ProcessLassoApp {
 
         // Sync state config
         if let Ok(mut s) = state.lock() {
-            s.config = config;
+            s.config = config.clone();
         }
 
         let last_saved_opacity = saved_opacity;
         let last_saved_theme = startup_theme.to_str().to_string();
         let cpu_temp = read_cpu_temp();
+        let cpu_model = crate::monitor::read_cpu_model();
 
         Self {
             state,
             cmd_tx,
             rule_engine,
-            active_tab: Tab::Processes,
-            process_tab: ProcessTab::new(),
+            active_tab: Tab::Overview,
+            process_tab: ProcessTab::new(&config.ui.col_widths),
             rules_tab: RulesTab::new(),
             probalance_tab,
             gaming_mode_tab,
+            hw_monitor_tab: HwMonitorTab::new_with_widths(&config.ui.hw_mon_col_widths),
+            bench_tab: BenchTab::new(),
+            overview_tab: OverviewTab::new(),
             settings_tab,
             log_tab: LogTab::new(),
             affinity_dialog: None,
@@ -212,6 +229,8 @@ impl ProcessLassoApp {
             last_saved_opacity,
             last_saved_theme,
             cpu_temp,
+            pending_kill: None,
+            cpu_model,
         }
     }
 
@@ -231,13 +250,34 @@ impl ProcessLassoApp {
             TableAction::Kill { pid, name, force } => {
                 use nix::sys::signal::{self, Signal};
                 use nix::unistd::Pid;
-                let sig = if force { Signal::SIGKILL } else { Signal::SIGTERM };
-                let msg = match signal::kill(Pid::from_raw(pid as i32), sig) {
-                    Ok(_) => format!("{}illed {} ({})", if force { "Force k" } else { "K" }, name, pid),
-                    Err(e) => format!("Kill failed for {name} ({pid}): {e}"),
-                };
+                let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGSTOP);
+                self.pending_kill = Some(crate::gui::process_tab::PendingKill {
+                    pid,
+                    name: name.clone(),
+                    force,
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                });
                 if let Ok(mut s) = self.state.lock() {
-                    s.append_log(msg);
+                    s.append_log(format!("Suspended {} ({}) — will {} in 5s", name, pid,
+                        if force { "force kill" } else { "kill" }));
+                }
+            }
+            TableAction::Suspend { pid, name } => {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+                let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGSTOP);
+                if let Ok(mut s) = self.state.lock() {
+                    s.suspended_pids.insert(pid);
+                    s.append_log(format!("Suspended {} ({})", name, pid));
+                }
+            }
+            TableAction::Resume { pid, name } => {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+                let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGCONT);
+                if let Ok(mut s) = self.state.lock() {
+                    s.suspended_pids.remove(&pid);
+                    s.append_log(format!("Resumed {} ({})", name, pid));
                 }
             }
             TableAction::SetAffinity { pid, name, current } => {
@@ -315,7 +355,7 @@ impl ProcessLassoApp {
     }
 }
 
-impl eframe::App for ProcessLassoApp {
+impl eframe::App for ArgusLassoApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Repaint rate diagnostics — log repaints/sec approximately every 10s
         self.repaint_count += 1;
@@ -328,18 +368,28 @@ impl eframe::App for ProcessLassoApp {
         }
 
         // Pull snapshot from shared state — lock held only for this clone block.
-        // log_lines is only cloned when the Log tab is active (2000-line deque is expensive).
+        // Expensive clones (log_lines, hw_monitor) only when the relevant tab is active.
         let on_log_tab = self.active_tab == Tab::Log;
-        let (snapshot, cpu_pcts, cpu_gen, throttled_pids, log_lines, config, gaming_active) = {
+        let on_hw_tab  = self.active_tab == Tab::HwMonitor;
+        let on_pb_tab  = self.active_tab == Tab::ProBalance;
+        let on_proc_tab = self.active_tab == Tab::Processes || self.active_tab == Tab::Overview;
+        let on_overview_tab = self.active_tab == Tab::Overview;
+        let (snapshot, cpu_pcts, cpu_gen, throttled_pids, suspended_pids, throttle_infos, log_lines, config, gaming_active, hw_monitor, proc_cpu_history, cpu_history, cpu_avg) = {
             if let Ok(s) = self.state.lock() {
                 (
                     s.snapshot.clone(),
                     s.cpu_percents.clone(),
                     s.cpu_generation,
                     s.throttled_pids.clone(),
+                    s.suspended_pids.clone(),
+                    if on_pb_tab { s.throttle_infos.clone() } else { Default::default() },
                     if on_log_tab { s.log_lines.clone() } else { Default::default() },
                     s.config.clone(),
                     s.gaming_active,
+                    if on_hw_tab { s.hw_monitor.clone() } else { Default::default() },
+                    if on_proc_tab { s.proc_cpu_history.clone() } else { Default::default() },
+                    if on_overview_tab { s.cpu_history.clone() } else { Default::default() },
+                    s.cpu_avg,
                 )
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_millis(500));
@@ -360,7 +410,39 @@ impl eframe::App for ProcessLassoApp {
         // Poll active dialogs
         self.poll_dialogs(ctx);
 
+        // Check pending kill
+        if let Some(ref pk) = self.pending_kill {
+            if std::time::Instant::now() >= pk.deadline {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+                let sig = if pk.force { Signal::SIGKILL } else { Signal::SIGTERM };
+                let name = pk.name.clone();
+                let pid = pk.pid;
+                let force = pk.force;
+                let msg = match signal::kill(Pid::from_raw(pid as i32), sig) {
+                    Ok(_) => format!("{}illed {} ({})", if force { "Force k" } else { "K" }, name, pid),
+                    Err(e) => format!("Kill failed for {} ({}): {e}", name, pid),
+                };
+                if config.ui.notifications_enabled {
+                    let _ = notify_rust::Notification::new()
+                        .summary("Argus-Lasso")
+                        .body(&msg)
+                        .timeout(notify_rust::Timeout::Milliseconds(3000))
+                        .show();
+                }
+                if let Ok(mut s) = self.state.lock() { s.append_log(msg); }
+                self.pending_kill = None;
+            }
+        }
+
         // ── Top-level panels ─────────────────────────────────────────────
+        // Build pending-kill display info before the panel closure (avoids borrow issues)
+        let pending_kill_info: Option<(u32, String, u64)> = self.pending_kill.as_ref().map(|pk| {
+            let remaining = pk.deadline.saturating_duration_since(std::time::Instant::now()).as_secs();
+            (pk.pid, pk.name.clone(), remaining)
+        });
+        let mut undo_requested = false;
+
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("Processes: {}", self.proc_count));
@@ -371,12 +453,38 @@ impl eframe::App for ProcessLassoApp {
                     ui.separator();
                     ui.label(format!("CPU temp: {temp:.0}°C"));
                 }
+                if !self.cpu_model.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new(&self.cpu_model).weak());
+                }
                 ui.separator();
                 if gaming_active {
                     ui.colored_label(crate::gui::theme::Breeze::POSITIVE, "⚡ Gaming Mode ACTIVE");
                 }
+                if let Some((_, ref kill_name, remaining)) = pending_kill_info {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::from_rgb(240, 120, 60),
+                        format!("Killing '{}' in {}s", kill_name, remaining + 1));
+                    if ui.button("Undo").clicked() {
+                        undo_requested = true;
+                    }
+                }
             });
         });
+
+        if undo_requested {
+            if let Some(ref pk) = self.pending_kill {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+                let _ = signal::kill(Pid::from_raw(pk.pid as i32), Signal::SIGCONT);
+                let name = pk.name.clone();
+                let pid = pk.pid;
+                if let Ok(mut s) = self.state.lock() {
+                    s.append_log(format!("Kill cancelled — resumed {} ({})", name, pid));
+                }
+            }
+            self.pending_kill = None;
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // Tab bar
@@ -389,10 +497,13 @@ impl eframe::App for ProcessLassoApp {
                 };
 
                 for (label, tab) in [
+                    ("Overview", Tab::Overview),
                     (proc_label.as_str(), Tab::Processes),
                     ("Rules", Tab::Rules),
                     (pb_label.as_str(), Tab::ProBalance),
                     ("Gaming Mode", Tab::GamingMode),
+                    ("HW Monitor", Tab::HwMonitor),
+                    ("Benchmark", Tab::Benchmark),
                     ("Settings", Tab::Settings),
                     ("Log", Tab::Log),
                 ] {
@@ -411,23 +522,40 @@ impl eframe::App for ProcessLassoApp {
 
             // ── Tab content ──────────────────────────────────────────────
             match self.active_tab {
+                Tab::Overview => {
+                    self.overview_tab.show(ui, &cpu_history, cpu_avg, &snapshot);
+                }
+
                 Tab::Processes => {
                     let action = self.process_tab.show(
                         ui,
                         &snapshot,
                         &throttled_pids,
+                        &suspended_pids,
                         &self.cmd_tx,
                         &self.rule_engine,
                         gaming_active,
+                        &proc_cpu_history,
                     );
                     self.handle_table_action(action, ctx);
+                    // Persist col_widths when user drags a column divider
+                    if self.process_tab.cols_dirty {
+                        if let Ok(mut s) = self.state.lock() {
+                            s.config.ui.col_widths = self.process_tab.col_widths.clone();
+                        }
+                        self.save_config();
+                    }
                 }
 
                 Tab::Rules => {
                     let mut rules_changed = false;
-                    self.rules_tab.show(ui, ctx, &self.rule_engine, &mut rules_changed, self.opacity);
+                    let mut profiles_changed = false;
+                    let mut rule_profiles = config.rule_profiles.clone();
+                    self.rules_tab.show(
+                        ui, ctx, &self.rule_engine, &mut rules_changed,
+                        self.opacity, &mut rule_profiles, &mut profiles_changed,
+                    );
                     if rules_changed {
-                        // Persist + tell daemon to reapply
                         if let Ok(mut s) = self.state.lock() {
                             s.config.rules = self.rule_engine.lock()
                                 .map(|re| re.to_config_list())
@@ -436,10 +564,16 @@ impl eframe::App for ProcessLassoApp {
                         self.send(DaemonCmd::ReapplyDefaults);
                         self.save_config();
                     }
+                    if profiles_changed {
+                        if let Ok(mut s) = self.state.lock() {
+                            s.config.rule_profiles = rule_profiles;
+                        }
+                        self.save_config();
+                    }
                 }
 
                 Tab::ProBalance => {
-                    if let Some(pb_cfg) = self.probalance_tab.show(ui) {
+                    if let Some(pb_cfg) = self.probalance_tab.show(ui, &snapshot, &throttle_infos) {
                         if let Ok(mut s) = self.state.lock() {
                             s.config.probalance = pb_cfg.clone();
                         }
@@ -457,7 +591,7 @@ impl eframe::App for ProcessLassoApp {
                     for event in events {
                         match event {
                             GamingEvent::GamingModeChanged { active, elevate_nice } => {
-                                self.send(DaemonCmd::SetGamingMode { active, elevate_nice });
+                                self.send(DaemonCmd::SetGamingMode { active, elevate_nice, park: false });
                                 if active { self.send(DaemonCmd::ReapplyDefaults); }
                             }
                             GamingEvent::ResetAll => {
@@ -473,6 +607,21 @@ impl eframe::App for ProcessLassoApp {
                             }
                         }
                     }
+                }
+
+                Tab::HwMonitor => {
+                    self.hw_monitor_tab.show(ui, &hw_monitor);
+                    if self.hw_monitor_tab.cols_dirty {
+                        let widths = self.hw_monitor_tab.col_widths.to_vec();
+                        if let Ok(mut s) = self.state.lock() {
+                            s.config.ui.hw_mon_col_widths = widths;
+                        }
+                        self.save_config();
+                    }
+                }
+
+                Tab::Benchmark => {
+                    self.bench_tab.show(ui);
                 }
 
                 Tab::Settings => {
@@ -532,9 +681,15 @@ impl eframe::App for ProcessLassoApp {
                 }
 
                 Tab::Log => {
-                    let clear = self.log_tab.show_with_clear(ui, &log_lines);
+                    let (clear, save) = self.log_tab.show_with_clear(ui, &log_lines);
                     if clear {
                         if let Ok(mut s) = self.state.lock() { s.log_lines.clear(); }
+                    }
+                    if save {
+                        if let Some(p) = crate::file_dialog::save("argus-lasso.log", "*.log *.txt") {
+                            let content = log_lines.iter().cloned().collect::<Vec<_>>().join("\n");
+                            let _ = std::fs::write(&p, content);
+                        }
                     }
                 }
             }

@@ -38,6 +38,21 @@ impl ProcEntry {
     }
 }
 
+// ── Throttle detail for UI display ───────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ThrottleInfo {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_percent: f32,
+    pub original_nice: i32,
+    pub throttle_nice: i32,
+    /// Seconds spent below restore threshold so far (progress toward restore).
+    pub consecutive_low: f32,
+    /// Target seconds below restore threshold before restoring.
+    pub restore_hysteresis: f32,
+}
+
 // ── A snapshot of one process (what ProBalance needs) ────────────────────────
 
 #[derive(Debug, Clone)]
@@ -179,6 +194,30 @@ impl ProBalance {
             .iter()
             .filter(|(_, e)| e.state == ProcState::Throttled)
             .map(|(&pid, _)| pid)
+            .collect()
+    }
+
+    /// Return detailed info for all currently throttled processes.
+    pub fn throttle_infos(&self, snapshot: &[ProcSnapshot]) -> Vec<ThrottleInfo> {
+        let name_map: HashMap<u32, (&str, f32)> = snapshot
+            .iter()
+            .map(|p| (p.pid, (p.name.as_str(), p.cpu_percent)))
+            .collect();
+        self.states
+            .iter()
+            .filter(|(_, e)| e.state == ProcState::Throttled)
+            .map(|(&pid, e)| {
+                let (name, cpu_percent) = name_map.get(&pid).copied().unwrap_or(("unknown", 0.0));
+                ThrottleInfo {
+                    pid,
+                    name: name.to_string(),
+                    cpu_percent,
+                    original_nice: e.original_nice.unwrap_or(0),
+                    throttle_nice: e.throttle_nice.unwrap_or(0),
+                    consecutive_low: e.consecutive_low,
+                    restore_hysteresis: self.cfg.restore_hysteresis_seconds,
+                }
+            })
             .collect()
     }
 }

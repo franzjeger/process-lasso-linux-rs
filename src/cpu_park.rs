@@ -2,7 +2,7 @@
 //!
 //! Mirrors Python cpu_park.py:
 //!   - detect_topology(): AMD X3D (L3 cache asymmetry), Intel Hybrid (max freq), or UNIFORM
-//!   - park_cpus() / unpark_all() via sudo /usr/local/bin/process-lasso-sysfs
+//!   - park_cpus() / unpark_all() via sudo /usr/local/bin/argus-lasso-sysfs
 //!   - get_smt_siblings_of(): reads /sys/.../topology/core_id
 //!   - Topology cache: preserved across calls so Gaming Mode doesn't lose it once CPUs are parked
 
@@ -15,11 +15,11 @@ use crate::utils::{cpuset_to_cpulist, get_offline_cpus, read_cpulist_file};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-pub const HELPER: &str = "/usr/local/bin/process-lasso-sysfs";
-pub const SUDOERS_FILE: &str = "/etc/sudoers.d/process-lasso";
+pub const HELPER: &str = "/usr/local/bin/argus-lasso-sysfs";
+pub const SUDOERS_FILE: &str = "/etc/sudoers.d/argus-lasso";
 
 pub const HELPER_CONTENT: &str = r#"#!/bin/bash
-# Process Lasso privileged sysfs helper — managed by process-lasso.
+# Argus-Lasso privileged sysfs helper — managed by argus-lasso.
 set -euo pipefail
 case "$1" in
     cpu-online)

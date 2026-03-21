@@ -1,6 +1,6 @@
-//! ProBalance settings tab — two-column form layout matching the Python version.
+//! ProBalance settings tab — live throttle view + configuration.
 
-use egui::Ui;
+use egui::{RichText, Ui};
 use crate::config::ProBalanceConfig;
 
 pub struct ProBalanceTab {
@@ -16,11 +16,71 @@ impl ProBalanceTab {
     }
 
     /// Returns Some(updated_config) when Apply is clicked.
-    pub fn show(&mut self, ui: &mut Ui) -> Option<ProBalanceConfig> {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        snapshot: &[crate::monitor::ProcInfo],
+        throttle_infos: &[crate::probalance::ThrottleInfo],
+    ) -> Option<ProBalanceConfig> {
         const LABEL_W: f32 = 280.0;
 
         ui.checkbox(&mut self.cfg.enabled, "ProBalance Enabled");
         ui.add_space(8.0);
+
+        // ── Live throttle view ────────────────────────────────────────────
+        if !throttle_infos.is_empty() {
+            ui.label(RichText::new("Currently Throttled").strong()
+                .color(crate::gui::theme::Breeze::WARNING));
+            ui.add_space(4.0);
+            let header_col = ui.visuals().strong_text_color();
+            egui::Grid::new("pb_throttle_hdr")
+                .num_columns(5)
+                .spacing([12.0, 2.0])
+                .show(ui, |ui| {
+                    for h in ["PID", "NAME", "CPU%", "NICE", "RESTORE IN"] {
+                        ui.label(RichText::new(h).strong().color(header_col));
+                    }
+                    ui.end_row();
+                });
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .max_height(120.0)
+                .id_salt("pb_live_scroll")
+                .show(ui, |ui| {
+                    let cpu_map: std::collections::HashMap<u32, f32> =
+                        snapshot.iter().map(|p| (p.pid, p.cpu_percent)).collect();
+                    egui::Grid::new("pb_throttle_rows")
+                        .num_columns(5)
+                        .spacing([12.0, 2.0])
+                        .show(ui, |ui| {
+                            for info in throttle_infos {
+                                let cpu = cpu_map.get(&info.pid).copied().unwrap_or(info.cpu_percent);
+                                let remaining = (info.restore_hysteresis - info.consecutive_low).max(0.0);
+                                let restore_str = if remaining < 0.5 {
+                                    "Restoring…".to_string()
+                                } else {
+                                    format!("{remaining:.1}s")
+                                };
+                                ui.label(info.pid.to_string());
+                                ui.label(RichText::new(&info.name).color(
+                                    crate::gui::theme::Breeze::WARNING));
+                                ui.label(format!("{cpu:.1}%"));
+                                ui.label(format!("{} → {}", info.original_nice, info.throttle_nice));
+                                ui.label(restore_str);
+                                ui.end_row();
+                            }
+                        });
+                });
+            ui.add_space(8.0);
+        } else if self.cfg.enabled {
+            ui.label(RichText::new("Currently Throttled").strong()
+                .color(ui.visuals().weak_text_color()));
+            ui.add_space(4.0);
+            ui.label(RichText::new("No processes currently throttled.")
+                .italics()
+                .color(ui.visuals().weak_text_color()));
+            ui.add_space(8.0);
+        }
 
         // ── Throttle Settings ─────────────────────────────────────────────
         group_box(ui, "Throttle Settings", |ui| {

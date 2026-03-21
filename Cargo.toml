@@ -1,12 +1,12 @@
 [package]
-name = "process-lasso-linux-rs"
-version = "0.1.0"
+name = "argus-lasso"
+version = "0.2.0"
 edition = "2021"
-description = "Process Lasso — Linux process manager with CPU affinity, ProBalance, and Gaming Mode"
+description = "Argus-Lasso — Linux process manager with CPU affinity, ProBalance, Gaming Mode, and HW monitoring"
 authors = ["franzjeger"]
 
 [[bin]]
-name = "process-lasso"
+name = "argus-lasso"
 path = "src/main.rs"
 
 [dependencies]
@@ -46,9 +46,6 @@ crossbeam-channel = "0.5"
 
 # Desktop notifications (D-Bus/zbus, no libnotify)
 notify-rust = { version = "4", features = ["z"] }
-
-# File dialogs (rules import/export)
-rfd = "0.15"
 
 # JSON (rules export/import)
 serde_json = "1"

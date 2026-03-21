@@ -142,11 +142,11 @@ impl GamingModeTab {
     fn refresh_helper_status(&mut self) {
         self.helper_ok = is_helper_current() && is_sudoers_installed();
         self.helper_status_text = if self.helper_ok {
-            "✓ Helper installed — parking + nice -1 available".into()
+            "Helper installed — parking + nice -1 available".into()
         } else if is_helper_installed() && is_sudoers_installed() {
-            "⚠ Helper needs update — click 'Install / Update Helper'".into()
+            "Helper needs update — click 'Install / Update Helper'".into()
         } else {
-            "✗ Helper not installed — click 'Install / Update Helper' to enable parking".into()
+            "Helper not installed — click 'Install / Update Helper' to enable parking".into()
         };
     }
 
@@ -368,9 +368,9 @@ impl GamingModeTab {
 
             // Enable/disable button
             let btn_text = if self.parked {
-                "⏹  Disable Gaming Mode (Unpark CPUs)"
+                "Disable Gaming Mode (Unpark CPUs)"
             } else {
-                "▶  Enable Gaming Mode (Park non-preferred CPUs)"
+                "Enable Gaming Mode (Park non-preferred CPUs)"
             };
             let btn_color = if self.parked {
                 egui::Color32::from_rgb(30, 74, 42)
@@ -469,7 +469,7 @@ impl GamingModeTab {
             ui.horizontal(|ui| {
                 let can_launch = !self.game_name.is_empty() && !self.command.is_empty();
                 ui.add_enabled_ui(can_launch, |ui| {
-                    if ui.button("▶  Launch").clicked() {
+                    if ui.button("Launch").clicked() {
                         self.launch_game();
                     }
                 });
@@ -480,7 +480,7 @@ impl GamingModeTab {
             ui.horizontal(|ui| {
                 let can_kill = self.watch_phase != WatchPhase::Idle;
                 ui.add_enabled_ui(can_kill, |ui| {
-                    if ui.button("⏹ Kill Game").clicked() {
+                    if ui.button("Kill Game").clicked() {
                         if let Some(pid) = self.launched_pid {
                             let _ = nix::sys::signal::kill(
                                 nix::unistd::Pid::from_raw(pid as i32),

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Argus-Lasso
+Comment=Linux process manager with CPU affinity, nice priority, ProBalance, and HW monitoring
+Exec=argus-lasso
+Icon=argus-lasso
+Terminal=false
+Type=Application
+Categories=System;Monitor;
+StartupNotify=false
+StartupWMClass=argus-lasso

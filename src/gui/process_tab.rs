@@ -7,7 +7,7 @@ use egui::RichText;
 
 use crate::gui::cpu_bars::{CpuBarsWidget, CpuHistoryWidget};
 use crate::gui::theme::{self, Breeze};
-use crate::monitor::{DaemonCmd, ProcInfo};
+use crate::monitor::{DaemonCmd, ProcInfo}; // ProcInfo used by RowItem
 use crate::rules::RuleEngine;
 use crate::utils::{build_core_pairs, cpulist_to_set, cpuset_to_cpulist, get_offline_cpus};
 
@@ -34,9 +34,38 @@ impl SortCol {
             SortCol::Mem      => "MEM(MB)",
             SortCol::Nice     => "NICE",
             SortCol::Affinity => "AFFINITY",
-            SortCol::Ionice   => "I/O",
+            SortCol::Ionice   => "I/O PRI",
             SortCol::Status   => "STATUS",
         }
+    }
+}
+
+// ── Formatting helpers ────────────────────────────────────────────────────────
+
+/// Convert raw "class/level" ionice string to human-readable form.
+fn fmt_ionice(s: &str) -> String {
+    if s.is_empty() { return "—".into(); }
+    let mut parts = s.splitn(2, '/');
+    let class: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let level: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    match class {
+        0 => "—".into(),
+        1 => format!("RT-{level}"),
+        2 => format!("BE-{level}"),
+        3 => "Idle".into(),
+        _ => s.into(),
+    }
+}
+
+/// Format bytes/s compactly: "1.2 MB/s", "456 KB/s", "—"
+fn fmt_bps(bytes: u64) -> String {
+    if bytes == 0 { return "—".into(); }
+    if bytes >= 1_048_576 {
+        format!("{:.1} MB/s", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.0} KB/s", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B/s")
     }
 }
 
@@ -45,11 +74,22 @@ impl SortCol {
 #[derive(Debug)]
 pub enum TableAction {
     Kill { pid: u32, name: String, force: bool },
+    Suspend { pid: u32, name: String },
+    Resume { pid: u32, name: String },
     SetAffinity { pid: u32, name: String, current: String },
     SetNice { pid: u32, name: String, current: i32 },
     SetIonice { pid: u32, name: String },
     AddRule { name: String },
     None,
+}
+
+// ── Pending kill (undo support) ───────────────────────────────────────────────
+
+pub struct PendingKill {
+    pub pid: u32,
+    pub name: String,
+    pub force: bool,
+    pub deadline: std::time::Instant,
 }
 
 // ── Format affinity string with grouped physical+HT pairs ─────────────────────
@@ -116,12 +156,30 @@ pub struct ProcessTab {
     pub selected_pid: Option<u32>,
     // Gaming mode: hide/group parked CPUs in affinity column
     pub hide_parked_in_proc_view: bool,
+    // Show processes as parent/child tree instead of flat list
+    pub tree_view: bool,
     // Cached physical-core → HT-sibling map (read once from sysfs at startup)
     core_pairs: HashMap<u32, Vec<u32>>,
+    // User-adjustable column widths: [PID, Name, CPU%, Mem, Nice, Aff, I/O, Status]
+    // Name column auto-fills; user can drag handles to resize others.
+    pub col_widths: Vec<f32>,
+    pub cols_initialized: bool,
+    // Last available width — used to detect window resize for auto-scaling
+    last_avail_w: f32,
+    // Pending kill awaiting undo
+    #[allow(dead_code)]
+    pub pending_kill: Option<PendingKill>,
+    // Set to true when col_widths change so app.rs can persist them
+    pub cols_dirty: bool,
 }
 
 impl ProcessTab {
-    pub fn new() -> Self {
+    pub fn new(cfg_col_widths: &[f32]) -> Self {
+        let col_widths = if cfg_col_widths.len() == 8 {
+            cfg_col_widths.to_vec()
+        } else {
+            vec![60.0, 0.0, 90.0, 75.0, 45.0, 110.0, 58.0, 85.0]
+        };
         Self {
             history: CpuHistoryWidget::new(),
             bars: CpuBarsWidget::new(),
@@ -130,7 +188,13 @@ impl ProcessTab {
             sort_asc: false,
             selected_pid: None,
             hide_parked_in_proc_view: true,
+            tree_view: false,
             core_pairs: build_core_pairs(),
+            col_widths,
+            cols_initialized: false,
+            last_avail_w: 0.0,
+            pending_kill: None,
+            cols_dirty: false,
         }
     }
 
@@ -145,9 +209,11 @@ impl ProcessTab {
         ui: &mut egui::Ui,
         snapshot: &[ProcInfo],
         throttled_pids: &std::collections::HashSet<u32>,
+        suspended_pids: &std::collections::HashSet<u32>,
         _cmd_tx: &crossbeam_channel::Sender<DaemonCmd>,
         _rule_engine: &Arc<Mutex<RuleEngine>>,
         gaming_active: bool,
+        proc_cpu_history: &std::collections::HashMap<u32, std::collections::VecDeque<f32>>,
     ) -> TableAction {
         // CPU history chart + per-CPU bars
         self.history.show(ui);
@@ -171,7 +237,7 @@ impl ProcessTab {
             ui.ctx().request_repaint();
         }
 
-        // Filter row + gaming mode toggle
+        // Filter row + view toggles
         ui.horizontal(|ui| {
             ui.label("Filter:");
             ui.add(egui::TextEdit::singleline(&mut self.filter)
@@ -183,6 +249,8 @@ impl ProcessTab {
                     self.filter.clear();
                 }
             }
+            ui.separator();
+            ui.checkbox(&mut self.tree_view, "Tree view");
             if gaming_active {
                 ui.separator();
                 ui.checkbox(&mut self.hide_parked_in_proc_view, "Group affinity / hide parked");
@@ -251,20 +319,45 @@ impl ProcessTab {
         ];
         const ROW_H:    f32 = 24.0;
         const HEADER_H: f32 = 24.0;
-        const PAD:      f32 = 4.0;  // left padding inside each cell
+        const PAD:      f32 = 4.0;
 
-        // Fixed columns: 70(PID)+65(CPU%)+80(Mem)+50(Nice)+130(Aff)+65(I/O)+100(Status) = 560
-        let fixed_cols_w: f32 = 70.0 + 65.0 + 80.0 + 50.0 + 130.0 + 65.0 + 100.0;
-        // Subtract frame border (2 × 1px) so table fills exactly the available width
-        let name_col_w = (ui.available_width() - fixed_cols_w - 2.0).max(180.0);
-        let col_widths: [f32; 8] = [70.0, name_col_w, 65.0, 80.0, 50.0, 130.0, 65.0, 100.0];
+        // Auto-fill Name column (index 1) from available width minus fixed columns.
+        let avail_w = ui.available_width() - 4.0;
+        if !self.cols_initialized {
+            let fixed: f32 = self.col_widths.iter().enumerate()
+                .filter(|(i, _)| *i != 1)
+                .map(|(_, &w)| w)
+                .sum();
+            self.col_widths[1] = (avail_w - fixed).max(150.0);
+            self.cols_initialized = true;
+            self.last_avail_w = avail_w;
+        } else {
+            // Auto-scale fixed columns proportionally when window width changes significantly
+            if (avail_w - self.last_avail_w).abs() > 4.0 {
+                let ratio = avail_w / self.last_avail_w.max(1.0);
+                for (i, w) in self.col_widths.iter_mut().enumerate() {
+                    if i != 1 {
+                        *w = (*w * ratio).clamp(20.0, 300.0);
+                    }
+                }
+            }
+            self.last_avail_w = avail_w;
+            // Recalculate name column each frame to fill remaining space.
+            let fixed: f32 = self.col_widths.iter().enumerate()
+                .filter(|(i, _)| *i != 1)
+                .map(|(_, &w)| w)
+                .sum();
+            self.col_widths[1] = (avail_w - fixed).max(150.0);
+        }
+        let col_widths = self.col_widths.clone();
         let total_cols_w: f32 = col_widths.iter().sum();
 
         // Wrap table in a visible border frame
         let frame_border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+        let mut col_width_deltas = [0.0f32; 8];
         egui::Frame::new()
             .stroke(egui::Stroke::new(1.0, frame_border_color))
-            .inner_margin(egui::Margin::same(0))
+            .inner_margin(egui::Margin::same(1))
             .show(ui, |ui| {
                 // ── Sortable header (pinned, outside scroll area) ─────────────────
                 let (header_rect, _) = ui.allocate_exact_size(
@@ -285,9 +378,9 @@ impl ProcessTab {
                             egui::Pos2::new(x + PAD, header_rect.min.y),
                             egui::Vec2::new(cw - PAD, HEADER_H),
                         );
-                        let is_active = *col == sort_col_cur;
+                        let is_active = *col == sort_col_cur && !self.tree_view;
                         let label_str = if is_active {
-                            format!("{} {}", col.label(), if sort_asc_cur { "▲" } else { "▼" })
+                            format!("{} {}", col.label(), if sort_asc_cur { "↑" } else { "↓" })
                         } else {
                             col.label().to_string()
                         };
@@ -297,7 +390,7 @@ impl ProcessTab {
                             egui::Label::new(RichText::new(label_str).color(color).strong())
                                 .sense(egui::Sense::click()),
                         );
-                        if resp.clicked() {
+                        if resp.clicked() && !self.tree_view {
                             if *col == sort_col_cur {
                                 new_sort_asc = !sort_asc_cur;
                             } else {
@@ -307,6 +400,33 @@ impl ProcessTab {
                         }
                         x += cw;
                     }
+                    // Drag-to-resize handles — one between each column pair
+                    x = header_rect.min.x;
+                    for i in 0..7usize {
+                        x += col_widths[i];
+                        let handle_rect = egui::Rect::from_min_size(
+                            egui::pos2(x - 3.0, header_rect.min.y),
+                            egui::vec2(6.0, HEADER_H),
+                        );
+                        let resp = ui.interact(
+                            handle_rect,
+                            egui::Id::new(("col_resize", i)),
+                            egui::Sense::drag(),
+                        );
+                        let sep_color = if resp.hovered() || resp.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                            Breeze::HIGHLIGHT
+                        } else {
+                            ui.visuals().widgets.noninteractive.bg_stroke.color
+                        };
+                        ui.painter().line_segment(
+                            [egui::pos2(x, header_rect.min.y), egui::pos2(x, header_rect.max.y)],
+                            egui::Stroke::new(1.0, sep_color),
+                        );
+                        if resp.dragged() {
+                            col_width_deltas[i] += resp.drag_delta().x;
+                        }
+                    }
                 }
                 // Separator line between header and body
                 ui.painter().line_segment(
@@ -315,26 +435,81 @@ impl ProcessTab {
                 );
 
                 // ── Scrollable body ───────────────────────────────────────────────
+                // Build tree-ordered row list when tree_view is active.
+                struct RowItem<'a> { proc: &'a ProcInfo, depth: usize }
+                let row_items: Vec<RowItem> = if self.tree_view {
+                    let pid_set: HashSet<u32> = sorted.iter().map(|p| p.pid).collect();
+                    let mut children: HashMap<u32, Vec<usize>> = HashMap::new();
+                    let mut roots: Vec<usize> = Vec::new();
+                    for (i, p) in sorted.iter().enumerate() {
+                        if p.ppid == 0 || !pid_set.contains(&p.ppid) {
+                            roots.push(i);
+                        } else {
+                            children.entry(p.ppid).or_default().push(i);
+                        }
+                    }
+                    // Sort children by name for stable display
+                    for v in children.values_mut() {
+                        v.sort_by_key(|&i| &sorted[i].name);
+                    }
+                    roots.sort_by_key(|&i| &sorted[i].name);
+                    let mut result = Vec::new();
+                    let mut stack: Vec<(usize, usize)> = roots.iter().map(|&i| (i, 0)).collect();
+                    stack.reverse();
+                    while let Some((idx, depth)) = stack.pop() {
+                        result.push(RowItem { proc: &sorted[idx], depth });
+                        if let Some(ch) = children.get(&sorted[idx].pid) {
+                            let mut ch_sorted = ch.clone();
+                            ch_sorted.sort_by_key(|&i| &sorted[i].name);
+                            for ci in ch_sorted.into_iter().rev() {
+                                stack.push((ci, depth + 1));
+                            }
+                        }
+                    }
+                    result
+                } else {
+                    sorted.iter().map(|p| RowItem { proc: p, depth: 0 }).collect()
+                };
+
                 egui::ScrollArea::vertical()
                     .id_salt("process_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (row_idx, proc) in sorted.iter().enumerate() {
+                        for (row_idx, item) in row_items.iter().enumerate() {
+                            let proc     = item.proc;
+                            let indent   = item.depth as f32 * 14.0;
                             let pid      = proc.pid;
                             let is_sel   = new_selected == Some(pid);
                             let throttled = throttled_pids.contains(&pid);
                             let cpu      = proc.cpu_percent;
                             let row_col  = theme::row_color(cpu, throttled, ui.visuals().text_color());
-                            let aff_str  = format_affinity_display(
+                            let aff_full = format_affinity_display(
                                 &proc.affinity, &offline, core_pairs, hide_parked,
                             );
-                            let status_str = if throttled { "⏸ Throttled" } else { "" };
+                            // Truncate affinity if very long, show full string in tooltip
+                            const AFF_MAX: usize = 14;
+                            let aff_display = if aff_full.len() > AFF_MAX {
+                                format!("{}…", &aff_full[..AFF_MAX.saturating_sub(1)])
+                            } else {
+                                aff_full.clone()
+                            };
+                            let ionice_str = fmt_ionice(&proc.ionice);
+                            let is_suspended = suspended_pids.contains(&pid);
+                            let status_str = if is_suspended {
+                                "⏸ Suspended"
+                            } else if throttled {
+                                "🔻 Throttled"
+                            } else {
+                                ""
+                            };
 
-                            // Clone fields needed inside context_menu closure
+                            // Clone fields needed inside closures
                             let name    = proc.name.clone();
                             let aff     = proc.affinity.clone();
                             let nice    = proc.nice;
                             let cmdline = proc.cmdline.clone();
+                            let drb     = proc.disk_read_bps;
+                            let dwb     = proc.disk_write_bps;
 
                             // Allocate the full row — advances the cursor
                             let (row_rect, row_resp) = ui.allocate_exact_size(
@@ -352,25 +527,58 @@ impl ProcessTab {
                             };
                             ui.painter().rect_filled(row_rect, 0.0, bg);
 
-                            // Paint cell text directly — no widget allocation so nothing
-                            // can intercept the row's Sense::click().
+                            // Paint cell text directly
                             if ui.is_rect_visible(row_rect) {
-                                let font = egui::FontId::proportional(14.0);
+                                let font = egui::FontId::proportional(13.5);
                                 let painter = ui.painter();
                                 let mut x = row_rect.min.x;
                                 for (ci, &cw) in col_widths.iter().enumerate() {
-                                    let text_pos = egui::pos2(x + PAD, row_rect.center().y);
+                                    let x_off = if ci == 1 { indent } else { 0.0 };
+                                    // For CPU% column (ci==2): draw sparkline on left, shift text right
+                                    let text_x_off = if ci == 2 { cw * 0.45 } else { 0.0 };
+                                    let text_pos = egui::pos2(x + PAD + x_off + text_x_off, row_rect.center().y);
                                     let text: std::borrow::Cow<str> = match ci {
                                         0 => pid.to_string().into(),
                                         1 => name.as_str().into(),
                                         2 => format!("{:.1}", cpu).into(),
                                         3 => format!("{:.1}", proc.mem_rss as f64 / 1_048_576.0).into(),
                                         4 => nice.to_string().into(),
-                                        5 => aff_str.as_str().into(),
-                                        6 => proc.ionice.as_str().into(),
+                                        5 => aff_display.as_str().into(),
+                                        6 => ionice_str.as_str().into(),
                                         7 => status_str.into(),
                                         _ => "".into(),
                                     };
+                                    // Draw mini sparkline in left portion of CPU% cell
+                                    if ci == 2 {
+                                        if let Some(hist) = proc_cpu_history.get(&pid) {
+                                            if hist.len() >= 2 {
+                                                let spark_w = cw * 0.42;
+                                                let spark_rect = egui::Rect::from_min_size(
+                                                    egui::pos2(x + 1.0, row_rect.min.y + 2.0),
+                                                    egui::vec2(spark_w, ROW_H - 4.0),
+                                                );
+                                                let lo = hist.iter().cloned().fold(f32::INFINITY, f32::min);
+                                                let hi = hist.iter().cloned().fold(f32::NEG_INFINITY, f32::max).max(lo + 0.1);
+                                                let pts: Vec<egui::Pos2> = hist.iter().enumerate()
+                                                    .map(|(i, &v)| {
+                                                        let px = spark_rect.left() + i as f32 / (hist.len() - 1).max(1) as f32 * spark_rect.width();
+                                                        let py = spark_rect.bottom() - (v - lo) / (hi - lo) * spark_rect.height();
+                                                        egui::pos2(px, py)
+                                                    })
+                                                    .collect();
+                                                let spark_col = if cpu > 80.0 {
+                                                    egui::Color32::from_rgb(240, 80, 60)
+                                                } else if cpu > 50.0 {
+                                                    egui::Color32::from_rgb(240, 180, 60)
+                                                } else {
+                                                    egui::Color32::from_rgb(80, 180, 100)
+                                                };
+                                                for pair in pts.windows(2) {
+                                                    painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.0, spark_col));
+                                                }
+                                            }
+                                        }
+                                    }
                                     painter.text(
                                         text_pos,
                                         egui::Align2::LEFT_CENTER,
@@ -381,22 +589,46 @@ impl ProcessTab {
                                     x += cw;
                                 }
 
-                                // Tooltip for name column: show cmdline when hovering that cell
+                                // Tooltip: hover name → cmdline + disk I/O + full affinity
                                 if row_resp.hovered() {
-                                    let name_cell_rect = egui::Rect::from_min_size(
+                                    let ptr = ui.ctx().pointer_hover_pos();
+                                    // Name cell
+                                    let name_rect = egui::Rect::from_min_size(
                                         egui::pos2(row_rect.min.x + col_widths[0], row_rect.min.y),
                                         egui::vec2(col_widths[1], ROW_H),
                                     );
-                                    if ui.ctx().pointer_hover_pos()
-                                        .map_or(false, |p| name_cell_rect.contains(p))
-                                    {
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Help);
+                                    // Affinity cell
+                                    let aff_x = col_widths[..5].iter().sum::<f32>() + row_rect.min.x;
+                                    let aff_rect = egui::Rect::from_min_size(
+                                        egui::pos2(aff_x, row_rect.min.y),
+                                        egui::vec2(col_widths[5], ROW_H),
+                                    );
+                                    if ptr.map_or(false, |p| name_rect.contains(p)) {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
                                         #[allow(deprecated)]
                                         egui::show_tooltip_at_pointer(
-                                            ui.ctx(),
-                                            ui.layer_id(),
-                                            egui::Id::new(("proc_cmdline", pid)),
-                                            |ui| { ui.label(cmdline.as_str()); },
+                                            ui.ctx(), ui.layer_id(),
+                                            egui::Id::new(("proc_tip", pid)),
+                                            |ui| {
+                                                ui.label(egui::RichText::new(&name).strong());
+                                                if !cmdline.is_empty() {
+                                                    ui.label(egui::RichText::new(cmdline.as_str())
+                                                        .size(11.5)
+                                                        .color(ui.visuals().weak_text_color()));
+                                                }
+                                                ui.separator();
+                                                ui.label(format!("PID: {}   PPID: {}", pid, proc.ppid));
+                                                ui.label(format!("Disk R: {}   W: {}", fmt_bps(drb), fmt_bps(dwb)));
+                                            },
+                                        );
+                                    } else if ptr.map_or(false, |p| aff_rect.contains(p))
+                                        && aff_full.len() > AFF_MAX
+                                    {
+                                        #[allow(deprecated)]
+                                        egui::show_tooltip_at_pointer(
+                                            ui.ctx(), ui.layer_id(),
+                                            egui::Id::new(("aff_tip", pid)),
+                                            |ui| { ui.label(&aff_full); },
                                         );
                                     }
                                 }
@@ -415,6 +647,15 @@ impl ProcessTab {
                                 }
                                 if ui.button(format!("Force Kill {} ({})", name, pid)).clicked() {
                                     action = TableAction::Kill { pid, name: name.clone(), force: true };
+                                    ui.close();
+                                }
+                                if is_suspended {
+                                    if ui.button(format!("Resume {} ({})", name, pid)).clicked() {
+                                        action = TableAction::Resume { pid, name: name.clone() };
+                                        ui.close();
+                                    }
+                                } else if ui.button(format!("Suspend {} ({})", name, pid)).clicked() {
+                                    action = TableAction::Suspend { pid, name: name.clone() };
                                     ui.close();
                                 }
                                 ui.separator();
@@ -447,6 +688,15 @@ impl ProcessTab {
                         }
                     }); // end ScrollArea
             }); // end Frame border
+
+        // Apply column resize deltas (index 1 = name auto-fills, skip it)
+        self.cols_dirty = false;
+        for (i, &delta) in col_width_deltas.iter().enumerate() {
+            if delta != 0.0 && i != 1 {
+                self.col_widths[i] = (self.col_widths[i] + delta).max(30.0);
+                self.cols_dirty = true;
+            }
+        }
 
         self.sort_col    = new_sort_col;
         self.sort_asc    = new_sort_asc;

@@ -159,6 +159,10 @@ impl RuleEngine {
         self.rules.retain(|r| r.rule_id != rule_id);
     }
 
+    pub fn clear_rules(&mut self) {
+        self.rules.clear();
+    }
+
     pub fn update_rule(&mut self, updated: Rule) {
         if let Some(r) = self.rules.iter_mut().find(|r| r.rule_id == updated.rule_id) {
             *r = updated;
