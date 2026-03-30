@@ -39,7 +39,8 @@ env_logger = "0.11"
 clap = { version = "4", features = ["derive"] }
 
 # System tray via D-Bus StatusNotifierItem (KDE/freedesktop, no libxdo needed)
-ksni = { version = "0.3", features = ["blocking"] }
+# Use async-io backend to avoid needing a Tokio runtime in a non-Tokio app.
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 
 # Multi-producer channels for GUI→daemon commands
 crossbeam-channel = "0.5"
