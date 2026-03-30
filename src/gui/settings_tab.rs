@@ -2,8 +2,10 @@
 
 use egui::Ui;
 use crate::config::Config;
+use crate::cpu_park::{detect_topology, CpuTopology};
 use crate::gui::dialogs::AffinityDialog;
 use crate::gui::theme::AppTheme;
+use crate::utils::cpuset_to_cpulist;
 
 pub struct SettingsTab {
     pub config: Config,
@@ -22,6 +24,8 @@ pub struct SettingsTab {
     pub cpu_epp: String,
     pub available_epps: Vec<String>,
     pub power_status: String,
+    /// Detected CPU topology — drives dynamic quick-buttons
+    pub topo: CpuTopology,
 }
 
 impl SettingsTab {
@@ -47,6 +51,7 @@ impl SettingsTab {
             cpu_epp: read_epp(),
             available_epps: read_available_epps(),
             power_status: String::new(),
+            topo: detect_topology(),
         }
     }
 
@@ -56,10 +61,17 @@ impl SettingsTab {
 
         // ── Default CPU Affinity ──────────────────────────────────────────
         group_box(ui, "Default CPU Affinity", |ui| {
-            ui.label(
-                "Applied to every process that doesn't match a specific rule.\n\
-                 Typical 7950X3D: Default → CCD1 (background), Rule: steam → CCD0 (game)"
-            );
+            if self.topo.has_asymmetry() {
+                ui.label(format!(
+                    "Applied to every process that doesn't match a specific rule.\n\
+                     Detected: {}. Typical: Default → {}, Game rule → {}",
+                    self.topo.kind_label(),
+                    self.topo.non_preferred_label,
+                    self.topo.preferred_label,
+                ));
+            } else {
+                ui.label("Applied to every process that doesn't match a specific rule.");
+            }
             ui.add_space(4.0);
 
             ui.horizontal(|ui| {
@@ -77,15 +89,23 @@ impl SettingsTab {
 
             ui.horizontal(|ui| {
                 ui.label("Quick:");
-                for (label, val) in [
-                    ("CCD0 (0-7,16-23)", "0-7,16-23"),
-                    ("CCD1 (8-15,24-31)", "8-15,24-31"),
-                    ("All", ""),
-                ] {
-                    if ui.add_enabled(self.default_affinity_enabled, egui::Button::new(label)).clicked() {
-                        self.default_affinity_text = val.to_string();
+                if self.topo.has_asymmetry() {
+                    let pref_list = cpuset_to_cpulist(&self.topo.preferred);
+                    let npref_list = cpuset_to_cpulist(&self.topo.non_preferred);
+                    if ui.add_enabled(self.default_affinity_enabled,
+                        egui::Button::new(self.topo.preferred_button_label())).clicked() {
+                        self.default_affinity_text = pref_list;
                         self.default_affinity_enabled = true;
                     }
+                    if ui.add_enabled(self.default_affinity_enabled,
+                        egui::Button::new(self.topo.non_preferred_button_label())).clicked() {
+                        self.default_affinity_text = npref_list;
+                        self.default_affinity_enabled = true;
+                    }
+                }
+                if ui.add_enabled(self.default_affinity_enabled, egui::Button::new("All")).clicked() {
+                    self.default_affinity_text = String::new();
+                    self.default_affinity_enabled = true;
                 }
             });
         });

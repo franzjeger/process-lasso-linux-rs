@@ -652,12 +652,21 @@ fn apply_new_pid(
     };
 
     if !actions.is_empty() {
-        // Rule matched — if gaming mode + elevate_nice, apply nice -1
+        // Rule matched — if gaming mode + elevate_nice, apply nice -1 and pin to preferred cores
         if gaming_mode && gaming_elevate_nice && !gaming_niced.contains_key(&pid) {
             let orig_nice = proc.nice;
             if cpu_park::set_process_nice_via_helper(pid, -1) {
                 gaming_niced.insert(pid, orig_nice);
                 log_cb(format!("[Gaming Mode] nice -1 → {}({})", proc.name, pid));
+            }
+            // Pin game process to preferred cores (P-cores / V-Cache CCD)
+            let topo = cpu_park::detect_topology();
+            if topo.has_asymmetry() {
+                let preferred_list = utils::cpuset_to_cpulist(&topo.preferred);
+                if utils::set_affinity(pid, &preferred_list) {
+                    log_cb(format!("[Gaming Mode] affinity → {} ({}) for {}({})",
+                        topo.preferred_label, preferred_list, proc.name, pid));
+                }
             }
         }
     } else {

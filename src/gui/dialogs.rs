@@ -20,6 +20,8 @@ pub struct AffinityPicker {
     pub preferred: HashSet<u32>,
     pub non_preferred: HashSet<u32>,
     pub smt_siblings: HashSet<u32>,
+    pub preferred_label: String,
+    pub non_preferred_label: String,
 }
 
 impl AffinityPicker {
@@ -46,9 +48,11 @@ impl AffinityPicker {
             checkboxes,
             cpu_count,
             offline,
-            preferred: if has_asym { topo.preferred } else { HashSet::new() },
-            non_preferred: if has_asym { topo.non_preferred } else { HashSet::new() },
+            preferred: if has_asym { topo.preferred.clone() } else { HashSet::new() },
+            non_preferred: if has_asym { topo.non_preferred.clone() } else { HashSet::new() },
             smt_siblings,
+            preferred_label: topo.preferred_label.clone(),
+            non_preferred_label: topo.non_preferred_label.clone(),
         }
     }
 
@@ -78,12 +82,12 @@ impl AffinityPicker {
         if !self.preferred.is_empty() {
             ui.horizontal(|ui| {
                 ui.label("Quick:");
-                if ui.button("CCD0 (preferred)").clicked() {
+                if ui.button(format!("{} (preferred)", self.preferred_label)).clicked() {
                     for (i, cb) in self.checkboxes.iter_mut().enumerate() {
                         *cb = self.preferred.contains(&(i as u32));
                     }
                 }
-                if ui.button("CCD1 (non-preferred)").clicked() {
+                if ui.button(format!("{} (non-preferred)", self.non_preferred_label)).clicked() {
                     for (i, cb) in self.checkboxes.iter_mut().enumerate() {
                         *cb = self.non_preferred.contains(&(i as u32));
                     }
@@ -148,11 +152,13 @@ impl AffinityPicker {
                 };
 
                 if !phys_pref.is_empty() {
-                    ui.colored_label(Breeze::HIGHLIGHT, "Preferred CCD");
+                    ui.colored_label(Breeze::HIGHLIGHT,
+                        if self.preferred_label.is_empty() { "Preferred cores" } else { &self.preferred_label });
                     self.show_core_pairs(ui, &phys_pref);
                 }
                 if !phys_npref.is_empty() {
-                    ui.colored_label(ui.visuals().weak_text_color(), "Non-preferred CCD");
+                    ui.colored_label(ui.visuals().weak_text_color(),
+                        if self.non_preferred_label.is_empty() { "Non-preferred cores" } else { &self.non_preferred_label });
                     self.show_core_pairs(ui, &phys_npref);
                 }
             } else {
@@ -236,7 +242,9 @@ impl AffinityPicker {
 pub struct AffinityDialog {
     pub open: bool,
     pub title: String,
-    pub checkboxes: Vec<bool>,  // indexed by cpu number
+    pub checkboxes: Vec<bool>,
+    pub preferred_label: String,
+    pub non_preferred_label: String,
     pub cpu_count: u32,
     pub offline: HashSet<u32>,
     pub preferred: HashSet<u32>,
@@ -267,6 +275,8 @@ impl AffinityDialog {
             open: true,
             title: title.to_string(),
             checkboxes,
+            preferred_label: topo.preferred_label.clone(),
+            non_preferred_label: topo.non_preferred_label.clone(),
             cpu_count,
             offline,
             preferred: if topo.has_asymmetry() { topo.preferred.clone() } else { HashSet::new() },
@@ -322,8 +332,8 @@ impl AffinityDialog {
                             ui.add_space(4.0);
 
                             if !preferred.is_empty() && !non_preferred.is_empty() {
-                                let ccd0_name = "Preferred CCD";
-                                let ccd1_name = "Non-preferred CCD (parked in Gaming Mode)";
+                                let ccd0_name = if self.preferred_label.is_empty() { "Preferred cores".to_string() } else { self.preferred_label.clone() };
+                                let ccd1_name = if self.non_preferred_label.is_empty() { "Non-preferred cores (parked in Gaming Mode)".to_string() } else { format!("{} (parked in Gaming Mode)", self.non_preferred_label) };
                                 let pref_phys: Vec<u32> = preferred.iter()
                                     .copied().filter(|c| !smt_siblings.contains(c))
                                     .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
@@ -381,12 +391,14 @@ impl AffinityDialog {
                                 }
                             }
                             if !preferred.is_empty() {
-                                if ui.button("Preferred CCD").clicked() {
+                                let pref_btn = if self.preferred_label.is_empty() { "Preferred".to_string() } else { self.preferred_label.clone() };
+                                let npref_btn = if self.non_preferred_label.is_empty() { "Non-preferred".to_string() } else { self.non_preferred_label.clone() };
+                                if ui.button(&pref_btn).clicked() {
                                     for (i, cb) in checkboxes.iter_mut().enumerate() {
                                         *cb = preferred.contains(&(i as u32));
                                     }
                                 }
-                                if ui.button("Non-preferred CCD").clicked() {
+                                if ui.button(&npref_btn).clicked() {
                                     for (i, cb) in checkboxes.iter_mut().enumerate() {
                                         *cb = non_preferred.contains(&(i as u32));
                                     }
@@ -768,20 +780,29 @@ impl RuleEditDialog {
 
 // ── RulePresetsDialog ─────────────────────────────────────────────────────────
 
-pub const RULE_PRESETS: &[(&str, &str, &str, Option<&str>, Option<i32>, Option<i32>, Option<i32>)] = &[
-    ("Steam (CCD0)",        "steam",           "exact",    Some("0-7,16-23"),  None,    None, None),
-    ("steamwebhelper",      "steamwebhelper",  "exact",    Some("0-7,16-23"),  Some(5), None, None),
-    ("Wine / Proton",       "wine",            "contains", Some("0-7,16-23"),  None,    None, None),
-    ("Proton",              "proton",          "contains", Some("0-7,16-23"),  None,    None, None),
-    ("OBS Studio",          "obs",             "exact",    Some("0-7,16-23"),  Some(-1),None, None),
-    ("Discord",             "discord",         "contains", Some("8-15,24-31"),Some(5), None, None),
-    ("Firefox",             "firefox",         "contains", Some("8-15,24-31"),None,    None, None),
-    ("Chromium / Chrome",   "chrom",           "contains", Some("8-15,24-31"),None,    None, None),
-    ("KWin",                "kwin",            "contains", None,               None,    None, None),
-    ("Plasma Shell",        "plasmashell",     "exact",    Some("8-15,24-31"),Some(5), None, None),
-    ("Compiler (gcc/clang)","gcc",             "contains", Some("0-15,16-31"),None,    Some(2), Some(4)),
-    ("Archive / compress",  "7z",              "contains", Some("8-15,24-31"),Some(10),Some(3), None),
-];
+/// Generate rule presets dynamically based on detected CPU topology.
+pub fn rule_presets() -> Vec<(&'static str, &'static str, &'static str, Option<String>, Option<i32>, Option<i32>, Option<i32>)> {
+    let topo = detect_topology();
+    let (pref, npref) = if topo.has_asymmetry() {
+        (Some(cpuset_to_cpulist(&topo.preferred)), Some(cpuset_to_cpulist(&topo.non_preferred)))
+    } else {
+        (None, None)
+    };
+    vec![
+        ("Steam (preferred)",   "steam",           "exact",    pref.clone(),  None,    None, None),
+        ("steamwebhelper",      "steamwebhelper",  "exact",    pref.clone(),  Some(5), None, None),
+        ("Wine / Proton",       "wine",            "contains", pref.clone(),  None,    None, None),
+        ("Proton",              "proton",          "contains", pref.clone(),  None,    None, None),
+        ("OBS Studio",          "obs",             "exact",    pref.clone(),  Some(-1),None, None),
+        ("Discord",             "discord",         "contains", npref.clone(), Some(5), None, None),
+        ("Firefox",             "firefox",         "contains", npref.clone(), None,    None, None),
+        ("Chromium / Chrome",   "chrom",           "contains", npref.clone(), None,    None, None),
+        ("KWin",                "kwin",            "contains", None,          None,    None, None),
+        ("Plasma Shell",        "plasmashell",     "exact",    npref.clone(), Some(5), None, None),
+        ("Compiler (gcc/clang)","gcc",             "contains", None,          None,    Some(2), Some(4)),
+        ("Archive / compress",  "7z",              "contains", npref.clone(), Some(10),Some(3), None),
+    ]
+}
 
 pub struct RulePresetsDialog {
     pub open: bool,
@@ -832,8 +853,9 @@ impl RulePresetsDialog {
                                 ui.end_row();
                             });
                         });
+                        let presets = rule_presets();
                         egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                            for (i, (name, pat, match_type, aff, _nice, _ioc, _iol)) in RULE_PRESETS.iter().enumerate() {
+                            for (i, (name, pat, match_type, ref aff, _nice, _ioc, _iol)) in presets.iter().enumerate() {
                                 let is_sel = *selected == Some(i);
                                 let bg = if is_sel {
                                     ui.visuals().selection.bg_fill
@@ -852,7 +874,7 @@ impl RulePresetsDialog {
                                             ui.label(*name);
                                             ui.label(*pat);
                                             ui.label(*match_type);
-                                            ui.label(aff.unwrap_or(""));
+                                            ui.label(aff.as_deref().unwrap_or(""));
                                             ui.end_row();
                                         }).response;
                                     if resp.clicked() { *selected = Some(i); }
@@ -885,12 +907,13 @@ impl RulePresetsDialog {
             self.open = false;
             if accept {
                 if let Some(idx) = self.selected {
-                    let (name, pat, match_type, aff, nice, ioc, iol) = RULE_PRESETS[idx];
+                    let presets = rule_presets();
+                    let (name, pat, match_type, ref aff, nice, ioc, iol) = presets[idx];
                     let mut rule = Rule::new_empty();
                     rule.name = name.to_string();
                     rule.pattern = pat.to_string();
                     rule.match_type = match_type.to_string();
-                    rule.affinity = aff.map(|s| s.to_string());
+                    rule.affinity = aff.clone();
                     rule.nice = nice;
                     rule.ionice_class = ioc;
                     rule.ionice_level = iol;

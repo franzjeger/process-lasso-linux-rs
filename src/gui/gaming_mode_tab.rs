@@ -308,15 +308,35 @@ impl GamingModeTab {
 
             // ── Gaming Mode / CPU Parking ─────────────────────────────────
             ui.label(RichText::new("Gaming Mode — CPU Parking").strong());
-            ui.label("Parks non-preferred CPUs so the game initialises its thread pool correctly.\nMirrors gamemoderun: AMD X3D → parks non-V-Cache CCD, Intel Hybrid → parks E-cores.");
+            if let Some(ref topo) = self.topo {
+                if topo.has_asymmetry() {
+                    ui.label(format!(
+                        "Parks {} so the game initialises its thread pool on {} only.",
+                        topo.non_preferred_label, topo.preferred_label));
+                } else {
+                    ui.label("Parks non-preferred CPUs so the game initialises its thread pool correctly.");
+                }
+            } else {
+                ui.label("Parks non-preferred CPUs so the game initialises its thread pool correctly.");
+            }
             ui.add_space(4.0);
 
             let has_asym = self.topo.as_ref().map(|t| t.has_asymmetry()).unwrap_or(false);
 
             // Preferred CCD checkboxes
             if has_asym {
-                ui.label(RichText::new("Preferred CCD — Active Cores in Gaming Mode").strong());
-                ui.label("Uncheck any CPU to park it along with the non-preferred CCD.");
+                let pref_title = if let Some(ref t) = self.topo {
+                    format!("{} — Active Cores in Gaming Mode", t.preferred_label)
+                } else {
+                    "Preferred Cores — Active Cores in Gaming Mode".into()
+                };
+                let park_hint = if let Some(ref t) = self.topo {
+                    format!("Uncheck any CPU to park it along with the {}.", t.non_preferred_label)
+                } else {
+                    "Uncheck any CPU to park it along with the non-preferred cores.".into()
+                };
+                ui.label(RichText::new(pref_title).strong());
+                ui.label(park_hint);
 
                 let mut cpus: Vec<u32> = self.preferred_checks.keys().copied().collect();
                 cpus.sort_unstable();

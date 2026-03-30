@@ -67,6 +67,10 @@ pub struct CpuTopology {
     pub preferred: HashSet<u32>,
     pub non_preferred: HashSet<u32>,
     pub description: String,
+    /// Short human label for preferred cores, e.g. "P-cores (5.5 GHz)" or "V-Cache CCD (96 MB L3)"
+    pub preferred_label: String,
+    /// Short human label for non-preferred cores, e.g. "E-cores (4.9 GHz)" or "Standard CCD (32 MB L3)"
+    pub non_preferred_label: String,
 }
 
 impl CpuTopology {
@@ -76,11 +80,32 @@ impl CpuTopology {
             preferred: all_cpus,
             non_preferred: HashSet::new(),
             description: "Uniform topology (no asymmetry detected). All CPUs equal.".into(),
+            preferred_label: String::new(),
+            non_preferred_label: String::new(),
         }
     }
 
     pub fn has_asymmetry(&self) -> bool {
         !self.non_preferred.is_empty()
+    }
+
+    /// Button label for preferred cores, e.g. "P-cores 0-7 (5.5 GHz)"
+    pub fn preferred_button_label(&self) -> String {
+        format!("{} ({})", self.preferred_label, cpuset_to_cpulist(&self.preferred))
+    }
+
+    /// Button label for non-preferred cores, e.g. "E-cores 8-23 (4.9 GHz)"
+    pub fn non_preferred_button_label(&self) -> String {
+        format!("{} ({})", self.non_preferred_label, cpuset_to_cpulist(&self.non_preferred))
+    }
+
+    /// Short kind label for display
+    pub fn kind_label(&self) -> &'static str {
+        match self.kind {
+            TopologyKind::AmdX3D => "AMD X3D",
+            TopologyKind::IntelHybrid => "Intel Hybrid",
+            TopologyKind::Uniform => "Symmetric",
+        }
     }
 }
 
@@ -174,6 +199,8 @@ fn detect_amd_x3d() -> Option<CpuTopology> {
                     cpuset_to_cpulist(&online_set),
                     cpuset_to_cpulist(&offline),
                 ),
+                preferred_label: format!("V-Cache CCD ({} MB L3)", online_kb / 1024),
+                non_preferred_label: "Standard CCD (parked)".into(),
             });
         }
         return None; // genuine uniform L3
@@ -195,6 +222,8 @@ fn detect_amd_x3d() -> Option<CpuTopology> {
             min_kb / 1024,
             cpuset_to_cpulist(&non_preferred),
         ),
+        preferred_label: format!("V-Cache CCD ({} MB L3)", max_kb / 1024),
+        non_preferred_label: format!("Standard CCD ({} MB L3)", min_kb / 1024),
     })
 }
 
@@ -239,6 +268,8 @@ fn detect_intel_hybrid() -> Option<CpuTopology> {
             min_f as f64 / 1_000_000.0,
             cpuset_to_cpulist(&non_preferred),
         ),
+        preferred_label: format!("P-cores ({:.1} GHz)", max_f as f64 / 1_000_000.0),
+        non_preferred_label: format!("E-cores ({:.1} GHz)", min_f as f64 / 1_000_000.0),
     })
 }
 
