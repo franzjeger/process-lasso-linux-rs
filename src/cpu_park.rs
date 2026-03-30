@@ -46,6 +46,18 @@ case "$1" in
         [[ "$3" =~ ^[0-9]+$ ]]   || exit 1
         renice -n "$2" -p "$3"
         ;;
+    cpu-governor)
+        [[ "$2" =~ ^[a-z_-]+$ ]] || exit 1
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            echo "$2" > "$f" 2>/dev/null || true
+        done
+        ;;
+    cpu-epp)
+        [[ "$2" =~ ^[a-z_-]+$ ]] || exit 1
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+            echo "$2" > "$f" 2>/dev/null || true
+        done
+        ;;
     *)
         echo "Unknown command: $1" >&2; exit 1 ;;
 esac
@@ -356,7 +368,7 @@ pub fn is_helper_current() -> bool {
         return false;
     }
     fs::read_to_string(HELPER)
-        .map(|s| s.contains("renice-pid"))
+        .map(|s| s.contains("cpu-governor"))
         .unwrap_or(false)
 }
 

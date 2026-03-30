@@ -365,6 +365,7 @@ fn read_available_governors() -> Vec<String> {
 }
 
 fn set_governor(governor: &str) -> Result<(), String> {
+    // Try direct sysfs write first, fall back to privileged helper.
     let cpu_count = crate::utils::get_cpu_count();
     let mut errors = 0usize;
     for i in 0..cpu_count {
@@ -374,7 +375,15 @@ fn set_governor(governor: &str) -> Result<(), String> {
         }
     }
     if errors == cpu_count as usize {
-        Err("Permission denied — try running as root or add a udev rule".into())
+        // Fall back to privileged helper
+        let output = std::process::Command::new("sudo")
+            .args([crate::cpu_park::HELPER, "cpu-governor", governor])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+            Err(e) => Err(format!("Helper failed: {e}")),
+        }
     } else {
         Ok(())
     }
@@ -395,6 +404,7 @@ fn read_available_epps() -> Vec<String> {
 }
 
 fn set_epp(epp: &str) -> Result<(), String> {
+    // Try direct sysfs write first, fall back to privileged helper.
     let cpu_count = crate::utils::get_cpu_count();
     let mut errors = 0usize;
     for i in 0..cpu_count {
@@ -406,7 +416,15 @@ fn set_epp(epp: &str) -> Result<(), String> {
         }
     }
     if errors == cpu_count as usize {
-        Err("Permission denied".into())
+        // Fall back to privileged helper
+        let output = std::process::Command::new("sudo")
+            .args([crate::cpu_park::HELPER, "cpu-epp", epp])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+            Err(e) => Err(format!("Helper failed: {e}")),
+        }
     } else {
         Ok(())
     }
