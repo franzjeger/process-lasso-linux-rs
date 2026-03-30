@@ -25,7 +25,8 @@ install: build install-icons
 	@echo "Installing binary…"
 	install -Dm755 $(BINARY) $(BINDIR)/argus-lasso
 	@echo "Installing .desktop entry…"
-	install -Dm644 dist/argus-lasso.desktop $(DESKTOPDIR)/argus-lasso.desktop
+	sed 's|^Exec=argus-lasso|Exec=$(BINDIR)/argus-lasso|' dist/argus-lasso.desktop > $(DESKTOPDIR)/argus-lasso.desktop
+	chmod 644 $(DESKTOPDIR)/argus-lasso.desktop
 	@echo "Installing systemd user service…"
 	install -Dm644 dist/argus-lasso.service $(SYSTEMDDIR)/argus-lasso.service
 	systemctl --user daemon-reload

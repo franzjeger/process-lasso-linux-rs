@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Argus-Lasso
 Comment=Linux process manager with CPU affinity, nice priority, ProBalance, and HW monitoring
-Exec=/home/frank/.local/bin/argus-lasso
+Exec=argus-lasso
 Icon=argus-lasso
 Terminal=false
 Type=Application
