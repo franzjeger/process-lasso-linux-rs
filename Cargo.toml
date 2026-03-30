@@ -1,6 +1,6 @@
 [package]
 name = "argus-lasso"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2021"
 description = "Argus-Lasso — Linux process manager with CPU affinity, ProBalance, Gaming Mode, and HW monitoring"
 authors = ["franzjeger"]

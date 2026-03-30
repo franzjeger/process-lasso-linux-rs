@@ -330,14 +330,31 @@ where
 
         let mut sensors: Vec<Reading> = Vec::new();
 
-        // Temperature
-        for i in 1..=24u32 {
-            let input = path.join(format!("temp{i}_input"));
-            if !input.exists() { continue; }
-            if let Some(val) = read_millidegrees(&input) {
-                let lbl_file = path.join(format!("temp{i}_label"));
-                let lbl = read_trimmed(&lbl_file).unwrap_or_else(|| format!("Temp {i}"));
-                sensors.push((intern(lbl), "°C", val));
+        // Temperature – discover indices dynamically (coretemp on Arrow Lake
+        // uses non-contiguous indices up to temp46+).
+        {
+            let mut temp_ids: Vec<u32> = Vec::new();
+            if let Ok(dir) = std::fs::read_dir(&path) {
+                for de in dir.flatten() {
+                    let fname = de.file_name();
+                    let s = fname.to_string_lossy();
+                    if let Some(rest) = s.strip_prefix("temp") {
+                        if let Some(num_s) = rest.strip_suffix("_input") {
+                            if let Ok(n) = num_s.parse::<u32>() {
+                                temp_ids.push(n);
+                            }
+                        }
+                    }
+                }
+            }
+            temp_ids.sort_unstable();
+            for i in temp_ids {
+                let input = path.join(format!("temp{i}_input"));
+                if let Some(val) = read_millidegrees(&input) {
+                    let lbl_file = path.join(format!("temp{i}_label"));
+                    let lbl = read_trimmed(&lbl_file).unwrap_or_else(|| format!("Temp {i}"));
+                    sensors.push((intern(lbl), "°C", val));
+                }
             }
         }
 
