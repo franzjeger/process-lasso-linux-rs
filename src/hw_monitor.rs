@@ -211,6 +211,11 @@ fn collect_all(
 // ── hwmon: per-category collectors ───────────────────────────────────────────
 
 fn collect_hwmon_cpu() -> Vec<GroupReading> {
+    // Build core_id → logical CPU mapping for friendly labels.
+    let core_id_map = build_core_id_to_cpu_map();
+    // Detect topology for P/E labels.
+    let topo = crate::cpu_park::detect_topology();
+
     collect_hwmon_where(|hw_name| matches!(hw_name, "k10temp" | "zenpower" | "coretemp"), |_path, hw_name| {
         let label = match hw_name {
             "k10temp"  => "AMD CPU [k10temp]",
@@ -219,6 +224,45 @@ fn collect_hwmon_cpu() -> Vec<GroupReading> {
         };
         ("CPU", label.to_string())
     })
+    .into_iter()
+    .map(|(cat, name, sensors)| {
+        let remapped: Vec<Reading> = sensors.into_iter().map(|(label, unit, value)| {
+            // Remap "Core N" → "CPU X (P-core)" / "CPU Y (E-core)"
+            if let Some(core_id) = label.strip_prefix("Core ").and_then(|s| s.parse::<u32>().ok()) {
+                if let Some(&cpu_num) = core_id_map.get(&core_id) {
+                    let kind = if topo.has_asymmetry() {
+                        if topo.preferred.contains(&cpu_num) { " (P)" } else { " (E)" }
+                    } else { "" };
+                    return (intern(format!("CPU {cpu_num}{kind}")), unit, value);
+                }
+            }
+            (label, unit, value)
+        }).collect();
+        (cat, name, remapped)
+    })
+    .collect()
+}
+
+/// Map physical core_id → lowest logical CPU number.
+fn build_core_id_to_cpu_map() -> HashMap<u32, u32> {
+    let mut map: HashMap<u32, u32> = HashMap::new();
+    let cpu_dir = Path::new("/sys/devices/system/cpu");
+    if let Ok(entries) = std::fs::read_dir(cpu_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if let Some(cpu_num) = s.strip_prefix("cpu").and_then(|n| n.parse::<u32>().ok()) {
+                let core_path = entry.path().join("topology/core_id");
+                if let Some(core_id) = read_u64(&core_path).map(|v| v as u32) {
+                    // Keep the lowest CPU number for each core_id
+                    map.entry(core_id)
+                        .and_modify(|existing| { if cpu_num < *existing { *existing = cpu_num; } })
+                        .or_insert(cpu_num);
+                }
+            }
+        }
+    }
+    map
 }
 
 fn collect_hwmon_memory() -> Vec<GroupReading> {
@@ -406,6 +450,7 @@ fn collect_nvidia_smi() -> Vec<GroupReading> {
 
 fn collect_cpu_freqs() -> Option<GroupReading> {
     let cpu_dir = Path::new("/sys/devices/system/cpu");
+    let topo = crate::cpu_park::detect_topology();
     let mut entries: Vec<_> = std::fs::read_dir(cpu_dir)
         .ok()?
         .flatten()
@@ -424,7 +469,10 @@ fn collect_cpu_freqs() -> Option<GroupReading> {
         let num: u32 = entry.file_name().to_string_lossy()[3..].parse().unwrap_or(0);
         let freq_path = entry.path().join("cpufreq/scaling_cur_freq");
         if let Some(khz) = read_u64(&freq_path) {
-            sensors.push((intern(format!("CPU {num}")), "MHz", khz as f32 / 1000.0));
+            let kind = if topo.has_asymmetry() {
+                if topo.preferred.contains(&num) { " (P)" } else { " (E)" }
+            } else { "" };
+            sensors.push((intern(format!("CPU {num}{kind}")), "MHz", khz as f32 / 1000.0));
         }
     }
 
