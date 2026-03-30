@@ -227,8 +227,43 @@ fn detect_amd_x3d() -> Option<CpuTopology> {
     })
 }
 
-/// Detect Intel Hybrid: P-cores have higher max freq than E-cores.
+/// Detect Intel Hybrid: P-cores vs E-cores.
+/// Primary: kernel sysfs cpu_core/cpu_atom (reliable, available since Linux 5.18+).
+/// Fallback: frequency-based classification using the midpoint between max and min freq.
 fn detect_intel_hybrid() -> Option<CpuTopology> {
+    // ── Primary: kernel cpu_core / cpu_atom classification ────────────────
+    let p_cores = read_cpulist_file("/sys/devices/cpu_core/cpus");
+    let e_cores = read_cpulist_file("/sys/devices/cpu_atom/cpus");
+    if let (Some(p), Some(e)) = (p_cores, e_cores) {
+        if !p.is_empty() && !e.is_empty() {
+            // Read max freq for labels (best-effort)
+            let p_max = p.iter().filter_map(|&c| {
+                fs::read_to_string(format!("/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq"))
+                    .ok().and_then(|s| s.trim().parse::<u64>().ok())
+            }).max().unwrap_or(0);
+            let e_max = e.iter().filter_map(|&c| {
+                fs::read_to_string(format!("/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq"))
+                    .ok().and_then(|s| s.trim().parse::<u64>().ok())
+            }).max().unwrap_or(0);
+
+            return Some(CpuTopology {
+                kind: TopologyKind::IntelHybrid,
+                preferred: p.clone(),
+                non_preferred: e.clone(),
+                description: format!(
+                    "Intel Hybrid detected. P-cores ({:.1} GHz max): CPUs {}. E-cores ({:.1} GHz max): CPUs {}.",
+                    p_max as f64 / 1_000_000.0,
+                    cpuset_to_cpulist(&p),
+                    e_max as f64 / 1_000_000.0,
+                    cpuset_to_cpulist(&e),
+                ),
+                preferred_label: format!("P-cores ({:.1} GHz)", p_max as f64 / 1_000_000.0),
+                non_preferred_label: format!("E-cores ({:.1} GHz)", e_max as f64 / 1_000_000.0),
+            });
+        }
+    }
+
+    // ── Fallback: frequency-based detection ──────────────────────────────
     let present = present_cpus();
     let mut max_freq: HashMap<u32, u64> = HashMap::new();
 
@@ -252,8 +287,9 @@ fn detect_intel_hybrid() -> Option<CpuTopology> {
 
     let max_f = *freqs.iter().max().unwrap();
     let min_f = *freqs.iter().min().unwrap();
-    // P-cores = anything ≥ 80% of max freq (handles slight variance)
-    let threshold = (max_f as f64 * 0.80) as u64;
+    // Use midpoint between highest and lowest freq as threshold —
+    // much more robust than 80% of max for close P/E freq gaps.
+    let threshold = (max_f + min_f) / 2;
     let preferred: HashSet<u32> = max_freq.iter().filter(|(_, &f)| f >= threshold).map(|(&c, _)| c).collect();
     let non_preferred: HashSet<u32> = max_freq.iter().filter(|(_, &f)| f < threshold).map(|(&c, _)| c).collect();
 
