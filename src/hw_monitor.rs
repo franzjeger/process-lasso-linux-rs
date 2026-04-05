@@ -185,8 +185,8 @@ fn collect_all(
     if let Some(g) = collect_cpu_freqs()  { out.push(g); }
     if let Some(g) = collect_load_avg()   { out.push(g); }
 
-    // GPU: prefer nvidia-smi; fall back to amdgpu hwmon
-    let gpu = collect_nvidia_smi();
+    // GPU: prefer NVML (NVIDIA); fall back to amdgpu hwmon
+    let gpu = collect_nvidia_nvml();
     if !gpu.is_empty() {
         out.extend(gpu);
     } else {
@@ -227,12 +227,10 @@ fn collect_hwmon_cpu() -> Vec<GroupReading> {
     .into_iter()
     .map(|(cat, name, sensors)| {
         let remapped: Vec<Reading> = sensors.into_iter().map(|(label, unit, value)| {
-            // Remap "Core N" → "CPU X (P-core)" / "CPU Y (E-core)"
+            // Remap "Core N" → "CPU X (suffix)" using topology-aware labels
             if let Some(core_id) = label.strip_prefix("Core ").and_then(|s| s.parse::<u32>().ok()) {
                 if let Some(&cpu_num) = core_id_map.get(&core_id) {
-                    let kind = if topo.has_asymmetry() {
-                        if topo.preferred.contains(&cpu_num) { " (P)" } else { " (E)" }
-                    } else { "" };
+                    let kind = core_kind_suffix(&topo, cpu_num);
                     return (intern(format!("CPU {cpu_num}{kind}")), unit, value);
                 }
             }
@@ -411,40 +409,55 @@ where
     groups
 }
 
-// ── NVIDIA GPU via nvidia-smi ─────────────────────────────────────────────────
+// ── NVIDIA GPU via NVML ──────────────────────────────────────────────────────
 
-fn collect_nvidia_smi() -> Vec<GroupReading> {
-    let output = std::process::Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=name,temperature.gpu,power.draw,\
-             clocks.current.graphics,clocks.current.memory,\
-             utilization.gpu,utilization.memory,memory.used,memory.total",
-            "--format=csv,noheader,nounits",
-        ])
-        .output();
+fn collect_nvidia_nvml() -> Vec<GroupReading> {
+    use std::sync::Mutex;
 
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        _ => return Vec::new(),
+    // Keep NVML handle alive across calls (init is expensive, ~50ms).
+    static NVML: Mutex<Option<nvml_wrapper::Nvml>> = Mutex::new(None);
+
+    let mut guard = NVML.lock().unwrap();
+    let nvml = match guard.as_ref() {
+        Some(n) => n,
+        None => {
+            match nvml_wrapper::Nvml::init() {
+                Ok(n) => { *guard = Some(n); guard.as_ref().unwrap() }
+                Err(_) => return Vec::new(),
+            }
+        }
     };
 
-    let text = String::from_utf8_lossy(&output.stdout);
+    let count = match nvml.device_count() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
     let mut groups = Vec::new();
 
-    for line in text.lines() {
-        let p: Vec<&str> = line.splitn(9, ", ").collect();
-        if p.len() < 9 { continue; }
+    for i in 0..count {
+        let dev = match nvml.device_by_index(i) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
 
-        let gpu_name   = p[0].trim();
-        let temp:  f32 = p[1].trim().parse().unwrap_or(0.0);
-        let power: f32 = p[2].trim().parse().unwrap_or(0.0);
-        let g_clk: f32 = p[3].trim().parse().unwrap_or(0.0);
-        let m_clk: f32 = p[4].trim().parse().unwrap_or(0.0);
-        let g_util: f32 = p[5].trim().parse().unwrap_or(0.0);
-        let m_util: f32 = p[6].trim().parse().unwrap_or(0.0);
-        // nvidia-smi reports memory in MiB
-        let m_used:  f32 = p[7].trim().parse::<f32>().unwrap_or(0.0) / 1024.0;
-        let m_total: f32 = p[8].trim().parse::<f32>().unwrap_or(0.0) / 1024.0;
+        let gpu_name = dev.name().unwrap_or_else(|_| format!("GPU {i}"));
+
+        let temp = dev.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu)
+            .map(|t| t as f32).unwrap_or(0.0);
+        let power = dev.power_usage().map(|mw| mw as f32 / 1000.0).unwrap_or(0.0);
+        let g_clk = dev.clock_info(nvml_wrapper::enum_wrappers::device::Clock::Graphics)
+            .map(|mhz| mhz as f32).unwrap_or(0.0);
+        let m_clk = dev.clock_info(nvml_wrapper::enum_wrappers::device::Clock::Memory)
+            .map(|mhz| mhz as f32).unwrap_or(0.0);
+
+        let (g_util, m_util) = dev.utilization_rates()
+            .map(|u| (u.gpu as f32, u.memory as f32))
+            .unwrap_or((0.0, 0.0));
+
+        let mem = dev.memory_info();
+        let m_used  = mem.as_ref().map(|m| m.used as f32 / (1024.0 * 1024.0 * 1024.0)).unwrap_or(0.0);
+        let m_total = mem.as_ref().map(|m| m.total as f32 / (1024.0 * 1024.0 * 1024.0)).unwrap_or(0.0);
 
         let sensors: Vec<Reading> = vec![
             ("Temperature",  "°C",  temp),
@@ -457,7 +470,7 @@ fn collect_nvidia_smi() -> Vec<GroupReading> {
             ("VRAM Total",   "GiB", m_total),
         ];
 
-        groups.push(("GPU", intern(gpu_name).to_string(), sensors));
+        groups.push(("GPU", intern(&gpu_name).to_string(), sensors));
     }
 
     groups
@@ -486,9 +499,7 @@ fn collect_cpu_freqs() -> Option<GroupReading> {
         let num: u32 = entry.file_name().to_string_lossy()[3..].parse().unwrap_or(0);
         let freq_path = entry.path().join("cpufreq/scaling_cur_freq");
         if let Some(khz) = read_u64(&freq_path) {
-            let kind = if topo.has_asymmetry() {
-                if topo.preferred.contains(&num) { " (P)" } else { " (E)" }
-            } else { "" };
+            let kind = core_kind_suffix(&topo, num);
             sensors.push((intern(format!("CPU {num}{kind}")), "MHz", khz as f32 / 1000.0));
         }
     }
@@ -697,6 +708,23 @@ fn dimm_slot_name(hwmon_path: &Path) -> String {
         }
     }
     "DDR5".into()
+}
+
+/// Topology-aware core suffix: " (V-Cache)" / " (Std)" for AMD X3D,
+/// " (P)" / " (E)" for Intel Hybrid, "" for uniform.
+fn core_kind_suffix(topo: &crate::cpu_park::CpuTopology, cpu: u32) -> &'static str {
+    if !topo.has_asymmetry() {
+        return "";
+    }
+    match topo.kind {
+        crate::cpu_park::TopologyKind::AmdX3D => {
+            if topo.preferred.contains(&cpu) { " (V-Cache)" } else { " (Std)" }
+        }
+        crate::cpu_park::TopologyKind::IntelHybrid => {
+            if topo.preferred.contains(&cpu) { " (P)" } else { " (E)" }
+        }
+        crate::cpu_park::TopologyKind::Uniform => "",
+    }
 }
 
 /// Intern dynamic strings as &'static str via a leak-once cache.

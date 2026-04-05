@@ -124,16 +124,15 @@ impl AppState {
 }
 
 fn chrono_ts() -> String {
-    // Simple HH:MM:SS without pulling in chrono (use std only)
+    // HH:MM:SS in local time via libc::localtime_r
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let h = (secs / 3600) % 24;
-    let m = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{h:02}:{m:02}:{s:02}")
+    let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { nix::libc::localtime_r(&secs, &mut tm) };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 // ── Daemon thread ─────────────────────────────────────────────────────────────
@@ -570,6 +569,9 @@ fn collect_cpu_percents() -> Vec<f32> {
     let new_stats = read_percpu_stats();
     let mut result = vec![0.0f32; total_cpus];
 
+    let mut online_sorted: Vec<u32> = online.iter().copied().collect();
+    online_sorted.sort_unstable();
+
     let mut prev_guard = PREV.lock().unwrap();
     if let Some((ref prev_stats, _)) = *prev_guard {
         for (cpu_idx, (prev, new)) in prev_stats.iter().zip(new_stats.iter()).enumerate() {
@@ -583,9 +585,6 @@ fn collect_cpu_percents() -> Vec<f32> {
             } else {
                 0.0
             };
-            // Map procfs cpu index to actual cpu number (only online CPUs)
-            let mut online_sorted: Vec<u32> = online.iter().copied().collect();
-            online_sorted.sort_unstable();
             if let Some(&cpu_num) = online_sorted.get(cpu_idx) {
                 if (cpu_num as usize) < total_cpus {
                     result[cpu_num as usize] = pct;
