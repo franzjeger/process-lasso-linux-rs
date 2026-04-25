@@ -9,6 +9,17 @@ use std::collections::HashMap;
 use crate::config::ProBalanceConfig;
 use crate::utils;
 
+/// Pure exempt-list check: case-insensitive substring match against any pattern.
+/// Empty patterns are ignored so a stray blank entry in config doesn't exempt
+/// every process.
+fn is_exempt_match(name: &str, patterns: &[String]) -> bool {
+    let lower = name.to_lowercase();
+    patterns
+        .iter()
+        .filter(|p| !p.is_empty())
+        .any(|p| lower.contains(&p.to_lowercase()))
+}
+
 // ── Per-process state ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,11 +107,7 @@ impl ProBalance {
     }
 
     fn is_exempt(&self, name: &str) -> bool {
-        let lower = name.to_lowercase();
-        self.cfg
-            .exempt_patterns
-            .iter()
-            .any(|p| lower.contains(&p.to_lowercase()))
+        is_exempt_match(name, &self.cfg.exempt_patterns)
     }
 
     /// Called every ~1s with the current process snapshot.
@@ -197,6 +204,14 @@ impl ProBalance {
             .collect()
     }
 
+    /// Test-only: count how many PIDs are currently being tracked. Exposed via
+    /// `pub(crate)` so we can verify exempt processes are skipped in unit tests
+    /// without exercising the syscall path.
+    #[cfg(test)]
+    pub(crate) fn tracked_pid_count(&self) -> usize {
+        self.states.len()
+    }
+
     /// Return detailed info for all currently throttled processes.
     pub fn throttle_infos(&self, snapshot: &[ProcSnapshot]) -> Vec<ThrottleInfo> {
         let name_map: HashMap<u32, (&str, f32)> = snapshot
@@ -219,5 +234,100 @@ impl ProBalance {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ProBalanceConfig;
+
+    fn pat(s: &str) -> Vec<String> { vec![s.into()] }
+
+    #[test]
+    fn exempt_match_is_case_insensitive() {
+        assert!(is_exempt_match("KWin", &pat("kwin")));
+        assert!(is_exempt_match("kwin_wayland", &pat("KWIN")));
+    }
+
+    #[test]
+    fn exempt_match_is_substring_not_anchored() {
+        // "systemd" should match "systemd-journald" too — this is intentional.
+        assert!(is_exempt_match("systemd-journald", &pat("systemd")));
+        assert!(is_exempt_match("dbus-systemd-helper", &pat("systemd")));
+    }
+
+    #[test]
+    fn exempt_match_no_pattern_means_not_exempt() {
+        assert!(!is_exempt_match("anything", &[]));
+    }
+
+    #[test]
+    fn exempt_match_blank_pattern_is_ignored() {
+        // Empty patterns must not exempt every process — guards against a stray
+        // blank entry in the exempt list config nuking ProBalance silently.
+        assert!(!is_exempt_match("steam", &pat("")));
+        // But a real pattern alongside the blank still works.
+        let mixed = ["".to_string(), "steam".to_string()];
+        assert!(is_exempt_match("steam", &mixed));
+    }
+
+    #[test]
+    fn exempt_match_unrelated_name() {
+        assert!(!is_exempt_match("firefox", &pat("kwin")));
+    }
+
+    #[test]
+    fn tick_disabled_is_noop() {
+        let mut cfg = ProBalanceConfig::default();
+        cfg.enabled = false;
+        let mut pb = ProBalance::new(cfg);
+        let snap = vec![ProcSnapshot {
+            pid: 99999, name: "anything".into(), cpu_percent: 99.0, nice: 0,
+        }];
+        pb.tick(&snap, 1.0);
+        // Disabled → state map stays empty, no syscalls attempted.
+        assert_eq!(pb.tracked_pid_count(), 0);
+    }
+
+    #[test]
+    fn tick_skips_exempt_processes_without_tracking() {
+        let cfg = ProBalanceConfig {
+            exempt_patterns: vec!["kwin".into()],
+            ..Default::default()
+        };
+        let mut pb = ProBalance::new(cfg);
+        let snap = vec![ProcSnapshot {
+            pid: 4242, name: "kwin_wayland".into(), cpu_percent: 99.0, nice: 0,
+        }];
+        pb.tick(&snap, 10.0);
+        // Exempt processes are skipped entirely — no entry created in state map.
+        assert_eq!(pb.tracked_pid_count(), 0);
+    }
+
+    #[test]
+    fn tick_tracks_non_exempt_below_threshold_without_throttling() {
+        // Below threshold → entry exists but stays Normal, no syscalls fire.
+        let mut pb = ProBalance::new(ProBalanceConfig::default());
+        let snap = vec![ProcSnapshot {
+            pid: 4242, name: "myapp".into(), cpu_percent: 10.0, nice: 0,
+        }];
+        pb.tick(&snap, 1.0);
+        assert_eq!(pb.tracked_pid_count(), 1);
+        assert!(pb.throttled_pids().is_empty());
+    }
+
+    #[test]
+    fn tick_evicts_dead_pids() {
+        let mut pb = ProBalance::new(ProBalanceConfig::default());
+        let snap1 = vec![ProcSnapshot {
+            pid: 4242, name: "myapp".into(), cpu_percent: 10.0, nice: 0,
+        }];
+        pb.tick(&snap1, 1.0);
+        assert_eq!(pb.tracked_pid_count(), 1);
+
+        // PID disappears from snapshot → state entry should be cleaned up.
+        pb.tick(&[], 1.0);
+        assert_eq!(pb.tracked_pid_count(), 0);
     }
 }

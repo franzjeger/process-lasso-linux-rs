@@ -248,3 +248,143 @@ impl Default for RuleEngine {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule_with(pattern: &str, match_type: &str) -> Rule {
+        let mut r = Rule::new_empty();
+        r.pattern = pattern.into();
+        r.match_type = match_type.into();
+        r.refresh_regex();
+        r
+    }
+
+    #[test]
+    fn match_contains_is_case_insensitive() {
+        let r = rule_with("Chrome", "contains");
+        assert!(r.matches("google-chrome"));
+        assert!(r.matches("CHROME.exe"));
+        assert!(r.matches("chromium-but-contains-chrome"));
+        assert!(!r.matches("firefox"));
+    }
+
+    #[test]
+    fn match_exact_is_case_sensitive_and_full_string() {
+        let r = rule_with("steam", "exact");
+        assert!(r.matches("steam"));
+        assert!(!r.matches("Steam"));
+        assert!(!r.matches("steamwebhelper"));
+        assert!(!r.matches("not-steam"));
+    }
+
+    #[test]
+    fn match_regex_anchored_or_not() {
+        let r = rule_with(r"^node(\.exe)?$", "regex");
+        assert!(r.matches("node"));
+        assert!(r.matches("node.exe"));
+        assert!(!r.matches("nodejs"));
+        assert!(!r.matches("my-node"));
+    }
+
+    #[test]
+    fn match_regex_invalid_pattern_returns_false() {
+        // Invalid regex should fail safe (no match) rather than panic.
+        let r = rule_with("[unclosed", "regex");
+        assert!(!r.matches("anything"));
+    }
+
+    #[test]
+    fn empty_pattern_never_matches() {
+        let r = rule_with("", "contains");
+        assert!(!r.matches("anything"));
+    }
+
+    #[test]
+    fn disabled_rule_never_matches() {
+        let mut r = rule_with("chrome", "contains");
+        r.enabled = false;
+        assert!(!r.matches("chrome"));
+    }
+
+    #[test]
+    fn refresh_regex_recompiles_on_pattern_change() {
+        let mut r = rule_with("foo", "regex");
+        assert!(r.matches("foo"));
+        r.pattern = "bar".into();
+        r.refresh_regex();
+        assert!(r.matches("bar"));
+        assert!(!r.matches("foo"));
+    }
+
+    #[test]
+    fn engine_apply_skips_non_matching_rules() {
+        // Pure matching coverage — no syscalls invoked because no rules match.
+        let mut engine = RuleEngine::new();
+        let cfg = crate::config::RuleConfig {
+            rule_id: "1".into(),
+            name: "test".into(),
+            pattern: "chrome".into(),
+            match_type: "contains".into(),
+            affinity: None,
+            nice: None,
+            ionice_class: None,
+            ionice_level: None,
+            enabled: true,
+        };
+        engine.load_rules(&[cfg]);
+        // Non-matching name → empty actions, no syscalls attempted
+        let actions = engine.apply_to_process(0, "firefox");
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn rule_config_json_round_trip() {
+        let cfg = crate::config::RuleConfig {
+            rule_id: "abc-123".into(),
+            name: "Browser".into(),
+            pattern: "chrome".into(),
+            match_type: "contains".into(),
+            affinity: Some("0-3".into()),
+            nice: Some(5),
+            ionice_class: Some(2),
+            ionice_level: Some(4),
+            enabled: true,
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: crate::config::RuleConfig =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.rule_id, cfg.rule_id);
+        assert_eq!(back.pattern, cfg.pattern);
+        assert_eq!(back.match_type, cfg.match_type);
+        assert_eq!(back.affinity, cfg.affinity);
+        assert_eq!(back.nice, cfg.nice);
+        assert_eq!(back.ionice_class, cfg.ionice_class);
+        assert_eq!(back.ionice_level, cfg.ionice_level);
+        assert_eq!(back.enabled, cfg.enabled);
+    }
+
+    #[test]
+    fn rule_round_trip_via_from_to_config_preserves_state() {
+        let cfg = crate::config::RuleConfig {
+            rule_id: "id".into(),
+            name: "Game".into(),
+            pattern: r"^game\.exe$".into(),
+            match_type: "regex".into(),
+            affinity: Some("0,2,4".into()),
+            nice: Some(-5),
+            ionice_class: None,
+            ionice_level: None,
+            enabled: false,
+        };
+        let rule = Rule::from_config(&cfg);
+        let back = rule.to_config();
+        assert_eq!(back.rule_id, cfg.rule_id);
+        assert_eq!(back.pattern, cfg.pattern);
+        assert_eq!(back.match_type, cfg.match_type);
+        assert_eq!(back.affinity, cfg.affinity);
+        assert_eq!(back.nice, cfg.nice);
+        assert_eq!(back.enabled, cfg.enabled);
+    }
+}
