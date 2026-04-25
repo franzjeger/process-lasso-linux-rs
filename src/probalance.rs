@@ -74,6 +74,85 @@ pub struct ProcSnapshot {
     pub nice: i32,
 }
 
+// ── State-machine kernel (pure, syscall-free) ────────────────────────────────
+//
+// `tick()` splits cleanly into three steps:
+//   1. decide()           — advance counters, choose an action
+//   2. utils::set_nice()  — the only impure call
+//   3. finalize_*()       — commit the action's effect on the entry
+//
+// The split exists so the state machine can be unit-tested without touching
+// any process. Tests drive decide() directly and simulate syscall outcomes
+// by passing `ok = true` / `false` into the finalize helpers.
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Decision {
+    None,
+    Throttle { new_nice: i32 },
+    Restore { original_nice: i32 },
+}
+
+/// Pure state-machine step. Mutates `entry` counters and returns the action
+/// to apply. Does NOT change `entry.state` — that's the finalize_*'s job.
+fn decide(
+    entry: &mut ProcEntry,
+    proc: &ProcSnapshot,
+    tick_seconds: f32,
+    cfg: &ProBalanceConfig,
+) -> Decision {
+    match entry.state {
+        ProcState::Normal => {
+            if proc.cpu_percent > cfg.cpu_threshold_percent {
+                entry.consecutive_high += tick_seconds;
+                if entry.consecutive_high >= cfg.consecutive_seconds {
+                    let new_nice = (proc.nice + cfg.nice_adjustment).min(cfg.nice_floor);
+                    // Capture the pre-throttle nice so we can restore it later,
+                    // even if the syscall fails and we retry on a future tick.
+                    entry.original_nice = Some(proc.nice);
+                    return Decision::Throttle { new_nice };
+                }
+            } else {
+                entry.consecutive_high = (entry.consecutive_high - tick_seconds).max(0.0);
+            }
+        }
+        ProcState::Throttled => {
+            if proc.cpu_percent < cfg.restore_threshold_percent {
+                entry.consecutive_low += tick_seconds;
+                if entry.consecutive_low >= cfg.restore_hysteresis_seconds {
+                    let orig = entry.original_nice.unwrap_or(0);
+                    return Decision::Restore { original_nice: orig };
+                }
+            } else {
+                entry.consecutive_low = 0.0;
+            }
+        }
+    }
+    Decision::None
+}
+
+/// Apply the result of a Throttle decision after the set_nice syscall.
+/// On failure the entry stays Normal with consecutive_high intact, so the
+/// next tick can retry without re-accumulating the trigger window.
+fn finalize_throttle(entry: &mut ProcEntry, new_nice: i32, syscall_ok: bool) {
+    if syscall_ok {
+        entry.state = ProcState::Throttled;
+        entry.throttle_nice = Some(new_nice);
+        entry.consecutive_high = 0.0;
+        entry.consecutive_low = 0.0;
+    }
+}
+
+/// Apply the result of a Restore decision. State always returns to Normal —
+/// even if set_nice failed, we shouldn't keep marking the process as throttled
+/// when our own bookkeeping is the only thing remembering it.
+fn finalize_restore(entry: &mut ProcEntry, original_nice: i32) {
+    entry.state = ProcState::Normal;
+    entry.consecutive_high = 0.0;
+    entry.consecutive_low = 0.0;
+    entry.original_nice = Some(original_nice);
+    entry.throttle_nice = None;
+}
+
 // ── ProBalance ────────────────────────────────────────────────────────────────
 
 pub struct ProBalance {
@@ -117,13 +196,6 @@ impl ProBalance {
             return;
         }
 
-        let threshold      = self.cfg.cpu_threshold_percent;
-        let consec_thresh  = self.cfg.consecutive_seconds;
-        let adjustment     = self.cfg.nice_adjustment;
-        let nice_floor     = self.cfg.nice_floor;
-        let restore_thresh = self.cfg.restore_threshold_percent;
-        let restore_hyst   = self.cfg.restore_hysteresis_seconds;
-
         // Clean up dead PIDs
         let alive: std::collections::HashSet<u32> = snapshot.iter().map(|p| p.pid).collect();
         self.states.retain(|pid, _| alive.contains(pid));
@@ -141,50 +213,31 @@ impl ProBalance {
                 .entry(proc.pid)
                 .or_insert_with(|| ProcEntry::new(proc.nice));
 
-            match entry.state {
-                ProcState::Normal => {
-                    if proc.cpu_percent > threshold {
-                        entry.consecutive_high += tick_seconds;
-                        if entry.consecutive_high >= consec_thresh {
-                            // Throttle
-                            let new_nice = (proc.nice + adjustment).min(nice_floor);
-                            entry.original_nice = Some(proc.nice);
-                            if utils::set_nice(proc.pid, new_nice) {
-                                pending_logs.push(format!(
-                                    "[ProBalance] THROTTLE {}({}) cpu={:.1}% nice {}→{}",
-                                    proc.name, proc.pid, proc.cpu_percent, proc.nice, new_nice
-                                ));
-                                entry.state = ProcState::Throttled;
-                                entry.throttle_nice = Some(new_nice);
-                                entry.consecutive_high = 0.0;
-                                entry.consecutive_low = 0.0;
-                            }
-                        }
-                    } else {
-                        entry.consecutive_high = (entry.consecutive_high - tick_seconds).max(0.0);
+            // Pure step: advance counters and decide what to do. No syscalls.
+            let decision = decide(entry, proc, tick_seconds, &self.cfg);
+
+            // Apply syscall at the boundary, then finalize entry state.
+            match decision {
+                Decision::None => {}
+                Decision::Throttle { new_nice } => {
+                    let ok = utils::set_nice(proc.pid, new_nice);
+                    if ok {
+                        pending_logs.push(format!(
+                            "[ProBalance] THROTTLE {}({}) cpu={:.1}% nice {}→{}",
+                            proc.name, proc.pid, proc.cpu_percent, proc.nice, new_nice
+                        ));
                     }
+                    finalize_throttle(entry, new_nice, ok);
                 }
-                ProcState::Throttled => {
-                    if proc.cpu_percent < restore_thresh {
-                        entry.consecutive_low += tick_seconds;
-                        if entry.consecutive_low >= restore_hyst {
-                            // Restore
-                            let orig = entry.original_nice.unwrap_or(0);
-                            if utils::set_nice(proc.pid, orig) {
-                                pending_logs.push(format!(
-                                    "[ProBalance] RESTORE {}({}) cpu={:.1}% nice {}→{}",
-                                    proc.name, proc.pid, proc.cpu_percent, proc.nice, orig
-                                ));
-                            }
-                            entry.state = ProcState::Normal;
-                            entry.consecutive_high = 0.0;
-                            entry.consecutive_low = 0.0;
-                            entry.original_nice = Some(orig);
-                            entry.throttle_nice = None;
-                        }
-                    } else {
-                        entry.consecutive_low = 0.0;
+                Decision::Restore { original_nice } => {
+                    let ok = utils::set_nice(proc.pid, original_nice);
+                    if ok {
+                        pending_logs.push(format!(
+                            "[ProBalance] RESTORE {}({}) cpu={:.1}% nice {}→{}",
+                            proc.name, proc.pid, proc.cpu_percent, proc.nice, original_nice
+                        ));
                     }
+                    finalize_restore(entry, original_nice);
                 }
             }
         }
@@ -329,5 +382,207 @@ mod tests {
         // PID disappears from snapshot → state entry should be cleaned up.
         pb.tick(&[], 1.0);
         assert_eq!(pb.tracked_pid_count(), 0);
+    }
+
+    // ── State-machine kernel tests (drive decide() directly) ────────────────
+    //
+    // These exercise the full Normal↔Throttled lifecycle with no syscalls by
+    // calling decide() and feeding the result to finalize_*() directly. They
+    // verify the pure decisions, the threshold/hysteresis windows, the
+    // nice_floor cap, and the syscall-failure retry behavior.
+
+    fn cfg_for_state_tests() -> ProBalanceConfig {
+        ProBalanceConfig {
+            enabled: true,
+            cpu_threshold_percent: 80.0,
+            consecutive_seconds: 3.0,
+            nice_adjustment: 5,
+            nice_floor: 19,
+            restore_threshold_percent: 30.0,
+            restore_hysteresis_seconds: 4.0,
+            exempt_patterns: vec![],
+        }
+    }
+
+    fn snap(pid: u32, cpu: f32, nice: i32) -> ProcSnapshot {
+        ProcSnapshot { pid, name: "test".into(), cpu_percent: cpu, nice }
+    }
+
+    #[test]
+    fn decide_below_threshold_decays_counter() {
+        let cfg = cfg_for_state_tests();
+        let mut e = ProcEntry::new(0);
+        e.consecutive_high = 2.0;
+        let d = decide(&mut e, &snap(1, 10.0, 0), 1.0, &cfg);
+        assert_eq!(d, Decision::None);
+        assert!((e.consecutive_high - 1.0).abs() < 1e-6);
+        // Doesn't go negative
+        let d = decide(&mut e, &snap(1, 10.0, 0), 5.0, &cfg);
+        assert_eq!(d, Decision::None);
+        assert_eq!(e.consecutive_high, 0.0);
+    }
+
+    #[test]
+    fn decide_above_threshold_below_window_no_action() {
+        let cfg = cfg_for_state_tests(); // window = 3.0s
+        let mut e = ProcEntry::new(0);
+        // 1s above threshold — not yet enough.
+        let d = decide(&mut e, &snap(1, 95.0, 0), 1.0, &cfg);
+        assert_eq!(d, Decision::None);
+        assert!((e.consecutive_high - 1.0).abs() < 1e-6);
+        // Total 2s — still not enough.
+        let d = decide(&mut e, &snap(1, 95.0, 0), 1.0, &cfg);
+        assert_eq!(d, Decision::None);
+        assert_eq!(e.state, ProcState::Normal);
+    }
+
+    #[test]
+    fn decide_throttles_after_consecutive_seconds() {
+        let cfg = cfg_for_state_tests();
+        let mut e = ProcEntry::new(0);
+        let _ = decide(&mut e, &snap(1, 95.0, 0), 1.5, &cfg);
+        let d = decide(&mut e, &snap(1, 95.0, 0), 1.5, &cfg); // total 3.0s
+        match d {
+            Decision::Throttle { new_nice } => {
+                // proc.nice (0) + adjustment (5) = 5, capped at nice_floor (19)
+                assert_eq!(new_nice, 5);
+            }
+            other => panic!("expected Throttle, got {other:?}"),
+        }
+        // decide() captures original_nice but does NOT flip the state — that's finalize_*'s job.
+        assert_eq!(e.state, ProcState::Normal);
+        assert_eq!(e.original_nice, Some(0));
+    }
+
+    #[test]
+    fn decide_caps_new_nice_at_nice_floor() {
+        let cfg = cfg_for_state_tests(); // floor=19, adjustment=5
+        let mut e = ProcEntry::new(18);
+        let _ = decide(&mut e, &snap(1, 95.0, 18), 3.0, &cfg);
+        // 18 + 5 = 23, but capped at floor=19
+        match decide(&mut e, &snap(1, 95.0, 18), 0.01, &cfg) {
+            Decision::Throttle { new_nice } => assert_eq!(new_nice, 19),
+            // The first decide() already triggered. Re-derive directly:
+            _ => {
+                // In rare cases the first call was the trigger — that's fine,
+                // re-create to verify the cap once.
+                let mut e2 = ProcEntry::new(18);
+                if let Decision::Throttle { new_nice } =
+                    decide(&mut e2, &snap(1, 95.0, 18), 3.5, &cfg)
+                {
+                    assert_eq!(new_nice, 19);
+                } else {
+                    panic!("expected Throttle on second attempt");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finalize_throttle_success_flips_state_and_resets_counters() {
+        let mut e = ProcEntry::new(0);
+        e.consecutive_high = 3.5;
+        e.consecutive_low = 1.0;
+        finalize_throttle(&mut e, 10, true);
+        assert_eq!(e.state, ProcState::Throttled);
+        assert_eq!(e.throttle_nice, Some(10));
+        assert_eq!(e.consecutive_high, 0.0);
+        assert_eq!(e.consecutive_low, 0.0);
+    }
+
+    #[test]
+    fn finalize_throttle_failure_keeps_state_for_retry() {
+        // If set_nice fails (e.g., process exited), we stay Normal with
+        // consecutive_high intact — next tick re-decides cleanly.
+        let mut e = ProcEntry::new(0);
+        e.consecutive_high = 3.0;
+        finalize_throttle(&mut e, 10, false);
+        assert_eq!(e.state, ProcState::Normal);
+        assert_eq!(e.throttle_nice, None);
+        assert_eq!(e.consecutive_high, 3.0); // not reset
+    }
+
+    #[test]
+    fn decide_restored_resets_low_counter_on_high_cpu() {
+        let cfg = cfg_for_state_tests();
+        let mut e = ProcEntry::new(0);
+        e.state = ProcState::Throttled;
+        e.consecutive_low = 3.0;
+        // CPU above restore_threshold (30%) → counter resets, no decision.
+        let d = decide(&mut e, &snap(1, 50.0, 0), 1.0, &cfg);
+        assert_eq!(d, Decision::None);
+        assert_eq!(e.consecutive_low, 0.0);
+        assert_eq!(e.state, ProcState::Throttled);
+    }
+
+    #[test]
+    fn decide_restores_after_hysteresis_window() {
+        let cfg = cfg_for_state_tests(); // restore_hyst = 4.0s
+        let mut e = ProcEntry::new(0);
+        e.state = ProcState::Throttled;
+        e.original_nice = Some(2);
+        e.throttle_nice = Some(7);
+
+        // 2s low — not enough.
+        let d = decide(&mut e, &snap(1, 5.0, 7), 2.0, &cfg);
+        assert_eq!(d, Decision::None);
+        // 4.5s total — past hysteresis.
+        let d = decide(&mut e, &snap(1, 5.0, 7), 2.5, &cfg);
+        match d {
+            Decision::Restore { original_nice } => assert_eq!(original_nice, 2),
+            other => panic!("expected Restore, got {other:?}"),
+        }
+        // Still Throttled until finalize runs.
+        assert_eq!(e.state, ProcState::Throttled);
+    }
+
+    #[test]
+    fn finalize_restore_resets_state_regardless_of_syscall() {
+        // Even when set_nice fails, we return to Normal — our bookkeeping
+        // shouldn't outlive the kernel state we couldn't write.
+        let mut e = ProcEntry::new(0);
+        e.state = ProcState::Throttled;
+        e.throttle_nice = Some(15);
+        e.consecutive_low = 4.0;
+        finalize_restore(&mut e, 0);
+        assert_eq!(e.state, ProcState::Normal);
+        assert_eq!(e.throttle_nice, None);
+        assert_eq!(e.consecutive_low, 0.0);
+        assert_eq!(e.original_nice, Some(0));
+    }
+
+    #[test]
+    fn full_lifecycle_normal_throttled_normal() {
+        // End-to-end: drive a process from idle → high → low → idle through
+        // decide() + simulated syscall successes.
+        let cfg = cfg_for_state_tests();
+        let mut e = ProcEntry::new(0);
+
+        // Stay below threshold first — counter remains 0.
+        let _ = decide(&mut e, &snap(1, 5.0, 0), 1.0, &cfg);
+        assert_eq!(e.state, ProcState::Normal);
+
+        // CPU spikes for 4s → throttle decision on 3rd second.
+        let _ = decide(&mut e, &snap(1, 95.0, 0), 1.0, &cfg);
+        let _ = decide(&mut e, &snap(1, 95.0, 0), 1.0, &cfg);
+        let d = decide(&mut e, &snap(1, 95.0, 0), 1.0, &cfg);
+        let new_nice = match d {
+            Decision::Throttle { new_nice } => new_nice,
+            other => panic!("expected Throttle, got {other:?}"),
+        };
+        finalize_throttle(&mut e, new_nice, true);
+        assert_eq!(e.state, ProcState::Throttled);
+
+        // CPU drops to 5% — restore after 4s hysteresis.
+        let _ = decide(&mut e, &snap(1, 5.0, 5), 2.0, &cfg);
+        let d = decide(&mut e, &snap(1, 5.0, 5), 2.0, &cfg);
+        let orig = match d {
+            Decision::Restore { original_nice } => original_nice,
+            other => panic!("expected Restore, got {other:?}"),
+        };
+        assert_eq!(orig, 0);
+        finalize_restore(&mut e, orig);
+        assert_eq!(e.state, ProcState::Normal);
+        assert_eq!(e.throttle_nice, None);
     }
 }
