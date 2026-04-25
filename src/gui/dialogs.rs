@@ -539,7 +539,7 @@ impl NiceDialog {
 
     pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<i32>> {
         if !self.open {
-            return self.result.clone();
+            return self.result;
         }
 
         let mut close_as: Option<bool> = None;
@@ -638,7 +638,7 @@ impl IoNiceDialog {
 
     pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<(i32, i32)>> {
         if !self.open {
-            return self.result.clone();
+            return self.result;
         }
 
         let mut close_as: Option<bool> = None;
@@ -1358,7 +1358,7 @@ fn scan_steam_library() -> Vec<(String, String)> {
         }
     }
     let mut sorted: Vec<_> = games.into_iter().collect();
-    sorted.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    sorted.sort_by_key(|a| a.1.to_lowercase());
     sorted
 }
 

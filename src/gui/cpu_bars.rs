@@ -53,9 +53,9 @@ impl CpuBarsWidget {
         let max_cols = ((avail_w / bar_min_w) as usize).max(1).min(n);
         let cols = (1..=max_cols)
             .rev()
-            .find(|&c| n % c == 0)
+            .find(|&c| n.is_multiple_of(c))
             .unwrap_or(max_cols);
-        let rows = (n + cols - 1) / cols;
+        let rows = n.div_ceil(cols);
         let bar_w = ((avail_w - gap * (cols as f32 + 1.0)) / cols as f32).max(60.0);
 
         let total_h = rows as f32 * (bar_h + gap) + gap;

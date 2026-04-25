@@ -459,9 +459,7 @@ pub fn park_cpus(cpus: &HashSet<u32>, log_cb: impl Fn(String)) -> bool {
     sorted.sort_unstable();
     for cpu in sorted {
         if cpu == 0 {
-            log_cb(format!(
-                "[Park] Skipping CPU 0 (bootstrap processor, cannot offline)"
-            ));
+            log_cb("[Park] Skipping CPU 0 (bootstrap processor, cannot offline)".to_string());
             continue;
         }
         let (success, msg) = run_helper(&["cpu-online", &cpu.to_string(), "0"]);

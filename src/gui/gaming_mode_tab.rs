@@ -185,7 +185,7 @@ impl GamingModeTab {
                 .non_preferred
                 .iter()
                 .copied()
-                .chain(unchecked.into_iter())
+                .chain(unchecked)
                 .collect();
             self.append_log(format!("[Gaming Mode] Parking CPUs {:?}…", {
                 let mut v: Vec<_> = to_park.iter().copied().collect();

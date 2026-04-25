@@ -284,11 +284,10 @@ impl ProcessTab {
                     .hint_text("name / PID / cmdline  (/ to focus)")
                     .desired_width(220.0),
             );
-            if !self.filter.is_empty() {
-                if ui.small_button("✕").clicked() {
+            if !self.filter.is_empty()
+                && ui.small_button("✕").clicked() {
                     self.filter.clear();
                 }
-            }
             ui.separator();
             ui.checkbox(&mut self.tree_view, "Tree view");
             if gaming_active {
@@ -371,7 +370,7 @@ impl ProcessTab {
                 })
                 .then(a.pid.cmp(&b.pid))
             }),
-            SortCol::Status => sorted.sort_by(|a, b| a.pid.cmp(&b.pid)),
+            SortCol::Status => sorted.sort_by_key(|a| a.pid),
         }
 
         // Offline CPUs for affinity display
@@ -750,7 +749,7 @@ impl ProcessTab {
                                         egui::pos2(aff_x, row_rect.min.y),
                                         egui::vec2(col_widths[5], ROW_H),
                                     );
-                                    if ptr.map_or(false, |p| name_rect.contains(p)) {
+                                    if ptr.is_some_and(|p| name_rect.contains(p)) {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
                                         #[allow(deprecated)]
                                         egui::show_tooltip_at_pointer(
@@ -778,7 +777,7 @@ impl ProcessTab {
                                                 ));
                                             },
                                         );
-                                    } else if ptr.map_or(false, |p| aff_rect.contains(p))
+                                    } else if ptr.is_some_and(|p| aff_rect.contains(p))
                                         && aff_full.len() > AFF_MAX
                                     {
                                         #[allow(deprecated)]

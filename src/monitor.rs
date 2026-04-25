@@ -114,7 +114,7 @@ pub fn read_cpu_model() -> String {
         .and_then(|s| {
             s.lines()
                 .find(|l| l.starts_with("model name"))
-                .and_then(|l| l.splitn(2, ':').nth(1))
+                .and_then(|l| l.split_once(':').map(|x| x.1))
                 .map(|s| s.trim().to_string())
         })
         .unwrap_or_else(|| "Unknown CPU".to_string())
@@ -174,12 +174,12 @@ fn run_loop(
     let mut probalance = ProBalance::new(config.probalance.clone());
     let mut hw_collector = HwCollector::new();
     let log_cb2 = log_cb.clone();
-    probalance.set_log_callback(move |m| log_cb2(m));
+    probalance.set_log_callback(log_cb2);
 
     {
         let log_cb3 = log_cb.clone();
         if let Ok(mut re) = rule_engine.lock() {
-            re.set_log_callback(move |m| log_cb3(m));
+            re.set_log_callback(log_cb3);
         }
     }
 
@@ -272,7 +272,7 @@ fn run_loop(
                                     v.sort_unstable();
                                     v
                                 }));
-                                if cpu_park::park_cpus(&to_park, |msg| log_cb(msg)) {
+                                if cpu_park::park_cpus(&to_park, &log_cb) {
                                     log_cb(
                                         "[Gaming Mode] ACTIVE — non-preferred CPUs offline.".into(),
                                     );
@@ -282,7 +282,7 @@ fn run_loop(
                             }
                         } else {
                             log_cb("[Gaming Mode] Unparking all CPUs…".into());
-                            cpu_park::unpark_all(|msg| log_cb(msg));
+                            cpu_park::unpark_all(&log_cb);
                             log_cb("[Gaming Mode] Disabled — all CPUs online.".into());
                         }
                     }
@@ -719,14 +719,13 @@ fn apply_new_pid(
     } else {
         // No rule matched — apply default affinity if configured
         if let Some(ref default_aff) = config.cpu.default_affinity {
-            if !default_aff.is_empty() {
-                if utils::set_affinity(pid, default_aff) {
+            if !default_aff.is_empty()
+                && utils::set_affinity(pid, default_aff) {
                     log_cb(format!(
                         "[Default] affinity={default_aff} → {}({pid})",
                         proc.name
                     ));
                 }
-            }
         }
     }
 }
@@ -812,11 +811,10 @@ fn reapply_defaults(
         } else {
             Vec::new()
         };
-        if actions.is_empty() {
-            if utils::set_affinity(pid, &default_aff) {
+        if actions.is_empty()
+            && utils::set_affinity(pid, &default_aff) {
                 log_cb(format!("[Default] affinity={default_aff} → {name}({pid})"));
             }
-        }
     }
 }
 

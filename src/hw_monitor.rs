@@ -943,7 +943,7 @@ fn dimm_slot_name(hwmon_path: &Path) -> String {
             .to_string_lossy()
             .to_string();
         // name = "7-0051"  (bus-address)
-        if let Some(addr_str) = name.split('-').last() {
+        if let Some(addr_str) = name.split('-').next_back() {
             if let Ok(addr) = u64::from_str_radix(addr_str, 16) {
                 let slot = addr & 0x0f;
                 return format!("DDR5 Slot {slot}");

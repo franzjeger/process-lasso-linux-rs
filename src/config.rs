@@ -12,19 +12,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct CpuConfig {
     /// Applied to every process not matched by a specific rule.
     /// None = disabled. e.g. "8-15,24-31"
     pub default_affinity: Option<String>,
 }
 
-impl Default for CpuConfig {
-    fn default() -> Self {
-        Self {
-            default_affinity: None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -152,17 +146,11 @@ pub struct GamingProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct GamingModeConfig {
     pub profiles: std::collections::HashMap<String, GamingProfile>,
 }
 
-impl Default for GamingModeConfig {
-    fn default() -> Self {
-        Self {
-            profiles: Default::default(),
-        }
-    }
-}
 
 // ── Rule (stored inline in config) ───────────────────────────────────────────
 
@@ -300,7 +288,7 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
     let path = config_path();
     let tmp = path.with_extension("toml.tmp");
     let text = toml::to_string_pretty(cfg)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     fs::write(&tmp, text)?;
     fs::rename(&tmp, &path)?;
     log::debug!("Config saved to {}", path.display());
