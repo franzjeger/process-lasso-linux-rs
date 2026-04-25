@@ -336,8 +336,10 @@ mod tests {
 
     #[test]
     fn tick_disabled_is_noop() {
-        let mut cfg = ProBalanceConfig::default();
-        cfg.enabled = false;
+        let cfg = ProBalanceConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let mut pb = ProBalance::new(cfg);
         let snap = vec![ProcSnapshot {
             pid: 99999,

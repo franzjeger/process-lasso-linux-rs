@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-test:
@@ -43,9 +44,8 @@ jobs:
         run: cargo test --release --locked
 
   lint:
-    name: clippy & fmt (advisory)
+    name: clippy & fmt
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

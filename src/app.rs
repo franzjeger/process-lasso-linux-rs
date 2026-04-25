@@ -663,7 +663,7 @@ impl eframe::App for ArgusLassoApp {
                         }
                         let mut updated = config.clone();
                         updated.probalance = pb_cfg;
-                        self.send(DaemonCmd::UpdateConfig(updated));
+                        self.send(DaemonCmd::UpdateConfig(Box::new(updated)));
                         self.save_config();
                     }
                 }
@@ -697,7 +697,7 @@ impl eframe::App for ArgusLassoApp {
                             }
                             GamingEvent::ConfigChanged(cfg) => {
                                 if let Ok(mut s) = self.state.lock() {
-                                    s.config = cfg.clone();
+                                    s.config.clone_from(&cfg);
                                 }
                                 self.send(DaemonCmd::UpdateConfig(cfg));
                                 self.save_config();
@@ -760,7 +760,7 @@ impl eframe::App for ArgusLassoApp {
                         if let Some(ref wo) = self.wayland_opacity {
                             wo.set(self.opacity);
                         }
-                        self.send(DaemonCmd::UpdateConfig(updated.clone()));
+                        self.send(DaemonCmd::UpdateConfig(Box::new(updated.clone())));
                         self.send(DaemonCmd::ReapplyDefaults);
                         self.last_saved_opacity = self.settings_tab.opacity;
                         self.last_saved_theme = self.settings_tab.theme.to_str().to_string();

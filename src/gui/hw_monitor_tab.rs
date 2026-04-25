@@ -147,7 +147,7 @@ impl HwMonitorTab {
         // Resize handles between the four fixed columns (value/min/max/avg)
         let mut col_deltas = [0.0f32; 4];
         let mut hx = name_edge;
-        for i in 0..4usize {
+        for (i, delta) in col_deltas.iter_mut().enumerate() {
             hx += self.col_widths[i];
             let handle = egui::Rect::from_min_size(
                 egui::pos2(hx - 3.0, hdr_rect.min.y),
@@ -172,7 +172,7 @@ impl HwMonitorTab {
                 Stroke::new(1.0, line_col),
             );
             if resp.dragged() {
-                col_deltas[i] = resp.drag_delta().x;
+                *delta = resp.drag_delta().x;
             }
         }
         // Apply drag deltas for next frame

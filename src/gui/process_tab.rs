@@ -240,6 +240,7 @@ impl ProcessTab {
         self.bars.update(pcts);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,

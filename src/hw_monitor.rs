@@ -567,7 +567,7 @@ fn collect_nvidia_nvml() -> Vec<GroupReading> {
 /// Compute watts from two RAPL energy samples, handling counter wrap at max_uj.
 /// Returns None if dt is non-positive.
 fn rapl_watts(prev_uj: u64, now_uj: u64, max_uj: u64, dt_secs: f64) -> Option<f32> {
-    if !(dt_secs > 0.0) {
+    if dt_secs.is_nan() || dt_secs <= 0.0 {
         return None;
     }
     let delta_uj = if now_uj >= prev_uj {

@@ -26,7 +26,7 @@ use crate::utils;
 
 #[derive(Debug)]
 pub enum DaemonCmd {
-    UpdateConfig(Config),
+    UpdateConfig(Box<Config>),
     SetGamingMode {
         active: bool,
         elevate_nice: bool,
@@ -229,6 +229,7 @@ fn run_loop(
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 DaemonCmd::UpdateConfig(cfg) => {
+                    let cfg = *cfg;
                     probalance.update_config(cfg.probalance.clone());
                     config = cfg.clone();
                     log_cb(format!(
@@ -677,6 +678,7 @@ fn read_ionice(pid: u32) -> String {
 
 // ── New PID handling ──────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn apply_new_pid(
     proc: &ProcInfo,
     config: &Config,

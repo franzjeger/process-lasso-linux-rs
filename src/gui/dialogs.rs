@@ -437,10 +437,14 @@ impl AffinityDialog {
                                 }
                             } else {
                                 egui::Grid::new("cpu_grid").num_columns(8).show(ui, |ui| {
-                                    for i in 0..cpu_count as usize {
+                                    for (i, cb) in checkboxes
+                                        .iter_mut()
+                                        .enumerate()
+                                        .take(cpu_count as usize)
+                                    {
                                         ui.add_enabled(
                                             !offline.contains(&(i as u32)),
-                                            egui::Checkbox::new(&mut checkboxes[i], i.to_string()),
+                                            egui::Checkbox::new(cb, i.to_string()),
                                         );
                                         if (i + 1) % 8 == 0 { ui.end_row(); }
                                     }
@@ -909,8 +913,8 @@ impl RuleEditDialog {
 
 // ── RulePresetsDialog ─────────────────────────────────────────────────────────
 
-/// Generate rule presets dynamically based on detected CPU topology.
-pub fn rule_presets() -> Vec<(
+/// (name, pattern, match_type, affinity, nice, ionice_class, ionice_level)
+pub type RulePreset = (
     &'static str,
     &'static str,
     &'static str,
@@ -918,7 +922,10 @@ pub fn rule_presets() -> Vec<(
     Option<i32>,
     Option<i32>,
     Option<i32>,
-)> {
+);
+
+/// Generate rule presets dynamically based on detected CPU topology.
+pub fn rule_presets() -> Vec<RulePreset> {
     let topo = detect_topology();
     let (pref, npref) = if topo.has_asymmetry() {
         (

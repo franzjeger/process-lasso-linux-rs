@@ -16,7 +16,7 @@ pub enum GamingEvent {
     GamingModeChanged { active: bool, elevate_nice: bool },
     ResetAll,
     LogMessage(String),
-    ConfigChanged(Config),
+    ConfigChanged(Box<Config>),
 }
 
 // ── Launcher watch phase ──────────────────────────────────────────────────────
@@ -497,7 +497,8 @@ impl GamingModeTab {
                     let name = self.selected_profile.clone();
                     self.config.gaming_mode.profiles.remove(&name);
                     self.selected_profile.clear();
-                    self.events.push(GamingEvent::ConfigChanged(self.config.clone()));
+                    self.events
+                        .push(GamingEvent::ConfigChanged(Box::new(self.config.clone())));
                 }
             });
 
@@ -659,7 +660,7 @@ impl GamingModeTab {
         );
         self.selected_profile = name.clone();
         self.events
-            .push(GamingEvent::ConfigChanged(self.config.clone()));
+            .push(GamingEvent::ConfigChanged(Box::new(self.config.clone())));
         self.append_log(format!("[Profile] Saved '{name}'"));
     }
 

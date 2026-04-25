@@ -59,6 +59,7 @@ impl RulesTab {
     }
 
     /// Returns `true` if rule_profiles in config changed (needs save).
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
