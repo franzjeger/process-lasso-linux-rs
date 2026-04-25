@@ -719,13 +719,12 @@ fn apply_new_pid(
     } else {
         // No rule matched — apply default affinity if configured
         if let Some(ref default_aff) = config.cpu.default_affinity {
-            if !default_aff.is_empty()
-                && utils::set_affinity(pid, default_aff) {
-                    log_cb(format!(
-                        "[Default] affinity={default_aff} → {}({pid})",
-                        proc.name
-                    ));
-                }
+            if !default_aff.is_empty() && utils::set_affinity(pid, default_aff) {
+                log_cb(format!(
+                    "[Default] affinity={default_aff} → {}({pid})",
+                    proc.name
+                ));
+            }
         }
     }
 }
@@ -811,10 +810,9 @@ fn reapply_defaults(
         } else {
             Vec::new()
         };
-        if actions.is_empty()
-            && utils::set_affinity(pid, &default_aff) {
-                log_cb(format!("[Default] affinity={default_aff} → {name}({pid})"));
-            }
+        if actions.is_empty() && utils::set_affinity(pid, &default_aff) {
+            log_cb(format!("[Default] affinity={default_aff} → {name}({pid})"));
+        }
     }
 }
 

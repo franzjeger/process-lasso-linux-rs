@@ -19,7 +19,6 @@ pub struct CpuConfig {
     pub default_affinity: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProBalanceConfig {
@@ -150,7 +149,6 @@ pub struct GamingProfile {
 pub struct GamingModeConfig {
     pub profiles: std::collections::HashMap<String, GamingProfile>,
 }
-
 
 // ── Rule (stored inline in config) ───────────────────────────────────────────
 
@@ -287,8 +285,7 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
     fs::create_dir_all(&dir)?;
     let path = config_path();
     let tmp = path.with_extension("toml.tmp");
-    let text = toml::to_string_pretty(cfg)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let text = toml::to_string_pretty(cfg).map_err(|e| std::io::Error::other(e.to_string()))?;
     fs::write(&tmp, text)?;
     fs::rename(&tmp, &path)?;
     log::debug!("Config saved to {}", path.display());

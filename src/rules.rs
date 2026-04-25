@@ -189,15 +189,14 @@ impl RuleEngine {
                 let target = utils::cpulist_to_set(aff).unwrap_or_default();
                 let current_str = utils::get_affinity_str(pid);
                 let current = utils::cpulist_to_set(&current_str).unwrap_or_default();
-                if current != target
-                    && utils::set_affinity(pid, aff) {
-                        let msg = format!(
-                            "[Rule:{}] Set affinity={} on {}({})",
-                            rule.name, aff, proc_name, pid
-                        );
-                        self.log(msg.clone());
-                        actions.push(msg);
-                    }
+                if current != target && utils::set_affinity(pid, aff) {
+                    let msg = format!(
+                        "[Rule:{}] Set affinity={} on {}({})",
+                        rule.name, aff, proc_name, pid
+                    );
+                    self.log(msg.clone());
+                    actions.push(msg);
+                }
             }
 
             // ── Nice ─────────────────────────────────────────────────────
@@ -227,14 +226,15 @@ impl RuleEngine {
                 let target_level = rule.ionice_level.unwrap_or(0);
                 let current = utils::get_ionice_raw(pid);
                 if current != Some((class, target_level))
-                    && utils::set_ionice(pid, class, rule.ionice_level) {
-                        let msg = format!(
-                            "[Rule:{}] Set ionice class={} level={:?} on {}({})",
-                            rule.name, class, rule.ionice_level, proc_name, pid
-                        );
-                        self.log(msg.clone());
-                        actions.push(msg);
-                    }
+                    && utils::set_ionice(pid, class, rule.ionice_level)
+                {
+                    let msg = format!(
+                        "[Rule:{}] Set ionice class={} level={:?} on {}({})",
+                        rule.name, class, rule.ionice_level, proc_name, pid
+                    );
+                    self.log(msg.clone());
+                    actions.push(msg);
+                }
             }
         }
         actions

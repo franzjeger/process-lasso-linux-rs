@@ -284,10 +284,9 @@ impl ProcessTab {
                     .hint_text("name / PID / cmdline  (/ to focus)")
                     .desired_width(220.0),
             );
-            if !self.filter.is_empty()
-                && ui.small_button("✕").clicked() {
-                    self.filter.clear();
-                }
+            if !self.filter.is_empty() && ui.small_button("✕").clicked() {
+                self.filter.clear();
+            }
             ui.separator();
             ui.checkbox(&mut self.tree_view, "Tree view");
             if gaming_active {

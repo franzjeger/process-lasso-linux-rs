@@ -322,16 +322,15 @@ impl ArgusLassoApp {
         if let Some(ref mut dlg) = self.affinity_dialog {
             if let Some(result) = dlg.show(ctx, self.opacity) {
                 if let (Some(pid), cpulist) = (self.dialog_pid, result.as_str()) {
-                    if !cpulist.is_empty()
-                        && utils::set_affinity(pid, cpulist) {
-                            self.send(DaemonCmd::SetManualOverride {
-                                pid,
-                                duration_secs: 30.0,
-                            });
-                            if let Ok(mut s) = self.state.lock() {
-                                s.append_log(format!("[Manual] affinity={cpulist} → PID {pid}"));
-                            }
+                    if !cpulist.is_empty() && utils::set_affinity(pid, cpulist) {
+                        self.send(DaemonCmd::SetManualOverride {
+                            pid,
+                            duration_secs: 30.0,
+                        });
+                        if let Ok(mut s) = self.state.lock() {
+                            s.append_log(format!("[Manual] affinity={cpulist} → PID {pid}"));
                         }
+                    }
                 }
                 self.affinity_dialog = None;
                 self.dialog_pid = None;
