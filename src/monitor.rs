@@ -27,8 +27,15 @@ use crate::utils;
 #[derive(Debug)]
 pub enum DaemonCmd {
     UpdateConfig(Config),
-    SetGamingMode { active: bool, elevate_nice: bool, park: bool },
-    SetManualOverride { pid: u32, duration_secs: f64 },
+    SetGamingMode {
+        active: bool,
+        elevate_nice: bool,
+        park: bool,
+    },
+    SetManualOverride {
+        pid: u32,
+        duration_secs: f64,
+    },
     ResetAffinities,
     ReapplyDefaults,
 }
@@ -41,12 +48,12 @@ pub struct ProcInfo {
     pub ppid: u32,
     pub name: String,
     pub cpu_percent: f32,
-    pub mem_rss: u64,   // bytes
+    pub mem_rss: u64, // bytes
     pub nice: i32,
     pub affinity: String,
     pub ionice: String,
-    pub disk_read_bps: u64,   // bytes/s
-    pub disk_write_bps: u64,  // bytes/s
+    pub disk_read_bps: u64,  // bytes/s
+    pub disk_write_bps: u64, // bytes/s
     /// Reference-counted so GUI snapshot clones are O(1) for this field.
     pub cmdline: std::sync::Arc<String>,
 }
@@ -179,7 +186,11 @@ fn run_loop(
     // Startup log entry so users can see the log is working
     log_cb(format!(
         "Argus-Lasso started — ProBalance: {}  |  Display refresh: {}ms  |  Rule enforce: {}ms",
-        if config.probalance.enabled { "on" } else { "off" },
+        if config.probalance.enabled {
+            "on"
+        } else {
+            "off"
+        },
         config.monitor.display_refresh_interval_ms,
         config.monitor.rule_enforce_interval_ms,
     ));
@@ -222,14 +233,26 @@ fn run_loop(
                     config = cfg.clone();
                     log_cb(format!(
                         "Config updated — ProBalance: {}  |  Notifications: {}",
-                        if config.probalance.enabled { "on" } else { "off" },
-                        if config.ui.notifications_enabled { "on" } else { "off" },
+                        if config.probalance.enabled {
+                            "on"
+                        } else {
+                            "off"
+                        },
+                        if config.ui.notifications_enabled {
+                            "on"
+                        } else {
+                            "off"
+                        },
                     ));
                     if let Ok(mut s) = state.lock() {
                         s.config = cfg;
                     }
                 }
-                DaemonCmd::SetGamingMode { active, elevate_nice, park } => {
+                DaemonCmd::SetGamingMode {
+                    active,
+                    elevate_nice,
+                    park,
+                } => {
                     gaming_mode = active;
                     gaming_elevate_nice = elevate_nice;
                     if !active && !gaming_niced.is_empty() {
@@ -242,14 +265,17 @@ fn run_loop(
                         if active {
                             let topo = cpu_park::detect_topology();
                             if topo.has_asymmetry() && cpu_park::is_helper_installed() {
-                                let to_park: HashSet<u32> = topo.non_preferred.iter().copied().collect();
+                                let to_park: HashSet<u32> =
+                                    topo.non_preferred.iter().copied().collect();
                                 log_cb(format!("[Gaming Mode] Parking CPUs {:?}…", {
                                     let mut v: Vec<_> = to_park.iter().copied().collect();
                                     v.sort_unstable();
                                     v
                                 }));
                                 if cpu_park::park_cpus(&to_park, |msg| log_cb(msg)) {
-                                    log_cb("[Gaming Mode] ACTIVE — non-preferred CPUs offline.".into());
+                                    log_cb(
+                                        "[Gaming Mode] ACTIVE — non-preferred CPUs offline.".into(),
+                                    );
                                 } else {
                                     log_cb("[Gaming Mode] Parking failed — check log.".into());
                                 }
@@ -262,10 +288,8 @@ fn run_loop(
                     }
                 }
                 DaemonCmd::SetManualOverride { pid, duration_secs } => {
-                    manual_overrides.insert(
-                        pid,
-                        Instant::now() + Duration::from_secs_f64(duration_secs),
-                    );
+                    manual_overrides
+                        .insert(pid, Instant::now() + Duration::from_secs_f64(duration_secs));
                 }
                 DaemonCmd::ResetAffinities => {
                     reset_all_affinities(&mut original_affinities, &log_cb);
@@ -279,7 +303,8 @@ fn run_loop(
         let now = Instant::now();
         let enforce_interval = Duration::from_millis(config.monitor.rule_enforce_interval_ms);
         let needs_snapshot = now.duration_since(last_enforce) >= enforce_interval
-            || now.duration_since(last_snapshot) >= Duration::from_millis(config.monitor.display_refresh_interval_ms)
+            || now.duration_since(last_snapshot)
+                >= Duration::from_millis(config.monitor.display_refresh_interval_ms)
             || now.duration_since(last_pb) >= Duration::from_secs(1);
 
         // ── Collect process snapshot (only when needed) ─────────────────────
@@ -312,7 +337,10 @@ fn run_loop(
                 }
             }
             if first_snapshot {
-                log_cb(format!("Initial scan: {} processes found.", raw_snapshot.len()));
+                log_cb(format!(
+                    "Initial scan: {} processes found.",
+                    raw_snapshot.len()
+                ));
                 first_snapshot = false;
             }
             known_pids = current_pids;
@@ -352,7 +380,8 @@ fn run_loop(
             let cur_throttled = probalance.throttled_pids();
             if cur_throttled != prev_throttled && config.ui.notifications_enabled {
                 // Build a name lookup from the current snapshot
-                let name_map: HashMap<u32, &str> = raw_snapshot.iter()
+                let name_map: HashMap<u32, &str> = raw_snapshot
+                    .iter()
                     .map(|p| (p.pid, p.name.as_str()))
                     .collect();
 
@@ -384,10 +413,13 @@ fn run_loop(
         let refresh = Duration::from_millis(config.monitor.display_refresh_interval_ms);
         if now.duration_since(last_snapshot) >= refresh {
             let throttled = probalance.throttled_pids();
-            let pb_snap_for_infos: Vec<crate::probalance::ProcSnapshot> = raw_snapshot.iter()
+            let pb_snap_for_infos: Vec<crate::probalance::ProcSnapshot> = raw_snapshot
+                .iter()
                 .map(|p| crate::probalance::ProcSnapshot {
-                    pid: p.pid, name: p.name.clone(),
-                    cpu_percent: p.cpu_percent, nice: p.nice,
+                    pid: p.pid,
+                    name: p.name.clone(),
+                    cpu_percent: p.cpu_percent,
+                    nice: p.nice,
                 })
                 .collect();
             let throttle_infos = probalance.throttle_infos(&pb_snap_for_infos);
@@ -423,13 +455,20 @@ fn run_loop(
                 }
                 s.hw_monitor = hw_collector.data.clone();
                 // Update per-PID CPU history
-                let current_pids: std::collections::HashSet<u32> = raw_snapshot.iter().map(|p| p.pid).collect();
+                let current_pids: std::collections::HashSet<u32> =
+                    raw_snapshot.iter().map(|p| p.pid).collect();
                 for p in &raw_snapshot {
-                    let hist = s.proc_cpu_history.entry(p.pid).or_insert_with(|| std::collections::VecDeque::with_capacity(30));
+                    let hist = s
+                        .proc_cpu_history
+                        .entry(p.pid)
+                        .or_insert_with(|| std::collections::VecDeque::with_capacity(30));
                     hist.push_back(p.cpu_percent);
-                    while hist.len() > 30 { hist.pop_front(); }
+                    while hist.len() > 30 {
+                        hist.pop_front();
+                    }
                 }
-                s.proc_cpu_history.retain(|pid, _| current_pids.contains(pid));
+                s.proc_cpu_history
+                    .retain(|pid, _| current_pids.contains(pid));
             }
             last_snapshot = now;
         }
@@ -534,7 +573,10 @@ fn read_proc_io(
             write_bytes = v.trim().parse().unwrap_or(0);
         }
     }
-    let (prev_r, prev_w) = prev_io.get(&pid).copied().unwrap_or((read_bytes, write_bytes));
+    let (prev_r, prev_w) = prev_io
+        .get(&pid)
+        .copied()
+        .unwrap_or((read_bytes, write_bytes));
     new_io.insert(pid, (read_bytes, write_bytes));
     (
         read_bytes.saturating_sub(prev_r),
@@ -619,7 +661,11 @@ fn read_ionice(pid: u32) -> String {
     // For display, we use the raw ioprio value decoded
     use nix::libc;
     let prio = unsafe {
-        libc::syscall(libc::SYS_ioprio_get, 1 /* IOPRIO_WHO_PROCESS */, pid as libc::c_int)
+        libc::syscall(
+            libc::SYS_ioprio_get,
+            1, /* IOPRIO_WHO_PROCESS */
+            pid as libc::c_int,
+        )
     };
     if prio < 0 {
         return String::new();
@@ -663,8 +709,10 @@ fn apply_new_pid(
             if topo.has_asymmetry() {
                 let preferred_list = utils::cpuset_to_cpulist(&topo.preferred);
                 if utils::set_affinity(pid, &preferred_list) {
-                    log_cb(format!("[Gaming Mode] affinity → {} ({}) for {}({})",
-                        topo.preferred_label, preferred_list, proc.name, pid));
+                    log_cb(format!(
+                        "[Gaming Mode] affinity → {} ({}) for {}({})",
+                        topo.preferred_label, preferred_list, proc.name, pid
+                    ));
                 }
             }
         }
@@ -673,7 +721,10 @@ fn apply_new_pid(
         if let Some(ref default_aff) = config.cpu.default_affinity {
             if !default_aff.is_empty() {
                 if utils::set_affinity(pid, default_aff) {
-                    log_cb(format!("[Default] affinity={default_aff} → {}({pid})", proc.name));
+                    log_cb(format!(
+                        "[Default] affinity={default_aff} → {}({pid})",
+                        proc.name
+                    ));
                 }
             }
         }
@@ -747,8 +798,7 @@ fn reapply_defaults(
     };
 
     for &pid in known_pids {
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-            .unwrap_or_default();
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
         let comm = comm.trim();
         let cmdline_raw: Vec<String> = std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
             .unwrap_or_default()
@@ -793,7 +843,10 @@ fn check_hw_alerts(
             }
             if sensor.value >= threshold {
                 let key = format!("{}/{}", group.name, sensor.label);
-                let last = last_alert.get(&key).copied().unwrap_or(Instant::now() - cooldown - Duration::from_secs(1));
+                let last = last_alert
+                    .get(&key)
+                    .copied()
+                    .unwrap_or(Instant::now() - cooldown - Duration::from_secs(1));
                 if now.duration_since(last) >= cooldown {
                     last_alert.insert(key.clone(), now);
                     let msg = format!(
@@ -804,7 +857,10 @@ fn check_hw_alerts(
                     if notifications_enabled {
                         let _ = notify_rust::Notification::new()
                             .summary("Argus-Lasso — Temperature Alert")
-                            .body(&format!("{}: {:.0}°C (limit: {:.0}°C)", key, sensor.value, threshold))
+                            .body(&format!(
+                                "{}: {:.0}°C (limit: {:.0}°C)",
+                                key, sensor.value, threshold
+                            ))
                             .timeout(notify_rust::Timeout::Milliseconds(5000))
                             .show();
                     }
@@ -824,5 +880,7 @@ fn restore_gaming_nices(gaming_niced: &mut HashMap<u32, i32>, log_cb: &impl Fn(S
         }
     }
     gaming_niced.clear();
-    log_cb(format!("[Gaming Mode] Restored nice for {count} processes."));
+    log_cb(format!(
+        "[Gaming Mode] Restored nice for {count} processes."
+    ));
 }

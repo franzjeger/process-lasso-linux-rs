@@ -16,8 +16,7 @@ use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols::wp::alpha_modifier::v1::client::{
-    wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1,
-    wp_alpha_modifier_v1::WpAlphaModifierV1,
+    wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1, wp_alpha_modifier_v1::WpAlphaModifierV1,
 };
 
 // ── Minimal Dispatch state ─────────────────────────────────────────────────────
@@ -64,9 +63,7 @@ impl WaylandOpacity {
         // SAFETY: display_ptr is a valid wl_display* from eframe. We create a
         // foreign backend that borrows the display without taking ownership.
         let backend = unsafe {
-            Backend::from_foreign_display(
-                display_ptr as *mut wayland_sys::client::wl_display,
-            )
+            Backend::from_foreign_display(display_ptr as *mut wayland_sys::client::wl_display)
         };
         let conn = Connection::from_backend(backend);
 
@@ -93,7 +90,9 @@ impl WaylandOpacity {
         let alpha_modifier: WpAlphaModifierV1 = match globals.bind(&qh, 1..=1, ()) {
             Ok(am) => {
                 log::info!("wayland_opacity: bound wp_alpha_modifier_v1");
-                eprintln!("[wayland_opacity] wp_alpha_modifier_v1 BOUND — compositor opacity available");
+                eprintln!(
+                    "[wayland_opacity] wp_alpha_modifier_v1 BOUND — compositor opacity available"
+                );
                 am
             }
             Err(e) => {
@@ -144,7 +143,10 @@ impl WaylandOpacity {
         }
 
         log::info!("wayland_opacity: wp_alpha_modifier surface control ready");
-        Some(Self { conn, surface_alpha })
+        Some(Self {
+            conn,
+            surface_alpha,
+        })
     }
 
     /// Set window opacity in [0.0, 1.0].

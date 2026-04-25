@@ -59,14 +59,15 @@ impl CpuBarsWidget {
         let bar_w = ((avail_w - gap * (cols as f32 + 1.0)) / cols as f32).max(60.0);
 
         let total_h = rows as f32 * (bar_h + gap) + gap;
-        let (resp, painter) = ui.allocate_painter(Vec2::new(avail_w, total_h), egui::Sense::hover());
+        let (resp, painter) =
+            ui.allocate_painter(Vec2::new(avail_w, total_h), egui::Sense::hover());
         let base = resp.rect.min;
 
         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-        let text_color   = ui.visuals().text_color();
+        let text_color = ui.visuals().text_color();
         let offline_text = ui.visuals().weak_text_color();
-        let bar_bg       = ui.visuals().extreme_bg_color;
-        let offline_bg   = ui.visuals().faint_bg_color;
+        let bar_bg = ui.visuals().extreme_bg_color;
+        let offline_bg = ui.visuals().faint_bg_color;
 
         for i in 0..n {
             let col = (i % cols) as f32;
@@ -93,7 +94,12 @@ impl CpuBarsWidget {
             }
 
             // Border
-            painter.rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, border_color), egui::StrokeKind::Middle);
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(4),
+                Stroke::new(1.0, border_color),
+                egui::StrokeKind::Middle,
+            );
 
             // CPU index label
             let idx_color = if is_offline { offline_text } else { text_color };
@@ -106,7 +112,11 @@ impl CpuBarsWidget {
             );
 
             // Percentage / "off" text
-            let pct_text = if is_offline { "off".to_string() } else { format!("{pct:.0}%") };
+            let pct_text = if is_offline {
+                "off".to_string()
+            } else {
+                format!("{pct:.0}%")
+            };
             let pct_color = if is_offline { offline_text } else { text_color };
             painter.text(
                 Pos2::new(x + bar_w - 3.0, y + bar_h / 2.0 - 6.0),
@@ -206,10 +216,18 @@ impl CpuHistoryWidget {
         painter.add(egui::Shape::convex_polygon(path, fill_color, Stroke::NONE));
 
         // Line on top
-        painter.add(egui::Shape::line(pts, Stroke::new(1.5, theme::cpu_load_color(last_avg))));
+        painter.add(egui::Shape::line(
+            pts,
+            Stroke::new(1.5, theme::cpu_load_color(last_avg)),
+        ));
 
         // Border
         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-        painter.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, border_color), egui::StrokeKind::Middle);
+        painter.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, border_color),
+            egui::StrokeKind::Middle,
+        );
     }
 }

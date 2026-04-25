@@ -17,12 +17,22 @@ fn which(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-enum Backend { Kdialog, Zenity, Qarma }
+enum Backend {
+    Kdialog,
+    Zenity,
+    Qarma,
+}
 
 fn backend() -> Option<Backend> {
-    if which("kdialog")  { return Some(Backend::Kdialog); }
-    if which("zenity")   { return Some(Backend::Zenity); }
-    if which("qarma")    { return Some(Backend::Qarma); }
+    if which("kdialog") {
+        return Some(Backend::Kdialog);
+    }
+    if which("zenity") {
+        return Some(Backend::Zenity);
+    }
+    if which("qarma") {
+        return Some(Backend::Qarma);
+    }
     None
 }
 
@@ -30,7 +40,11 @@ fn run(args: &[&str]) -> Option<String> {
     let out = Command::new(args[0]).args(&args[1..]).output().ok()?;
     if out.status.success() {
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !s.is_empty() { Some(s) } else { None }
+        if !s.is_empty() {
+            Some(s)
+        } else {
+            None
+        }
     } else {
         None
     }
@@ -43,8 +57,8 @@ fn run(args: &[&str]) -> Option<String> {
 pub fn open(filter: &str) -> Option<PathBuf> {
     let s = match backend()? {
         Backend::Kdialog => run(&["kdialog", "--getopenfilename", ".", filter]),
-        Backend::Zenity  => run(&["zenity", "--file-selection", "--title=Open file"]),
-        Backend::Qarma   => run(&["qarma", "--file-selection"]),
+        Backend::Zenity => run(&["zenity", "--file-selection", "--title=Open file"]),
+        Backend::Qarma => run(&["qarma", "--file-selection"]),
     };
     s.map(PathBuf::from)
 }
@@ -54,13 +68,17 @@ pub fn open(filter: &str) -> Option<PathBuf> {
 pub fn save(default_name: &str, filter: &str) -> Option<PathBuf> {
     let s = match backend()? {
         Backend::Kdialog => run(&["kdialog", "--getsavefilename", default_name, filter]),
-        Backend::Zenity  => run(&[
-            "zenity", "--file-selection", "--save",
+        Backend::Zenity => run(&[
+            "zenity",
+            "--file-selection",
+            "--save",
             "--confirm-overwrite",
             &format!("--filename={default_name}"),
         ]),
-        Backend::Qarma   => run(&[
-            "qarma", "--file-selection", "--save",
+        Backend::Qarma => run(&[
+            "qarma",
+            "--file-selection",
+            "--save",
             &format!("--filename={default_name}"),
         ]),
     };

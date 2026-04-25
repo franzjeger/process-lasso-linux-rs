@@ -19,13 +19,21 @@ pub fn cpulist_to_set(cpulist: &str) -> Result<HashSet<u32>, String> {
             continue;
         }
         if let Some((lo, hi)) = part.split_once('-') {
-            let lo: u32 = lo.trim().parse().map_err(|e| format!("bad cpulist range '{part}': {e}"))?;
-            let hi: u32 = hi.trim().parse().map_err(|e| format!("bad cpulist range '{part}': {e}"))?;
+            let lo: u32 = lo
+                .trim()
+                .parse()
+                .map_err(|e| format!("bad cpulist range '{part}': {e}"))?;
+            let hi: u32 = hi
+                .trim()
+                .parse()
+                .map_err(|e| format!("bad cpulist range '{part}': {e}"))?;
             for c in lo..=hi {
                 result.insert(c);
             }
         } else {
-            let n: u32 = part.parse().map_err(|e| format!("bad cpulist item '{part}': {e}"))?;
+            let n: u32 = part
+                .parse()
+                .map_err(|e| format!("bad cpulist item '{part}': {e}"))?;
             result.insert(n);
         }
     }
@@ -238,7 +246,11 @@ pub fn get_nice(pid: u32) -> Option<i32> {
 pub fn get_ionice_raw(pid: u32) -> Option<(i32, i32)> {
     use nix::libc;
     let prio = unsafe {
-        libc::syscall(libc::SYS_ioprio_get, 1 /* IOPRIO_WHO_PROCESS */, pid as libc::c_int)
+        libc::syscall(
+            libc::SYS_ioprio_get,
+            1, /* IOPRIO_WHO_PROCESS */
+            pid as libc::c_int,
+        )
     };
     if prio < 0 {
         return None;

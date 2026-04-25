@@ -31,8 +31,8 @@ enum ProcState {
 #[derive(Debug, Clone)]
 struct ProcEntry {
     state: ProcState,
-    consecutive_high: f32,  // seconds spent above threshold
-    consecutive_low: f32,   // seconds spent below restore threshold
+    consecutive_high: f32, // seconds spent above threshold
+    consecutive_low: f32,  // seconds spent below restore threshold
     original_nice: Option<i32>,
     throttle_nice: Option<i32>,
 }
@@ -120,7 +120,9 @@ fn decide(
                 entry.consecutive_low += tick_seconds;
                 if entry.consecutive_low >= cfg.restore_hysteresis_seconds {
                     let orig = entry.original_nice.unwrap_or(0);
-                    return Decision::Restore { original_nice: orig };
+                    return Decision::Restore {
+                        original_nice: orig,
+                    };
                 }
             } else {
                 entry.consecutive_low = 0.0;
@@ -295,7 +297,9 @@ mod tests {
     use super::*;
     use crate::config::ProBalanceConfig;
 
-    fn pat(s: &str) -> Vec<String> { vec![s.into()] }
+    fn pat(s: &str) -> Vec<String> {
+        vec![s.into()]
+    }
 
     #[test]
     fn exempt_match_is_case_insensitive() {
@@ -336,7 +340,10 @@ mod tests {
         cfg.enabled = false;
         let mut pb = ProBalance::new(cfg);
         let snap = vec![ProcSnapshot {
-            pid: 99999, name: "anything".into(), cpu_percent: 99.0, nice: 0,
+            pid: 99999,
+            name: "anything".into(),
+            cpu_percent: 99.0,
+            nice: 0,
         }];
         pb.tick(&snap, 1.0);
         // Disabled → state map stays empty, no syscalls attempted.
@@ -351,7 +358,10 @@ mod tests {
         };
         let mut pb = ProBalance::new(cfg);
         let snap = vec![ProcSnapshot {
-            pid: 4242, name: "kwin_wayland".into(), cpu_percent: 99.0, nice: 0,
+            pid: 4242,
+            name: "kwin_wayland".into(),
+            cpu_percent: 99.0,
+            nice: 0,
         }];
         pb.tick(&snap, 10.0);
         // Exempt processes are skipped entirely — no entry created in state map.
@@ -363,7 +373,10 @@ mod tests {
         // Below threshold → entry exists but stays Normal, no syscalls fire.
         let mut pb = ProBalance::new(ProBalanceConfig::default());
         let snap = vec![ProcSnapshot {
-            pid: 4242, name: "myapp".into(), cpu_percent: 10.0, nice: 0,
+            pid: 4242,
+            name: "myapp".into(),
+            cpu_percent: 10.0,
+            nice: 0,
         }];
         pb.tick(&snap, 1.0);
         assert_eq!(pb.tracked_pid_count(), 1);
@@ -374,7 +387,10 @@ mod tests {
     fn tick_evicts_dead_pids() {
         let mut pb = ProBalance::new(ProBalanceConfig::default());
         let snap1 = vec![ProcSnapshot {
-            pid: 4242, name: "myapp".into(), cpu_percent: 10.0, nice: 0,
+            pid: 4242,
+            name: "myapp".into(),
+            cpu_percent: 10.0,
+            nice: 0,
         }];
         pb.tick(&snap1, 1.0);
         assert_eq!(pb.tracked_pid_count(), 1);
@@ -405,7 +421,12 @@ mod tests {
     }
 
     fn snap(pid: u32, cpu: f32, nice: i32) -> ProcSnapshot {
-        ProcSnapshot { pid, name: "test".into(), cpu_percent: cpu, nice }
+        ProcSnapshot {
+            pid,
+            name: "test".into(),
+            cpu_percent: cpu,
+            nice,
+        }
     }
 
     #[test]

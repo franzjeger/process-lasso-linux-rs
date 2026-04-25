@@ -2,11 +2,16 @@ fn main() {
     let icon_path = "assets/icon.png";
     println!("cargo:rerun-if-changed={icon_path}");
 
-    let file = std::fs::File::open(icon_path).expect("assets/icon.png not found — run rsvg-convert first");
+    let file =
+        std::fs::File::open(icon_path).expect("assets/icon.png not found — run rsvg-convert first");
     let decoder = png::Decoder::new(file);
-    let mut reader = decoder.read_info().expect("failed to decode assets/icon.png");
+    let mut reader = decoder
+        .read_info()
+        .expect("failed to decode assets/icon.png");
     let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).expect("failed to read PNG frame");
+    let info = reader
+        .next_frame(&mut buf)
+        .expect("failed to read PNG frame");
 
     let rgba: Vec<u8> = match info.color_type {
         png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),

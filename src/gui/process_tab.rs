@@ -28,14 +28,14 @@ pub enum SortCol {
 impl SortCol {
     fn label(&self) -> &'static str {
         match self {
-            SortCol::Pid      => "PID",
-            SortCol::Name     => "NAME",
-            SortCol::Cpu      => "CPU%",
-            SortCol::Mem      => "MEM(MB)",
-            SortCol::Nice     => "NICE",
+            SortCol::Pid => "PID",
+            SortCol::Name => "NAME",
+            SortCol::Cpu => "CPU%",
+            SortCol::Mem => "MEM(MB)",
+            SortCol::Nice => "NICE",
             SortCol::Affinity => "AFFINITY",
-            SortCol::Ionice   => "I/O PRI",
-            SortCol::Status   => "STATUS",
+            SortCol::Ionice => "I/O PRI",
+            SortCol::Status => "STATUS",
         }
     }
 }
@@ -44,7 +44,9 @@ impl SortCol {
 
 /// Convert raw "class/level" ionice string to human-readable form.
 fn fmt_ionice(s: &str) -> String {
-    if s.is_empty() { return "—".into(); }
+    if s.is_empty() {
+        return "—".into();
+    }
     let mut parts = s.splitn(2, '/');
     let class: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
     let level: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -59,7 +61,9 @@ fn fmt_ionice(s: &str) -> String {
 
 /// Format bytes/s compactly: "1.2 MB/s", "456 KB/s", "—"
 fn fmt_bps(bytes: u64) -> String {
-    if bytes == 0 { return "—".into(); }
+    if bytes == 0 {
+        return "—".into();
+    }
     if bytes >= 1_048_576 {
         format!("{:.1} MB/s", bytes as f64 / 1_048_576.0)
     } else if bytes >= 1024 {
@@ -73,13 +77,36 @@ fn fmt_bps(bytes: u64) -> String {
 
 #[derive(Debug)]
 pub enum TableAction {
-    Kill { pid: u32, name: String, force: bool },
-    Suspend { pid: u32, name: String },
-    Resume { pid: u32, name: String },
-    SetAffinity { pid: u32, name: String, current: String },
-    SetNice { pid: u32, name: String, current: i32 },
-    SetIonice { pid: u32, name: String },
-    AddRule { name: String },
+    Kill {
+        pid: u32,
+        name: String,
+        force: bool,
+    },
+    Suspend {
+        pid: u32,
+        name: String,
+    },
+    Resume {
+        pid: u32,
+        name: String,
+    },
+    SetAffinity {
+        pid: u32,
+        name: String,
+        current: String,
+    },
+    SetNice {
+        pid: u32,
+        name: String,
+        current: i32,
+    },
+    SetIonice {
+        pid: u32,
+        name: String,
+    },
+    AddRule {
+        name: String,
+    },
     None,
 }
 
@@ -124,7 +151,8 @@ fn format_affinity_display(
         }
         seen.insert(*cpu);
         if let Some(siblings) = core_pairs.get(cpu) {
-            let vis_sibs: Vec<u32> = siblings.iter()
+            let vis_sibs: Vec<u32> = siblings
+                .iter()
                 .filter(|&&s| visible.contains(&s) && !seen.contains(&s))
                 .copied()
                 .collect();
@@ -132,7 +160,11 @@ fn format_affinity_display(
                 for &s in &vis_sibs {
                     seen.insert(s);
                 }
-                let sib_str = vis_sibs.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("+");
+                let sib_str = vis_sibs
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join("+");
                 parts.push(format!("{cpu}+{sib_str}"));
             } else {
                 parts.push(cpu.to_string());
@@ -199,7 +231,11 @@ impl ProcessTab {
     }
 
     pub fn update_cpu(&mut self, pcts: Vec<f32>) {
-        let avg = if pcts.is_empty() { 0.0 } else { pcts.iter().sum::<f32>() / pcts.len() as f32 };
+        let avg = if pcts.is_empty() {
+            0.0
+        } else {
+            pcts.iter().sum::<f32>() / pcts.len() as f32
+        };
         self.history.push(avg);
         self.bars.update(pcts);
     }
@@ -226,10 +262,12 @@ impl ProcessTab {
         // inside it causes write→read or write→write re-entrant deadlock (parking_lot panics
         // after 10s with "Failed to acquire RwLock … Deadlock?").
         let filter_id = egui::Id::new("proc_filter");
-        let (f5_pressed, slash_pressed) = ui.input(|i| (
-            i.key_pressed(egui::Key::F5),
-            i.key_pressed(egui::Key::Slash) && !i.modifiers.any(),
-        ));
+        let (f5_pressed, slash_pressed) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::F5),
+                i.key_pressed(egui::Key::Slash) && !i.modifiers.any(),
+            )
+        });
         if slash_pressed {
             ui.ctx().memory_mut(|m| m.request_focus(filter_id));
         }
@@ -240,10 +278,12 @@ impl ProcessTab {
         // Filter row + view toggles
         ui.horizontal(|ui| {
             ui.label("Filter:");
-            ui.add(egui::TextEdit::singleline(&mut self.filter)
-                .id(filter_id)
-                .hint_text("name / PID / cmdline  (/ to focus)")
-                .desired_width(220.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .id(filter_id)
+                    .hint_text("name / PID / cmdline  (/ to focus)")
+                    .desired_width(220.0),
+            );
             if !self.filter.is_empty() {
                 if ui.small_button("✕").clicked() {
                     self.filter.clear();
@@ -253,7 +293,10 @@ impl ProcessTab {
             ui.checkbox(&mut self.tree_view, "Tree view");
             if gaming_active {
                 ui.separator();
-                ui.checkbox(&mut self.hide_parked_in_proc_view, "Group affinity / hide parked");
+                ui.checkbox(
+                    &mut self.hide_parked_in_proc_view,
+                    "Group affinity / hide parked",
+                );
             }
         });
         ui.add_space(2.0);
@@ -272,17 +315,63 @@ impl ProcessTab {
         let asc = self.sort_asc;
         // All sorts use PID as a stable tiebreaker so equal rows never flicker.
         match self.sort_col {
-            SortCol::Pid      => sorted.sort_by(|a, b| if asc { a.pid.cmp(&b.pid) } else { b.pid.cmp(&a.pid) }),
-            SortCol::Name     => sorted.sort_by(|a, b| (if asc { a.name.cmp(&b.name) } else { b.name.cmp(&a.name) }).then(a.pid.cmp(&b.pid))),
-            SortCol::Cpu      => sorted.sort_by(|a, b| {
-                let ord = if asc { a.cpu_percent.partial_cmp(&b.cpu_percent) } else { b.cpu_percent.partial_cmp(&a.cpu_percent) };
-                ord.unwrap_or(std::cmp::Ordering::Equal).then(a.pid.cmp(&b.pid))
+            SortCol::Pid => sorted.sort_by(|a, b| {
+                if asc {
+                    a.pid.cmp(&b.pid)
+                } else {
+                    b.pid.cmp(&a.pid)
+                }
             }),
-            SortCol::Mem      => sorted.sort_by(|a, b| (if asc { a.mem_rss.cmp(&b.mem_rss) } else { b.mem_rss.cmp(&a.mem_rss) }).then(a.pid.cmp(&b.pid))),
-            SortCol::Nice     => sorted.sort_by(|a, b| (if asc { a.nice.cmp(&b.nice) } else { b.nice.cmp(&a.nice) }).then(a.pid.cmp(&b.pid))),
-            SortCol::Affinity => sorted.sort_by(|a, b| (if asc { a.affinity.cmp(&b.affinity) } else { b.affinity.cmp(&a.affinity) }).then(a.pid.cmp(&b.pid))),
-            SortCol::Ionice   => sorted.sort_by(|a, b| (if asc { a.ionice.cmp(&b.ionice) } else { b.ionice.cmp(&a.ionice) }).then(a.pid.cmp(&b.pid))),
-            SortCol::Status   => sorted.sort_by(|a, b| a.pid.cmp(&b.pid)),
+            SortCol::Name => sorted.sort_by(|a, b| {
+                (if asc {
+                    a.name.cmp(&b.name)
+                } else {
+                    b.name.cmp(&a.name)
+                })
+                .then(a.pid.cmp(&b.pid))
+            }),
+            SortCol::Cpu => sorted.sort_by(|a, b| {
+                let ord = if asc {
+                    a.cpu_percent.partial_cmp(&b.cpu_percent)
+                } else {
+                    b.cpu_percent.partial_cmp(&a.cpu_percent)
+                };
+                ord.unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.pid.cmp(&b.pid))
+            }),
+            SortCol::Mem => sorted.sort_by(|a, b| {
+                (if asc {
+                    a.mem_rss.cmp(&b.mem_rss)
+                } else {
+                    b.mem_rss.cmp(&a.mem_rss)
+                })
+                .then(a.pid.cmp(&b.pid))
+            }),
+            SortCol::Nice => sorted.sort_by(|a, b| {
+                (if asc {
+                    a.nice.cmp(&b.nice)
+                } else {
+                    b.nice.cmp(&a.nice)
+                })
+                .then(a.pid.cmp(&b.pid))
+            }),
+            SortCol::Affinity => sorted.sort_by(|a, b| {
+                (if asc {
+                    a.affinity.cmp(&b.affinity)
+                } else {
+                    b.affinity.cmp(&a.affinity)
+                })
+                .then(a.pid.cmp(&b.pid))
+            }),
+            SortCol::Ionice => sorted.sort_by(|a, b| {
+                (if asc {
+                    a.ionice.cmp(&b.ionice)
+                } else {
+                    b.ionice.cmp(&a.ionice)
+                })
+                .then(a.pid.cmp(&b.pid))
+            }),
+            SortCol::Status => sorted.sort_by(|a, b| a.pid.cmp(&b.pid)),
         }
 
         // Offline CPUs for affinity display
@@ -292,39 +381,52 @@ impl ProcessTab {
             HashSet::new()
         };
 
-        let sort_col_cur   = self.sort_col.clone();
-        let sort_asc_cur   = self.sort_asc;
-        let hide_parked    = self.hide_parked_in_proc_view;
-        let core_pairs     = &self.core_pairs;
+        let sort_col_cur = self.sort_col.clone();
+        let sort_asc_cur = self.sort_asc;
+        let hide_parked = self.hide_parked_in_proc_view;
+        let core_pairs = &self.core_pairs;
 
-        let mut new_sort_col  = sort_col_cur.clone();
-        let mut new_sort_asc  = sort_asc_cur;
-        let mut new_selected  = self.selected_pid;
-        let mut action        = TableAction::None;
+        let mut new_sort_col = sort_col_cur.clone();
+        let mut new_sort_asc = sort_asc_cur;
+        let mut new_selected = self.selected_pid;
+        let mut action = TableAction::None;
 
         // Delete key — kill the currently selected process
         ui.input(|i| {
             if i.key_pressed(egui::Key::Delete) {
                 if let Some(sel_pid) = self.selected_pid {
                     if let Some(proc) = sorted.iter().find(|p| p.pid == sel_pid) {
-                        action = TableAction::Kill { pid: sel_pid, name: proc.name.clone(), force: false };
+                        action = TableAction::Kill {
+                            pid: sel_pid,
+                            name: proc.name.clone(),
+                            force: false,
+                        };
                     }
                 }
             }
         });
 
         const COLS: [SortCol; 8] = [
-            SortCol::Pid, SortCol::Name, SortCol::Cpu, SortCol::Mem,
-            SortCol::Nice, SortCol::Affinity, SortCol::Ionice, SortCol::Status,
+            SortCol::Pid,
+            SortCol::Name,
+            SortCol::Cpu,
+            SortCol::Mem,
+            SortCol::Nice,
+            SortCol::Affinity,
+            SortCol::Ionice,
+            SortCol::Status,
         ];
-        const ROW_H:    f32 = 24.0;
+        const ROW_H: f32 = 24.0;
         const HEADER_H: f32 = 24.0;
-        const PAD:      f32 = 4.0;
+        const PAD: f32 = 4.0;
 
         // Auto-fill Name column (index 1) from available width minus fixed columns.
         let avail_w = ui.available_width() - 4.0;
         if !self.cols_initialized {
-            let fixed: f32 = self.col_widths.iter().enumerate()
+            let fixed: f32 = self
+                .col_widths
+                .iter()
+                .enumerate()
                 .filter(|(i, _)| *i != 1)
                 .map(|(_, &w)| w)
                 .sum();
@@ -343,7 +445,10 @@ impl ProcessTab {
             }
             self.last_avail_w = avail_w;
             // Recalculate name column each frame to fill remaining space.
-            let fixed: f32 = self.col_widths.iter().enumerate()
+            let fixed: f32 = self
+                .col_widths
+                .iter()
+                .enumerate()
                 .filter(|(i, _)| *i != 1)
                 .map(|(_, &w)| w)
                 .sum();
@@ -384,7 +489,11 @@ impl ProcessTab {
                         } else {
                             col.label().to_string()
                         };
-                        let color = if is_active { ui.visuals().text_color() } else { Breeze::HIGHLIGHT };
+                        let color = if is_active {
+                            ui.visuals().text_color()
+                        } else {
+                            Breeze::HIGHLIGHT
+                        };
                         let resp = ui.put(
                             cell_rect,
                             egui::Label::new(RichText::new(label_str).color(color).strong())
@@ -420,7 +529,10 @@ impl ProcessTab {
                             ui.visuals().widgets.noninteractive.bg_stroke.color
                         };
                         ui.painter().line_segment(
-                            [egui::pos2(x, header_rect.min.y), egui::pos2(x, header_rect.max.y)],
+                            [
+                                egui::pos2(x, header_rect.min.y),
+                                egui::pos2(x, header_rect.max.y),
+                            ],
                             egui::Stroke::new(1.0, sep_color),
                         );
                         if resp.dragged() {
@@ -436,7 +548,10 @@ impl ProcessTab {
 
                 // ── Scrollable body ───────────────────────────────────────────────
                 // Build tree-ordered row list when tree_view is active.
-                struct RowItem<'a> { proc: &'a ProcInfo, depth: usize }
+                struct RowItem<'a> {
+                    proc: &'a ProcInfo,
+                    depth: usize,
+                }
                 let row_items: Vec<RowItem> = if self.tree_view {
                     let pid_set: HashSet<u32> = sorted.iter().map(|p| p.pid).collect();
                     let mut children: HashMap<u32, Vec<usize>> = HashMap::new();
@@ -457,7 +572,10 @@ impl ProcessTab {
                     let mut stack: Vec<(usize, usize)> = roots.iter().map(|&i| (i, 0)).collect();
                     stack.reverse();
                     while let Some((idx, depth)) = stack.pop() {
-                        result.push(RowItem { proc: &sorted[idx], depth });
+                        result.push(RowItem {
+                            proc: &sorted[idx],
+                            depth,
+                        });
                         if let Some(ch) = children.get(&sorted[idx].pid) {
                             let mut ch_sorted = ch.clone();
                             ch_sorted.sort_by_key(|&i| &sorted[i].name);
@@ -468,7 +586,10 @@ impl ProcessTab {
                     }
                     result
                 } else {
-                    sorted.iter().map(|p| RowItem { proc: p, depth: 0 }).collect()
+                    sorted
+                        .iter()
+                        .map(|p| RowItem { proc: p, depth: 0 })
+                        .collect()
                 };
 
                 egui::ScrollArea::vertical()
@@ -476,15 +597,19 @@ impl ProcessTab {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         for (row_idx, item) in row_items.iter().enumerate() {
-                            let proc     = item.proc;
-                            let indent   = item.depth as f32 * 14.0;
-                            let pid      = proc.pid;
-                            let is_sel   = new_selected == Some(pid);
+                            let proc = item.proc;
+                            let indent = item.depth as f32 * 14.0;
+                            let pid = proc.pid;
+                            let is_sel = new_selected == Some(pid);
                             let throttled = throttled_pids.contains(&pid);
-                            let cpu      = proc.cpu_percent;
-                            let row_col  = theme::row_color(cpu, throttled, ui.visuals().text_color());
+                            let cpu = proc.cpu_percent;
+                            let row_col =
+                                theme::row_color(cpu, throttled, ui.visuals().text_color());
                             let aff_full = format_affinity_display(
-                                &proc.affinity, &offline, core_pairs, hide_parked,
+                                &proc.affinity,
+                                &offline,
+                                core_pairs,
+                                hide_parked,
                             );
                             // Truncate affinity if very long, show full string in tooltip
                             const AFF_MAX: usize = 14;
@@ -504,12 +629,12 @@ impl ProcessTab {
                             };
 
                             // Clone fields needed inside closures
-                            let name    = proc.name.clone();
-                            let aff     = proc.affinity.clone();
-                            let nice    = proc.nice;
+                            let name = proc.name.clone();
+                            let aff = proc.affinity.clone();
+                            let nice = proc.nice;
                             let cmdline = proc.cmdline.clone();
-                            let drb     = proc.disk_read_bps;
-                            let dwb     = proc.disk_write_bps;
+                            let drb = proc.disk_read_bps;
+                            let dwb = proc.disk_write_bps;
 
                             // Allocate the full row — advances the cursor
                             let (row_rect, row_resp) = ui.allocate_exact_size(
@@ -536,12 +661,16 @@ impl ProcessTab {
                                     let x_off = if ci == 1 { indent } else { 0.0 };
                                     // For CPU% column (ci==2): draw sparkline on left, shift text right
                                     let text_x_off = if ci == 2 { cw * 0.45 } else { 0.0 };
-                                    let text_pos = egui::pos2(x + PAD + x_off + text_x_off, row_rect.center().y);
+                                    let text_pos = egui::pos2(
+                                        x + PAD + x_off + text_x_off,
+                                        row_rect.center().y,
+                                    );
                                     let text: std::borrow::Cow<str> = match ci {
                                         0 => pid.to_string().into(),
                                         1 => name.as_str().into(),
                                         2 => format!("{:.1}", cpu).into(),
-                                        3 => format!("{:.1}", proc.mem_rss as f64 / 1_048_576.0).into(),
+                                        3 => format!("{:.1}", proc.mem_rss as f64 / 1_048_576.0)
+                                            .into(),
                                         4 => nice.to_string().into(),
                                         5 => aff_display.as_str().into(),
                                         6 => ionice_str.as_str().into(),
@@ -557,12 +686,26 @@ impl ProcessTab {
                                                     egui::pos2(x + 1.0, row_rect.min.y + 2.0),
                                                     egui::vec2(spark_w, ROW_H - 4.0),
                                                 );
-                                                let lo = hist.iter().cloned().fold(f32::INFINITY, f32::min);
-                                                let hi = hist.iter().cloned().fold(f32::NEG_INFINITY, f32::max).max(lo + 0.1);
-                                                let pts: Vec<egui::Pos2> = hist.iter().enumerate()
+                                                let lo = hist
+                                                    .iter()
+                                                    .cloned()
+                                                    .fold(f32::INFINITY, f32::min);
+                                                let hi = hist
+                                                    .iter()
+                                                    .cloned()
+                                                    .fold(f32::NEG_INFINITY, f32::max)
+                                                    .max(lo + 0.1);
+                                                let pts: Vec<egui::Pos2> = hist
+                                                    .iter()
+                                                    .enumerate()
                                                     .map(|(i, &v)| {
-                                                        let px = spark_rect.left() + i as f32 / (hist.len() - 1).max(1) as f32 * spark_rect.width();
-                                                        let py = spark_rect.bottom() - (v - lo) / (hi - lo) * spark_rect.height();
+                                                        let px = spark_rect.left()
+                                                            + i as f32
+                                                                / (hist.len() - 1).max(1) as f32
+                                                                * spark_rect.width();
+                                                        let py = spark_rect.bottom()
+                                                            - (v - lo) / (hi - lo)
+                                                                * spark_rect.height();
                                                         egui::pos2(px, py)
                                                     })
                                                     .collect();
@@ -574,7 +717,10 @@ impl ProcessTab {
                                                     egui::Color32::from_rgb(80, 180, 100)
                                                 };
                                                 for pair in pts.windows(2) {
-                                                    painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.0, spark_col));
+                                                    painter.line_segment(
+                                                        [pair[0], pair[1]],
+                                                        egui::Stroke::new(1.0, spark_col),
+                                                    );
                                                 }
                                             }
                                         }
@@ -598,7 +744,8 @@ impl ProcessTab {
                                         egui::vec2(col_widths[1], ROW_H),
                                     );
                                     // Affinity cell
-                                    let aff_x = col_widths[..5].iter().sum::<f32>() + row_rect.min.x;
+                                    let aff_x =
+                                        col_widths[..5].iter().sum::<f32>() + row_rect.min.x;
                                     let aff_rect = egui::Rect::from_min_size(
                                         egui::pos2(aff_x, row_rect.min.y),
                                         egui::vec2(col_widths[5], ROW_H),
@@ -607,18 +754,28 @@ impl ProcessTab {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
                                         #[allow(deprecated)]
                                         egui::show_tooltip_at_pointer(
-                                            ui.ctx(), ui.layer_id(),
+                                            ui.ctx(),
+                                            ui.layer_id(),
                                             egui::Id::new(("proc_tip", pid)),
                                             |ui| {
                                                 ui.label(egui::RichText::new(&name).strong());
                                                 if !cmdline.is_empty() {
-                                                    ui.label(egui::RichText::new(cmdline.as_str())
-                                                        .size(11.5)
-                                                        .color(ui.visuals().weak_text_color()));
+                                                    ui.label(
+                                                        egui::RichText::new(cmdline.as_str())
+                                                            .size(11.5)
+                                                            .color(ui.visuals().weak_text_color()),
+                                                    );
                                                 }
                                                 ui.separator();
-                                                ui.label(format!("PID: {}   PPID: {}", pid, proc.ppid));
-                                                ui.label(format!("Disk R: {}   W: {}", fmt_bps(drb), fmt_bps(dwb)));
+                                                ui.label(format!(
+                                                    "PID: {}   PPID: {}",
+                                                    pid, proc.ppid
+                                                ));
+                                                ui.label(format!(
+                                                    "Disk R: {}   W: {}",
+                                                    fmt_bps(drb),
+                                                    fmt_bps(dwb)
+                                                ));
                                             },
                                         );
                                     } else if ptr.map_or(false, |p| aff_rect.contains(p))
@@ -626,9 +783,12 @@ impl ProcessTab {
                                     {
                                         #[allow(deprecated)]
                                         egui::show_tooltip_at_pointer(
-                                            ui.ctx(), ui.layer_id(),
+                                            ui.ctx(),
+                                            ui.layer_id(),
                                             egui::Id::new(("aff_tip", pid)),
-                                            |ui| { ui.label(&aff_full); },
+                                            |ui| {
+                                                ui.label(&aff_full);
+                                            },
                                         );
                                     }
                                 }
@@ -642,20 +802,38 @@ impl ProcessTab {
                             // Right-click context menu on the entire row
                             row_resp.context_menu(|ui| {
                                 if ui.button(format!("Kill {} ({})", name, pid)).clicked() {
-                                    action = TableAction::Kill { pid, name: name.clone(), force: false };
+                                    action = TableAction::Kill {
+                                        pid,
+                                        name: name.clone(),
+                                        force: false,
+                                    };
                                     ui.close();
                                 }
-                                if ui.button(format!("Force Kill {} ({})", name, pid)).clicked() {
-                                    action = TableAction::Kill { pid, name: name.clone(), force: true };
+                                if ui
+                                    .button(format!("Force Kill {} ({})", name, pid))
+                                    .clicked()
+                                {
+                                    action = TableAction::Kill {
+                                        pid,
+                                        name: name.clone(),
+                                        force: true,
+                                    };
                                     ui.close();
                                 }
                                 if is_suspended {
                                     if ui.button(format!("Resume {} ({})", name, pid)).clicked() {
-                                        action = TableAction::Resume { pid, name: name.clone() };
+                                        action = TableAction::Resume {
+                                            pid,
+                                            name: name.clone(),
+                                        };
                                         ui.close();
                                     }
-                                } else if ui.button(format!("Suspend {} ({})", name, pid)).clicked() {
-                                    action = TableAction::Suspend { pid, name: name.clone() };
+                                } else if ui.button(format!("Suspend {} ({})", name, pid)).clicked()
+                                {
+                                    action = TableAction::Suspend {
+                                        pid,
+                                        name: name.clone(),
+                                    };
                                     ui.close();
                                 }
                                 ui.separator();
@@ -667,7 +845,10 @@ impl ProcessTab {
                                     };
                                     ui.close();
                                 }
-                                if ui.button(format!("Set Priority (nice) for {}", name)).clicked() {
+                                if ui
+                                    .button(format!("Set Priority (nice) for {}", name))
+                                    .clicked()
+                                {
                                     action = TableAction::SetNice {
                                         pid,
                                         name: name.clone(),
@@ -675,8 +856,14 @@ impl ProcessTab {
                                     };
                                     ui.close();
                                 }
-                                if ui.button(format!("Set I/O Priority for {}", name)).clicked() {
-                                    action = TableAction::SetIonice { pid, name: name.clone() };
+                                if ui
+                                    .button(format!("Set I/O Priority for {}", name))
+                                    .clicked()
+                                {
+                                    action = TableAction::SetIonice {
+                                        pid,
+                                        name: name.clone(),
+                                    };
                                     ui.close();
                                 }
                                 ui.separator();
@@ -698,8 +885,8 @@ impl ProcessTab {
             }
         }
 
-        self.sort_col    = new_sort_col;
-        self.sort_asc    = new_sort_asc;
+        self.sort_col = new_sort_col;
+        self.sort_asc = new_sort_asc;
         self.selected_pid = new_selected;
         action
     }

@@ -1,11 +1,11 @@
 //! Settings tab: default affinity, monitor intervals, appearance, autostart.
 
-use egui::Ui;
 use crate::config::Config;
 use crate::cpu_park::{detect_topology, CpuTopology};
 use crate::gui::dialogs::AffinityDialog;
 use crate::gui::theme::AppTheme;
 use crate::utils::cpuset_to_cpulist;
+use egui::Ui;
 
 pub struct SettingsTab {
     pub config: Config,
@@ -75,15 +75,25 @@ impl SettingsTab {
             ui.add_space(4.0);
 
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.default_affinity_enabled, "Enable default affinity:");
+                ui.checkbox(
+                    &mut self.default_affinity_enabled,
+                    "Enable default affinity:",
+                );
                 ui.add(
                     egui::TextEdit::singleline(&mut self.default_affinity_text)
                         .hint_text("e.g. 8-15,24-31")
                         .desired_width(130.0)
                         .interactive(self.default_affinity_enabled),
                 );
-                if ui.add_enabled(self.default_affinity_enabled, egui::Button::new("Pick CPUs…")).clicked() {
-                    self.cpu_dialog = Some(AffinityDialog::new(&self.default_affinity_text, "Default"));
+                if ui
+                    .add_enabled(
+                        self.default_affinity_enabled,
+                        egui::Button::new("Pick CPUs…"),
+                    )
+                    .clicked()
+                {
+                    self.cpu_dialog =
+                        Some(AffinityDialog::new(&self.default_affinity_text, "Default"));
                 }
             });
 
@@ -92,18 +102,31 @@ impl SettingsTab {
                 if self.topo.has_asymmetry() {
                     let pref_list = cpuset_to_cpulist(&self.topo.preferred);
                     let npref_list = cpuset_to_cpulist(&self.topo.non_preferred);
-                    if ui.add_enabled(self.default_affinity_enabled,
-                        egui::Button::new(self.topo.preferred_button_label())).clicked() {
+                    if ui
+                        .add_enabled(
+                            self.default_affinity_enabled,
+                            egui::Button::new(self.topo.preferred_button_label()),
+                        )
+                        .clicked()
+                    {
                         self.default_affinity_text = pref_list;
                         self.default_affinity_enabled = true;
                     }
-                    if ui.add_enabled(self.default_affinity_enabled,
-                        egui::Button::new(self.topo.non_preferred_button_label())).clicked() {
+                    if ui
+                        .add_enabled(
+                            self.default_affinity_enabled,
+                            egui::Button::new(self.topo.non_preferred_button_label()),
+                        )
+                        .clicked()
+                    {
                         self.default_affinity_text = npref_list;
                         self.default_affinity_enabled = true;
                     }
                 }
-                if ui.add_enabled(self.default_affinity_enabled, egui::Button::new("All")).clicked() {
+                if ui
+                    .add_enabled(self.default_affinity_enabled, egui::Button::new("All"))
+                    .clicked()
+                {
                     self.default_affinity_text = String::new();
                     self.default_affinity_enabled = true;
                 }
@@ -121,7 +144,10 @@ impl SettingsTab {
         }
 
         ui.add_space(4.0);
-        if ui.button("Apply — enforce on all running processes now").clicked() {
+        if ui
+            .button("Apply — enforce on all running processes now")
+            .clicked()
+        {
             if self.default_affinity_enabled {
                 let cpulist = self.default_affinity_text.trim().to_string();
                 if cpulist.is_empty() {
@@ -147,15 +173,25 @@ impl SettingsTab {
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("Rule enforce interval:");
-                    ui.add(egui::DragValue::new(&mut self.config.monitor.rule_enforce_interval_ms)
-                        .range(100..=10000).suffix("ms"));
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.monitor.rule_enforce_interval_ms)
+                            .range(100..=10000)
+                            .suffix("ms"),
+                    );
                     ui.end_row();
 
                     ui.label("Display refresh interval:");
                     ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut self.config.monitor.display_refresh_interval_ms)
-                            .range(500..=10000).suffix("ms"));
-                        for (label, ms) in [("0.5s", 500u64), ("1s", 1000), ("2s", 2000), ("5s", 5000)] {
+                        ui.add(
+                            egui::DragValue::new(
+                                &mut self.config.monitor.display_refresh_interval_ms,
+                            )
+                            .range(500..=10000)
+                            .suffix("ms"),
+                        );
+                        for (label, ms) in
+                            [("0.5s", 500u64), ("1s", 1000), ("2s", 2000), ("5s", 5000)]
+                        {
                             if ui.small_button(label).clicked() {
                                 self.config.monitor.display_refresh_interval_ms = ms;
                             }
@@ -169,7 +205,7 @@ impl SettingsTab {
         if ui.button("Apply Monitor Settings").clicked() {
             // Persist opacity and theme into the config that will be saved to disk.
             self.config.ui.opacity = self.opacity;
-            self.config.ui.theme   = self.theme.to_str().into();
+            self.config.ui.theme = self.theme.to_str().into();
             crate::gui::theme::apply_theme(ctx, self.native_ppp, &self.theme);
             self.status = "Settings applied.".into();
             changed = true;
@@ -226,7 +262,11 @@ impl SettingsTab {
                             .selected_text(&self.cpu_governor)
                             .show_ui(ui, |ui| {
                                 for g in &self.available_governors.clone() {
-                                    ui.selectable_value(&mut self.cpu_governor, g.clone(), g.as_str());
+                                    ui.selectable_value(
+                                        &mut self.cpu_governor,
+                                        g.clone(),
+                                        g.as_str(),
+                                    );
                                 }
                             });
                     }
@@ -275,26 +315,43 @@ impl SettingsTab {
 
         // ── Notifications ─────────────────────────────────────────────────
         group_box(ui, "Notifications", |ui| {
-            ui.checkbox(&mut self.config.ui.notifications_enabled,
-                "Enable desktop notifications (ProBalance throttle, HW alerts, kill events)");
+            ui.checkbox(
+                &mut self.config.ui.notifications_enabled,
+                "Enable desktop notifications (ProBalance throttle, HW alerts, kill events)",
+            );
         });
 
         ui.add_space(12.0);
 
         // ── Temperature Alerts ────────────────────────────────────────────
         group_box(ui, "Temperature Alerts", |ui| {
-            ui.checkbox(&mut self.config.hw_alerts.enabled, "Enable temperature alerts (desktop notifications)");
+            ui.checkbox(
+                &mut self.config.hw_alerts.enabled,
+                "Enable temperature alerts (desktop notifications)",
+            );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label("Alert threshold:");
-                ui.add(egui::Slider::new(&mut self.config.hw_alerts.temp_threshold_celsius, 50.0..=110.0)
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.config.hw_alerts.temp_threshold_celsius,
+                        50.0..=110.0,
+                    )
                     .suffix(" °C")
-                    .step_by(1.0));
+                    .step_by(1.0),
+                );
             });
             ui.horizontal(|ui| {
                 ui.label("Cooldown between alerts:");
                 let mut cooldown = self.config.hw_alerts.cooldown_secs as f64;
-                if ui.add(egui::Slider::new(&mut cooldown, 10.0..=300.0).suffix(" s").step_by(5.0)).changed() {
+                if ui
+                    .add(
+                        egui::Slider::new(&mut cooldown, 10.0..=300.0)
+                            .suffix(" s")
+                            .step_by(5.0),
+                    )
+                    .changed()
+                {
                     self.config.hw_alerts.cooldown_secs = cooldown as u64;
                 }
             });
@@ -306,12 +363,20 @@ impl SettingsTab {
 
         // ── Autostart ─────────────────────────────────────────────────────
         group_box(ui, "Autostart", |ui| {
-            ui.checkbox(&mut self.autostart_enabled,
-                "Start Argus-Lasso automatically with your desktop session");
+            ui.checkbox(
+                &mut self.autostart_enabled,
+                "Start Argus-Lasso automatically with your desktop session",
+            );
         });
 
         ui.add_space(4.0);
-        if ui.add_sized([ui.available_width(), 28.0], egui::Button::new("Apply Autostart Setting")).clicked() {
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new("Apply Autostart Setting"),
+            )
+            .clicked()
+        {
             if self.autostart_enabled {
                 match write_autostart() {
                     Ok(_) => self.status = "Autostart enabled (XDG + systemd).".into(),
@@ -330,7 +395,11 @@ impl SettingsTab {
             ui.colored_label(ui.visuals().weak_text_color(), &self.status);
         }
 
-        if changed { Some(self.config.clone()) } else { None }
+        if changed {
+            Some(self.config.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -344,7 +413,11 @@ fn group_box(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
 
     frame.show(ui, |ui| {
         ui.set_min_width(ui.available_width());
-        ui.label(egui::RichText::new(title).strong().color(ui.visuals().strong_text_color()));
+        ui.label(
+            egui::RichText::new(title)
+                .strong()
+                .color(ui.visuals().strong_text_color()),
+        );
         ui.add_space(4.0);
         add_contents(ui);
     });
@@ -408,9 +481,7 @@ fn set_epp(epp: &str) -> Result<(), String> {
     let cpu_count = crate::utils::get_cpu_count();
     let mut errors = 0usize;
     for i in 0..cpu_count {
-        let path = format!(
-            "/sys/devices/system/cpu/cpu{i}/cpufreq/energy_performance_preference"
-        );
+        let path = format!("/sys/devices/system/cpu/cpu{i}/cpufreq/energy_performance_preference");
         if std::fs::write(&path, epp).is_err() {
             errors += 1;
         }
@@ -448,8 +519,7 @@ fn check_autostart_enabled() -> bool {
 
 fn write_autostart() -> std::io::Result<()> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let exe = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("argus-lasso"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("argus-lasso"));
 
     // ── XDG autostart (works on GNOME, KDE, XFCE, and most other DEs) ────────
     let xdg_dir = format!("{home}/.config/autostart");

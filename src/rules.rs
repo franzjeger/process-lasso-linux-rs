@@ -353,8 +353,7 @@ mod tests {
             enabled: true,
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
-        let back: crate::config::RuleConfig =
-            serde_json::from_str(&json).expect("deserialize");
+        let back: crate::config::RuleConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.rule_id, cfg.rule_id);
         assert_eq!(back.pattern, cfg.pattern);
         assert_eq!(back.match_type, cfg.match_type);

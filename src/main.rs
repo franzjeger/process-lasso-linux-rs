@@ -31,7 +31,7 @@ fn make_icon_rgba() -> Vec<u8> {
 // ── System tray (KDE/freedesktop StatusNotifierItem via D-Bus) ─────────────────
 
 struct ArgusLassoTray {
-    state:  Arc<Mutex<monitor::AppState>>,
+    state: Arc<Mutex<monitor::AppState>>,
     cmd_tx: crossbeam_channel::Sender<monitor::DaemonCmd>,
 }
 
@@ -42,7 +42,7 @@ fn make_tray_icon() -> ksni::Icon {
         pixel.rotate_right(1); // [R,G,B,A] → [A,R,G,B]
     }
     ksni::Icon {
-        width:  crate::icon::W as i32,
+        width: crate::icon::W as i32,
         height: crate::icon::H as i32,
         data,
     }
@@ -61,9 +61,7 @@ impl ksni::Tray for ArgusLassoTray {
         vec![make_tray_icon()]
     }
     fn title(&self) -> String {
-        let avg = self.state.lock()
-            .map(|s| s.cpu_avg)
-            .unwrap_or(0.0);
+        let avg = self.state.lock().map(|s| s.cpu_avg).unwrap_or(0.0);
         format!("Argus-Lasso  CPU {avg:.0}%")
     }
 
@@ -78,29 +76,25 @@ impl ksni::Tray for ArgusLassoTray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        let gaming_active = self.state.lock()
-            .map(|s| s.gaming_active)
-            .unwrap_or(false);
+        let gaming_active = self.state.lock().map(|s| s.gaming_active).unwrap_or(false);
 
         vec![
             ksni::MenuItem::Checkmark(ksni::menu::CheckmarkItem {
-                label:   "Gaming Mode".into(),
+                label: "Gaming Mode".into(),
                 checked: gaming_active,
                 activate: Box::new(|tray: &mut Self| {
-                    let currently = tray.state.lock()
-                        .map(|s| s.gaming_active)
-                        .unwrap_or(false);
+                    let currently = tray.state.lock().map(|s| s.gaming_active).unwrap_or(false);
                     let _ = tray.cmd_tx.send(monitor::DaemonCmd::SetGamingMode {
-                        active:       !currently,
+                        active: !currently,
                         elevate_nice: true,
-                        park:         true,
+                        park: true,
                     });
                 }),
                 ..Default::default()
             }),
             ksni::MenuItem::Separator,
             ksni::MenuItem::Standard(ksni::menu::StandardItem {
-                label:    "Quit".into(),
+                label: "Quit".into(),
                 activate: Box::new(|_| std::process::exit(0)),
                 ..Default::default()
             }),
@@ -153,10 +147,17 @@ fn main() {
             Cmd::Kill { pid, force } => {
                 use nix::sys::signal::{self, Signal};
                 use nix::unistd::Pid;
-                let sig = if force { Signal::SIGKILL } else { Signal::SIGTERM };
+                let sig = if force {
+                    Signal::SIGKILL
+                } else {
+                    Signal::SIGTERM
+                };
                 match signal::kill(Pid::from_raw(pid as i32), sig) {
                     Ok(_) => println!("{}illed PID {pid}", if force { "Force k" } else { "K" }),
-                    Err(e) => { eprintln!("Kill failed: {e}"); std::process::exit(1); }
+                    Err(e) => {
+                        eprintln!("Kill failed: {e}");
+                        std::process::exit(1);
+                    }
                 }
                 return;
             }
@@ -202,16 +203,23 @@ fn main() {
 
     // Spawn daemon thread
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
-    monitor::spawn(Arc::clone(&state), cmd_rx, cfg.clone(), Arc::clone(&rule_engine));
+    monitor::spawn(
+        Arc::clone(&state),
+        cmd_rx,
+        cfg.clone(),
+        Arc::clone(&rule_engine),
+    );
 
     // System tray via D-Bus StatusNotifierItem (KDE/freedesktop, no libxdo).
     // Spawned after state + cmd_tx exist so the menu can read/toggle gaming mode.
     let _tray_handle = if !args.no_tray {
         use ksni::blocking::TrayMethods;
         match (ArgusLassoTray {
-            state:  Arc::clone(&state),
+            state: Arc::clone(&state),
             cmd_tx: cmd_tx.clone(),
-        }).spawn() {
+        })
+        .spawn()
+        {
             Ok(h) => {
                 log::info!("SNI tray icon registered");
                 Some(h)
@@ -249,21 +257,17 @@ fn main() {
         ..Default::default()
     };
 
-    let state_gui   = Arc::clone(&state);
-    let re_gui      = Arc::clone(&rule_engine);
-    let cfg_gui     = cfg.clone();
-    let cmd_tx_gui  = cmd_tx.clone();
+    let state_gui = Arc::clone(&state);
+    let re_gui = Arc::clone(&rule_engine);
+    let cfg_gui = cfg.clone();
+    let cmd_tx_gui = cmd_tx.clone();
 
     eframe::run_native(
         "Argus-Lasso",
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(app::ArgusLassoApp::new(
-                cc,
-                state_gui,
-                cmd_tx_gui,
-                re_gui,
-                cfg_gui,
+                cc, state_gui, cmd_tx_gui, re_gui, cfg_gui,
             )))
         }),
     )

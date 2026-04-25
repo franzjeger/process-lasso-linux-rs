@@ -1,6 +1,5 @@
 pub mod bench_tab;
 pub mod cpu_bars;
-pub mod theme;
 pub mod dialogs;
 pub mod gaming_mode_tab;
 pub mod hw_monitor_tab;
@@ -10,3 +9,4 @@ pub mod probalance_tab;
 pub mod process_tab;
 pub mod rules_tab;
 pub mod settings_tab;
+pub mod theme;

@@ -8,9 +8,9 @@ use egui::{Context, RichText};
 use crossbeam_channel::Sender;
 
 use crate::config::{self, Config};
+use crate::gui::bench_tab::BenchTab;
 use crate::gui::dialogs::{AffinityDialog, IoNiceDialog, NiceDialog};
 use crate::gui::gaming_mode_tab::{GamingEvent, GamingModeTab};
-use crate::gui::bench_tab::BenchTab;
 use crate::gui::hw_monitor_tab::HwMonitorTab;
 use crate::gui::log_tab::LogTab;
 use crate::gui::overview_tab::OverviewTab;
@@ -54,8 +54,7 @@ fn read_cpu_temp() -> Option<f32> {
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
 
-        let is_match = KNOWN_NAMES.contains(&name.as_str())
-            || name.starts_with("it8");
+        let is_match = KNOWN_NAMES.contains(&name.as_str()) || name.starts_with("it8");
 
         if !is_match {
             continue;
@@ -161,15 +160,19 @@ impl ArgusLassoApp {
 
         // Initialise Wayland compositor-side opacity via wp_alpha_modifier_v1.
         // Extract the raw wl_display* and wl_surface* that eframe already holds.
-        use raw_window_handle::{HasDisplayHandle as _, HasWindowHandle as _, RawDisplayHandle, RawWindowHandle};
-        let display_ptr: *mut std::ffi::c_void = cc.display_handle()
+        use raw_window_handle::{
+            HasDisplayHandle as _, HasWindowHandle as _, RawDisplayHandle, RawWindowHandle,
+        };
+        let display_ptr: *mut std::ffi::c_void = cc
+            .display_handle()
             .ok()
             .and_then(|dh| match dh.as_raw() {
                 RawDisplayHandle::Wayland(h) => Some(h.display.as_ptr()),
                 _ => None,
             })
             .unwrap_or(std::ptr::null_mut());
-        let surface_ptr: *mut std::ffi::c_void = cc.window_handle()
+        let surface_ptr: *mut std::ffi::c_void = cc
+            .window_handle()
             .ok()
             .and_then(|wh| match wh.as_raw() {
                 RawWindowHandle::Wayland(h) => Some(h.surface.as_ptr()),
@@ -179,7 +182,9 @@ impl ArgusLassoApp {
 
         let wayland_opacity = crate::wayland_opacity::WaylandOpacity::new(display_ptr, surface_ptr);
         if wayland_opacity.is_none() {
-            log::warn!("Wayland opacity unavailable — compositor does not support wp_alpha_modifier_v1");
+            log::warn!(
+                "Wayland opacity unavailable — compositor does not support wp_alpha_modifier_v1"
+            );
         }
 
         // Restore saved opacity; apply immediately so it takes effect on first frame.
@@ -239,7 +244,11 @@ impl ArgusLassoApp {
     }
 
     fn save_config(&self) {
-        let cfg = if let Ok(s) = self.state.lock() { s.config.clone() } else { return };
+        let cfg = if let Ok(s) = self.state.lock() {
+            s.config.clone()
+        } else {
+            return;
+        };
         if let Err(e) = config::save(&cfg) {
             log::warn!("Config save failed: {e}");
         }
@@ -258,8 +267,12 @@ impl ArgusLassoApp {
                     deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
                 });
                 if let Ok(mut s) = self.state.lock() {
-                    s.append_log(format!("Suspended {} ({}) — will {} in 5s", name, pid,
-                        if force { "force kill" } else { "kill" }));
+                    s.append_log(format!(
+                        "Suspended {} ({}) — will {} in 5s",
+                        name,
+                        pid,
+                        if force { "force kill" } else { "kill" }
+                    ));
                 }
             }
             TableAction::Suspend { pid, name } => {
@@ -311,7 +324,10 @@ impl ArgusLassoApp {
                 if let (Some(pid), cpulist) = (self.dialog_pid, result.as_str()) {
                     if !cpulist.is_empty() {
                         if utils::set_affinity(pid, cpulist) {
-                            self.send(DaemonCmd::SetManualOverride { pid, duration_secs: 30.0 });
+                            self.send(DaemonCmd::SetManualOverride {
+                                pid,
+                                duration_secs: 30.0,
+                            });
                             if let Ok(mut s) = self.state.lock() {
                                 s.append_log(format!("[Manual] affinity={cpulist} → PID {pid}"));
                             }
@@ -344,7 +360,9 @@ impl ArgusLassoApp {
                 if let (Some(pid), Some((class, level))) = (self.dialog_pid, result) {
                     if utils::set_ionice(pid, class, Some(level)) {
                         if let Ok(mut s) = self.state.lock() {
-                            s.append_log(format!("[Manual] ionice class={class} level={level} → PID {pid}"));
+                            s.append_log(format!(
+                                "[Manual] ionice class={class} level={level} → PID {pid}"
+                            ));
                         }
                     }
                 }
@@ -362,7 +380,12 @@ impl eframe::App for ArgusLassoApp {
         let elapsed = self.last_repaint_log.elapsed();
         if elapsed >= std::time::Duration::from_secs(10) {
             let rate = self.repaint_count as f32 / elapsed.as_secs_f32();
-            log::debug!("repaint rate: {:.1}/sec ({} in {:.1}s)", rate, self.repaint_count, elapsed.as_secs_f32());
+            log::debug!(
+                "repaint rate: {:.1}/sec ({} in {:.1}s)",
+                rate,
+                self.repaint_count,
+                elapsed.as_secs_f32()
+            );
             self.repaint_count = 0;
             self.last_repaint_log = std::time::Instant::now();
         }
@@ -370,11 +393,25 @@ impl eframe::App for ArgusLassoApp {
         // Pull snapshot from shared state — lock held only for this clone block.
         // Expensive clones (log_lines, hw_monitor) only when the relevant tab is active.
         let on_log_tab = self.active_tab == Tab::Log;
-        let on_hw_tab  = self.active_tab == Tab::HwMonitor;
-        let on_pb_tab  = self.active_tab == Tab::ProBalance;
+        let on_hw_tab = self.active_tab == Tab::HwMonitor;
+        let on_pb_tab = self.active_tab == Tab::ProBalance;
         let on_proc_tab = self.active_tab == Tab::Processes || self.active_tab == Tab::Overview;
         let on_overview_tab = self.active_tab == Tab::Overview;
-        let (snapshot, cpu_pcts, cpu_gen, throttled_pids, suspended_pids, throttle_infos, log_lines, config, gaming_active, hw_monitor, proc_cpu_history, cpu_history, cpu_avg) = {
+        let (
+            snapshot,
+            cpu_pcts,
+            cpu_gen,
+            throttled_pids,
+            suspended_pids,
+            throttle_infos,
+            log_lines,
+            config,
+            gaming_active,
+            hw_monitor,
+            proc_cpu_history,
+            cpu_history,
+            cpu_avg,
+        ) = {
             if let Ok(s) = self.state.lock() {
                 (
                     s.snapshot.clone(),
@@ -382,13 +419,33 @@ impl eframe::App for ArgusLassoApp {
                     s.cpu_generation,
                     s.throttled_pids.clone(),
                     s.suspended_pids.clone(),
-                    if on_pb_tab { s.throttle_infos.clone() } else { Default::default() },
-                    if on_log_tab { s.log_lines.clone() } else { Default::default() },
+                    if on_pb_tab {
+                        s.throttle_infos.clone()
+                    } else {
+                        Default::default()
+                    },
+                    if on_log_tab {
+                        s.log_lines.clone()
+                    } else {
+                        Default::default()
+                    },
                     s.config.clone(),
                     s.gaming_active,
-                    if on_hw_tab { s.hw_monitor.clone() } else { Default::default() },
-                    if on_proc_tab { s.proc_cpu_history.clone() } else { Default::default() },
-                    if on_overview_tab { s.cpu_history.clone() } else { Default::default() },
+                    if on_hw_tab {
+                        s.hw_monitor.clone()
+                    } else {
+                        Default::default()
+                    },
+                    if on_proc_tab {
+                        s.proc_cpu_history.clone()
+                    } else {
+                        Default::default()
+                    },
+                    if on_overview_tab {
+                        s.cpu_history.clone()
+                    } else {
+                        Default::default()
+                    },
                     s.cpu_avg,
                 )
             } else {
@@ -415,12 +472,21 @@ impl eframe::App for ArgusLassoApp {
             if std::time::Instant::now() >= pk.deadline {
                 use nix::sys::signal::{self, Signal};
                 use nix::unistd::Pid;
-                let sig = if pk.force { Signal::SIGKILL } else { Signal::SIGTERM };
+                let sig = if pk.force {
+                    Signal::SIGKILL
+                } else {
+                    Signal::SIGTERM
+                };
                 let name = pk.name.clone();
                 let pid = pk.pid;
                 let force = pk.force;
                 let msg = match signal::kill(Pid::from_raw(pid as i32), sig) {
-                    Ok(_) => format!("{}illed {} ({})", if force { "Force k" } else { "K" }, name, pid),
+                    Ok(_) => format!(
+                        "{}illed {} ({})",
+                        if force { "Force k" } else { "K" },
+                        name,
+                        pid
+                    ),
                     Err(e) => format!("Kill failed for {} ({}): {e}", name, pid),
                 };
                 if config.ui.notifications_enabled {
@@ -430,7 +496,9 @@ impl eframe::App for ArgusLassoApp {
                         .timeout(notify_rust::Timeout::Milliseconds(3000))
                         .show();
                 }
-                if let Ok(mut s) = self.state.lock() { s.append_log(msg); }
+                if let Ok(mut s) = self.state.lock() {
+                    s.append_log(msg);
+                }
                 self.pending_kill = None;
             }
         }
@@ -438,7 +506,10 @@ impl eframe::App for ArgusLassoApp {
         // ── Top-level panels ─────────────────────────────────────────────
         // Build pending-kill display info before the panel closure (avoids borrow issues)
         let pending_kill_info: Option<(u32, String, u64)> = self.pending_kill.as_ref().map(|pk| {
-            let remaining = pk.deadline.saturating_duration_since(std::time::Instant::now()).as_secs();
+            let remaining = pk
+                .deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs();
             (pk.pid, pk.name.clone(), remaining)
         });
         let mut undo_requested = false;
@@ -447,7 +518,11 @@ impl eframe::App for ArgusLassoApp {
             ui.horizontal(|ui| {
                 ui.label(format!("Processes: {}", self.proc_count));
                 ui.separator();
-                let avg = if cpu_pcts.is_empty() { 0.0 } else { cpu_pcts.iter().sum::<f32>() / cpu_pcts.len() as f32 };
+                let avg = if cpu_pcts.is_empty() {
+                    0.0
+                } else {
+                    cpu_pcts.iter().sum::<f32>() / cpu_pcts.len() as f32
+                };
                 ui.label(format!("CPU avg: {avg:.0}%"));
                 if let Some(temp) = self.cpu_temp {
                     ui.separator();
@@ -463,8 +538,10 @@ impl eframe::App for ArgusLassoApp {
                 }
                 if let Some((_, ref kill_name, remaining)) = pending_kill_info {
                     ui.separator();
-                    ui.colored_label(egui::Color32::from_rgb(240, 120, 60),
-                        format!("Killing '{}' in {}s", kill_name, remaining + 1));
+                    ui.colored_label(
+                        egui::Color32::from_rgb(240, 120, 60),
+                        format!("Killing '{}' in {}s", kill_name, remaining + 1),
+                    );
                     if ui.button("Undo").clicked() {
                         undo_requested = true;
                     }
@@ -509,9 +586,11 @@ impl eframe::App for ArgusLassoApp {
                 ] {
                     let selected = self.active_tab == tab;
                     let text = if selected {
-                        RichText::new(label).color(crate::gui::theme::Breeze::HIGHLIGHT).strong()
+                        RichText::new(label)
+                            .color(crate::gui::theme::Breeze::HIGHLIGHT)
+                            .strong()
                     } else {
-                        RichText::new(label)  // inherits theme text color — readable on both dark and light
+                        RichText::new(label) // inherits theme text color — readable on both dark and light
                     };
                     if ui.selectable_label(selected, text).clicked() {
                         self.active_tab = tab;
@@ -552,12 +631,19 @@ impl eframe::App for ArgusLassoApp {
                     let mut profiles_changed = false;
                     let mut rule_profiles = config.rule_profiles.clone();
                     self.rules_tab.show(
-                        ui, ctx, &self.rule_engine, &mut rules_changed,
-                        self.opacity, &mut rule_profiles, &mut profiles_changed,
+                        ui,
+                        ctx,
+                        &self.rule_engine,
+                        &mut rules_changed,
+                        self.opacity,
+                        &mut rule_profiles,
+                        &mut profiles_changed,
                     );
                     if rules_changed {
                         if let Ok(mut s) = self.state.lock() {
-                            s.config.rules = self.rule_engine.lock()
+                            s.config.rules = self
+                                .rule_engine
+                                .lock()
                                 .map(|re| re.to_config_list())
                                 .unwrap_or_default();
                         }
@@ -590,18 +676,31 @@ impl eframe::App for ArgusLassoApp {
                     let events: Vec<GamingEvent> = std::mem::take(&mut self.gaming_mode_tab.events);
                     for event in events {
                         match event {
-                            GamingEvent::GamingModeChanged { active, elevate_nice } => {
-                                self.send(DaemonCmd::SetGamingMode { active, elevate_nice, park: false });
-                                if active { self.send(DaemonCmd::ReapplyDefaults); }
+                            GamingEvent::GamingModeChanged {
+                                active,
+                                elevate_nice,
+                            } => {
+                                self.send(DaemonCmd::SetGamingMode {
+                                    active,
+                                    elevate_nice,
+                                    park: false,
+                                });
+                                if active {
+                                    self.send(DaemonCmd::ReapplyDefaults);
+                                }
                             }
                             GamingEvent::ResetAll => {
                                 self.send(DaemonCmd::ResetAffinities);
                             }
                             GamingEvent::LogMessage(msg) => {
-                                if let Ok(mut s) = self.state.lock() { s.append_log(msg); }
+                                if let Ok(mut s) = self.state.lock() {
+                                    s.append_log(msg);
+                                }
                             }
                             GamingEvent::ConfigChanged(cfg) => {
-                                if let Ok(mut s) = self.state.lock() { s.config = cfg.clone(); }
+                                if let Ok(mut s) = self.state.lock() {
+                                    s.config = cfg.clone();
+                                }
                                 self.send(DaemonCmd::UpdateConfig(cfg));
                                 self.save_config();
                             }
@@ -644,15 +743,21 @@ impl eframe::App for ArgusLassoApp {
                                 let (r, g, b) = crate::gui::theme::window_bg_rgb(theme);
                                 let col = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
                                 s.visuals.window_fill = col;
-                                s.visuals.panel_fill  = col;
+                                s.visuals.panel_fill = col;
                             });
                         }
                     }
 
                     if let Some(updated) = config_changed {
-                        if let Ok(mut s) = self.state.lock() { s.config = updated.clone(); }
+                        if let Ok(mut s) = self.state.lock() {
+                            s.config = updated.clone();
+                        }
                         // Re-apply full theme (resets window_fill to opaque if needed)
-                        crate::gui::theme::apply_theme(ctx, self.native_ppp, &self.settings_tab.theme);
+                        crate::gui::theme::apply_theme(
+                            ctx,
+                            self.native_ppp,
+                            &self.settings_tab.theme,
+                        );
                         // Then re-apply opacity on top of the fresh theme
                         if let Some(ref wo) = self.wayland_opacity {
                             wo.set(self.opacity);
@@ -683,10 +788,13 @@ impl eframe::App for ArgusLassoApp {
                 Tab::Log => {
                     let (clear, save) = self.log_tab.show_with_clear(ui, &log_lines);
                     if clear {
-                        if let Ok(mut s) = self.state.lock() { s.log_lines.clear(); }
+                        if let Ok(mut s) = self.state.lock() {
+                            s.log_lines.clear();
+                        }
                     }
                     if save {
-                        if let Some(p) = crate::file_dialog::save("argus-lasso.log", "*.log *.txt") {
+                        if let Some(p) = crate::file_dialog::save("argus-lasso.log", "*.log *.txt")
+                        {
                             let content = log_lines.iter().cloned().collect::<Vec<_>>().join("\n");
                             let _ = std::fs::write(&p, content);
                         }
@@ -701,4 +809,3 @@ impl eframe::App for ArgusLassoApp {
         ));
     }
 }
-

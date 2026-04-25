@@ -103,12 +103,20 @@ impl CpuTopology {
 
     /// Button label for preferred cores, e.g. "P-cores 0-7 (5.5 GHz)"
     pub fn preferred_button_label(&self) -> String {
-        format!("{} ({})", self.preferred_label, cpuset_to_cpulist(&self.preferred))
+        format!(
+            "{} ({})",
+            self.preferred_label,
+            cpuset_to_cpulist(&self.preferred)
+        )
     }
 
     /// Button label for non-preferred cores, e.g. "E-cores 8-23 (4.9 GHz)"
     pub fn non_preferred_button_label(&self) -> String {
-        format!("{} ({})", self.non_preferred_label, cpuset_to_cpulist(&self.non_preferred))
+        format!(
+            "{} ({})",
+            self.non_preferred_label,
+            cpuset_to_cpulist(&self.non_preferred)
+        )
     }
 
     /// Short kind label for display
@@ -156,13 +164,12 @@ pub fn detect_topology() -> CpuTopology {
 }
 
 fn present_cpus() -> HashSet<u32> {
-    read_cpulist_file("/sys/devices/system/cpu/present")
-        .unwrap_or_else(|| {
-            let n = std::thread::available_parallelism()
-                .map(|n| n.get() as u32)
-                .unwrap_or(1);
-            (0..n).collect()
-        })
+    read_cpulist_file("/sys/devices/system/cpu/present").unwrap_or_else(|| {
+        let n = std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(1);
+        (0..n).collect()
+    })
 }
 
 /// Detect AMD X3D: preferred CCD has larger L3 (3D V-Cache).
@@ -220,8 +227,16 @@ fn detect_amd_x3d() -> Option<CpuTopology> {
 
     let max_kb = *sizes.iter().max().unwrap();
     let min_kb = *sizes.iter().min().unwrap();
-    let preferred: HashSet<u32> = l3.iter().filter(|(_, &s)| s == max_kb).map(|(&c, _)| c).collect();
-    let non_preferred: HashSet<u32> = l3.iter().filter(|(_, &s)| s == min_kb).map(|(&c, _)| c).collect();
+    let preferred: HashSet<u32> = l3
+        .iter()
+        .filter(|(_, &s)| s == max_kb)
+        .map(|(&c, _)| c)
+        .collect();
+    let non_preferred: HashSet<u32> = l3
+        .iter()
+        .filter(|(_, &s)| s == min_kb)
+        .map(|(&c, _)| c)
+        .collect();
 
     Some(CpuTopology {
         kind: TopologyKind::AmdX3D,
@@ -249,14 +264,28 @@ fn detect_intel_hybrid() -> Option<CpuTopology> {
     if let (Some(p), Some(e)) = (p_cores, e_cores) {
         if !p.is_empty() && !e.is_empty() {
             // Read max freq for labels (best-effort)
-            let p_max = p.iter().filter_map(|&c| {
-                fs::read_to_string(format!("/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq"))
-                    .ok().and_then(|s| s.trim().parse::<u64>().ok())
-            }).max().unwrap_or(0);
-            let e_max = e.iter().filter_map(|&c| {
-                fs::read_to_string(format!("/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq"))
-                    .ok().and_then(|s| s.trim().parse::<u64>().ok())
-            }).max().unwrap_or(0);
+            let p_max = p
+                .iter()
+                .filter_map(|&c| {
+                    fs::read_to_string(format!(
+                        "/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq"
+                    ))
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                })
+                .max()
+                .unwrap_or(0);
+            let e_max = e
+                .iter()
+                .filter_map(|&c| {
+                    fs::read_to_string(format!(
+                        "/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq"
+                    ))
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                })
+                .max()
+                .unwrap_or(0);
 
             return Some(CpuTopology {
                 kind: TopologyKind::IntelHybrid,
@@ -302,8 +331,16 @@ fn detect_intel_hybrid() -> Option<CpuTopology> {
     // Use midpoint between highest and lowest freq as threshold —
     // much more robust than 80% of max for close P/E freq gaps.
     let threshold = (max_f + min_f) / 2;
-    let preferred: HashSet<u32> = max_freq.iter().filter(|(_, &f)| f >= threshold).map(|(&c, _)| c).collect();
-    let non_preferred: HashSet<u32> = max_freq.iter().filter(|(_, &f)| f < threshold).map(|(&c, _)| c).collect();
+    let preferred: HashSet<u32> = max_freq
+        .iter()
+        .filter(|(_, &f)| f >= threshold)
+        .map(|(&c, _)| c)
+        .collect();
+    let non_preferred: HashSet<u32> = max_freq
+        .iter()
+        .filter(|(_, &f)| f < threshold)
+        .map(|(&c, _)| c)
+        .collect();
 
     Some(CpuTopology {
         kind: TopologyKind::IntelHybrid,
@@ -399,7 +436,14 @@ fn run_helper(args: &[&str]) -> (bool, String) {
         Ok(o) if o.status.success() => (true, String::new()),
         Ok(o) => {
             let msg = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            (false, if msg.is_empty() { String::from_utf8_lossy(&o.stdout).trim().to_string() } else { msg })
+            (
+                false,
+                if msg.is_empty() {
+                    String::from_utf8_lossy(&o.stdout).trim().to_string()
+                } else {
+                    msg
+                },
+            )
         }
         Err(e) => (false, e.to_string()),
     }
@@ -415,7 +459,9 @@ pub fn park_cpus(cpus: &HashSet<u32>, log_cb: impl Fn(String)) -> bool {
     sorted.sort_unstable();
     for cpu in sorted {
         if cpu == 0 {
-            log_cb(format!("[Park] Skipping CPU 0 (bootstrap processor, cannot offline)"));
+            log_cb(format!(
+                "[Park] Skipping CPU 0 (bootstrap processor, cannot offline)"
+            ));
             continue;
         }
         let (success, msg) = run_helper(&["cpu-online", &cpu.to_string(), "0"]);
@@ -530,7 +576,15 @@ pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) 
                             format!(
                                 "Install failed (rc={:?}): {}",
                                 o.status.code(),
-                                combined.trim().chars().rev().take(300).collect::<String>().chars().rev().collect::<String>()
+                                combined
+                                    .trim()
+                                    .chars()
+                                    .rev()
+                                    .take(300)
+                                    .collect::<String>()
+                                    .chars()
+                                    .rev()
+                                    .collect::<String>()
                             ),
                         )
                     }

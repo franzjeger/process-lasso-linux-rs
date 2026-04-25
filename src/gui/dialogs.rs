@@ -1,8 +1,8 @@
 //! Modal dialogs: affinity picker, nice dialog, ionice dialog, rule edit,
 //! process picker, Steam game picker, Lutris game picker, rule presets.
 
-use std::collections::HashSet;
 use egui::{Context, Ui, ViewportBuilder, ViewportId};
+use std::collections::HashSet;
 
 use crate::cpu_park::{detect_topology, get_smt_siblings_of};
 use crate::gui::theme::Breeze;
@@ -48,8 +48,16 @@ impl AffinityPicker {
             checkboxes,
             cpu_count,
             offline,
-            preferred: if has_asym { topo.preferred.clone() } else { HashSet::new() },
-            non_preferred: if has_asym { topo.non_preferred.clone() } else { HashSet::new() },
+            preferred: if has_asym {
+                topo.preferred.clone()
+            } else {
+                HashSet::new()
+            },
+            non_preferred: if has_asym {
+                topo.non_preferred.clone()
+            } else {
+                HashSet::new()
+            },
             smt_siblings,
             preferred_label: topo.preferred_label.clone(),
             non_preferred_label: topo.non_preferred_label.clone(),
@@ -58,7 +66,9 @@ impl AffinityPicker {
 
     /// Current cpulist string computed from checkbox state.
     pub fn cpulist(&self) -> String {
-        let selected: HashSet<u32> = self.checkboxes.iter()
+        let selected: HashSet<u32> = self
+            .checkboxes
+            .iter()
             .enumerate()
             .filter(|(_, &b)| b)
             .map(|(i, _)| i as u32)
@@ -71,10 +81,7 @@ impl AffinityPicker {
         // Parked CPUs warning
         if !self.offline.is_empty() {
             let offline_str = cpuset_to_cpulist(&self.offline);
-            ui.colored_label(
-                Breeze::WARNING,
-                format!("CPUs {offline_str} are parked"),
-            );
+            ui.colored_label(Breeze::WARNING, format!("CPUs {offline_str} are parked"));
             ui.add_space(2.0);
         }
 
@@ -82,19 +89,27 @@ impl AffinityPicker {
         if !self.preferred.is_empty() {
             ui.horizontal(|ui| {
                 ui.label("Quick:");
-                if ui.button(format!("{} (preferred)", self.preferred_label)).clicked() {
+                if ui
+                    .button(format!("{} (preferred)", self.preferred_label))
+                    .clicked()
+                {
                     for (i, cb) in self.checkboxes.iter_mut().enumerate() {
                         *cb = self.preferred.contains(&(i as u32));
                     }
                 }
-                if ui.button(format!("{} (non-preferred)", self.non_preferred_label)).clicked() {
+                if ui
+                    .button(format!("{} (non-preferred)", self.non_preferred_label))
+                    .clicked()
+                {
                     for (i, cb) in self.checkboxes.iter_mut().enumerate() {
                         *cb = self.non_preferred.contains(&(i as u32));
                     }
                 }
                 if ui.button("All cores").clicked() {
                     for (i, cb) in self.checkboxes.iter_mut().enumerate() {
-                        if !self.offline.contains(&(i as u32)) { *cb = true; }
+                        if !self.offline.contains(&(i as u32)) {
+                            *cb = true;
+                        }
                     }
                 }
                 let has_smt = !self.smt_siblings.is_empty();
@@ -112,7 +127,9 @@ impl AffinityPicker {
                 ui.label("Quick:");
                 if ui.button("All cores").clicked() {
                     for (i, cb) in self.checkboxes.iter_mut().enumerate() {
-                        if !self.offline.contains(&(i as u32)) { *cb = true; }
+                        if !self.offline.contains(&(i as u32)) {
+                            *cb = true;
+                        }
                     }
                 }
                 let has_smt = !self.smt_siblings.is_empty();
@@ -125,7 +142,9 @@ impl AffinityPicker {
                     }
                 });
                 if ui.button("None").clicked() {
-                    for cb in &mut self.checkboxes { *cb = false; }
+                    for cb in &mut self.checkboxes {
+                        *cb = false;
+                    }
                 }
             });
         }
@@ -133,64 +152,99 @@ impl AffinityPicker {
         ui.add_space(4.0);
 
         // Core checkbox grid — physical+HT pairs side by side
-        egui::ScrollArea::vertical().max_height(180.0).id_salt("aff_picker_scroll").show(ui, |ui| {
-            if !self.preferred.is_empty() {
-                // Topology-aware sections
-                let phys_pref: Vec<u32> = {
-                    let mut v: Vec<u32> = self.preferred.iter()
-                        .filter(|c| !self.smt_siblings.contains(c))
-                        .copied().collect();
-                    v.sort_unstable();
-                    v
-                };
-                let phys_npref: Vec<u32> = {
-                    let mut v: Vec<u32> = self.non_preferred.iter()
-                        .filter(|c| !self.smt_siblings.contains(c))
-                        .copied().collect();
-                    v.sort_unstable();
-                    v
-                };
+        egui::ScrollArea::vertical()
+            .max_height(180.0)
+            .id_salt("aff_picker_scroll")
+            .show(ui, |ui| {
+                if !self.preferred.is_empty() {
+                    // Topology-aware sections
+                    let phys_pref: Vec<u32> = {
+                        let mut v: Vec<u32> = self
+                            .preferred
+                            .iter()
+                            .filter(|c| !self.smt_siblings.contains(c))
+                            .copied()
+                            .collect();
+                        v.sort_unstable();
+                        v
+                    };
+                    let phys_npref: Vec<u32> = {
+                        let mut v: Vec<u32> = self
+                            .non_preferred
+                            .iter()
+                            .filter(|c| !self.smt_siblings.contains(c))
+                            .copied()
+                            .collect();
+                        v.sort_unstable();
+                        v
+                    };
 
-                if !phys_pref.is_empty() {
-                    ui.colored_label(Breeze::HIGHLIGHT,
-                        if self.preferred_label.is_empty() { "Preferred cores" } else { &self.preferred_label });
-                    self.show_core_pairs(ui, &phys_pref);
-                }
-                if !phys_npref.is_empty() {
-                    ui.colored_label(ui.visuals().weak_text_color(),
-                        if self.non_preferred_label.is_empty() { "Non-preferred cores" } else { &self.non_preferred_label });
-                    self.show_core_pairs(ui, &phys_npref);
-                }
-            } else {
-                // Flat grid of physical+HT pairs
-                let all_phys: Vec<u32> = {
-                    let mut v: Vec<u32> = (0..self.cpu_count)
-                        .filter(|c| !self.smt_siblings.contains(c))
-                        .collect();
-                    v.sort_unstable();
-                    v
-                };
-                if all_phys.is_empty() {
-                    // No topology info — flat grid
-                    egui::Grid::new("aff_flat_grid").num_columns(8).show(ui, |ui| {
-                        for i in 0..self.cpu_count as usize {
-                            let offline = self.offline.contains(&(i as u32));
-                            ui.add_enabled(!offline, egui::Checkbox::new(&mut self.checkboxes[i], i.to_string()));
-                            if (i + 1) % 8 == 0 { ui.end_row(); }
-                        }
-                    });
+                    if !phys_pref.is_empty() {
+                        ui.colored_label(
+                            Breeze::HIGHLIGHT,
+                            if self.preferred_label.is_empty() {
+                                "Preferred cores"
+                            } else {
+                                &self.preferred_label
+                            },
+                        );
+                        self.show_core_pairs(ui, &phys_pref);
+                    }
+                    if !phys_npref.is_empty() {
+                        ui.colored_label(
+                            ui.visuals().weak_text_color(),
+                            if self.non_preferred_label.is_empty() {
+                                "Non-preferred cores"
+                            } else {
+                                &self.non_preferred_label
+                            },
+                        );
+                        self.show_core_pairs(ui, &phys_npref);
+                    }
                 } else {
-                    self.show_core_pairs(ui, &all_phys);
+                    // Flat grid of physical+HT pairs
+                    let all_phys: Vec<u32> = {
+                        let mut v: Vec<u32> = (0..self.cpu_count)
+                            .filter(|c| !self.smt_siblings.contains(c))
+                            .collect();
+                        v.sort_unstable();
+                        v
+                    };
+                    if all_phys.is_empty() {
+                        // No topology info — flat grid
+                        egui::Grid::new("aff_flat_grid")
+                            .num_columns(8)
+                            .show(ui, |ui| {
+                                for i in 0..self.cpu_count as usize {
+                                    let offline = self.offline.contains(&(i as u32));
+                                    ui.add_enabled(
+                                        !offline,
+                                        egui::Checkbox::new(&mut self.checkboxes[i], i.to_string()),
+                                    );
+                                    if (i + 1) % 8 == 0 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                    } else {
+                        self.show_core_pairs(ui, &all_phys);
+                    }
                 }
-            }
-        });
+            });
 
         // Read-only cpulist result
         let cpulist = self.cpulist();
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Result:").color(ui.visuals().weak_text_color()));
-            ui.label(egui::RichText::new(if cpulist.is_empty() { "(none)" } else { &cpulist }).color(Breeze::HIGHLIGHT));
+            ui.label(
+                egui::RichText::new(if cpulist.is_empty() {
+                    "(none)"
+                } else {
+                    &cpulist
+                })
+                .color(Breeze::HIGHLIGHT),
+            );
         });
     }
 
@@ -203,12 +257,18 @@ impl AffinityPicker {
                 let sibling = self.find_sibling(phys);
 
                 // Render the physical+HT pair inside a small horizontal group
-                ui.add_enabled(!p_offline, egui::Checkbox::new(&mut self.checkboxes[p], format!("{phys}")));
+                ui.add_enabled(
+                    !p_offline,
+                    egui::Checkbox::new(&mut self.checkboxes[p], format!("{phys}")),
+                );
 
                 if let Some(s) = sibling {
                     let s_usize = s as usize;
                     let s_offline = self.offline.contains(&s);
-                    ui.add_enabled(!s_offline, egui::Checkbox::new(&mut self.checkboxes[s_usize], format!("HT{s}")));
+                    ui.add_enabled(
+                        !s_offline,
+                        egui::Checkbox::new(&mut self.checkboxes[s_usize], format!("HT{s}")),
+                    );
                 }
 
                 // Visual separator between pairs
@@ -230,7 +290,8 @@ impl AffinityPicker {
             }
         }
         // Slow path: scan smt_siblings for the one closest to phys
-        self.smt_siblings.iter()
+        self.smt_siblings
+            .iter()
             .filter(|&&s| s > phys && s < phys + self.cpu_count)
             .min_by_key(|&&s| s.wrapping_sub(phys))
             .copied()
@@ -279,8 +340,16 @@ impl AffinityDialog {
             non_preferred_label: topo.non_preferred_label.clone(),
             cpu_count,
             offline,
-            preferred: if topo.has_asymmetry() { topo.preferred.clone() } else { HashSet::new() },
-            non_preferred: if topo.has_asymmetry() { topo.non_preferred.clone() } else { HashSet::new() },
+            preferred: if topo.has_asymmetry() {
+                topo.preferred.clone()
+            } else {
+                HashSet::new()
+            },
+            non_preferred: if topo.has_asymmetry() {
+                topo.non_preferred.clone()
+            } else {
+                HashSet::new()
+            },
             smt_siblings,
             result: None,
         }
@@ -296,12 +365,12 @@ impl AffinityDialog {
 
         {
             let title_str = format!("Set CPU Affinity — {}", self.title);
-            let checkboxes  = &mut self.checkboxes;
-            let offline     = &self.offline;
-            let preferred   = &self.preferred;
+            let checkboxes = &mut self.checkboxes;
+            let offline = &self.offline;
+            let preferred = &self.preferred;
             let non_preferred = &self.non_preferred;
             let smt_siblings = &self.smt_siblings;
-            let cpu_count   = self.cpu_count;
+            let cpu_count = self.cpu_count;
 
             ctx.show_viewport_immediate(
                 ViewportId::from_hash_of("affinity_dialog"),
@@ -426,7 +495,9 @@ impl AffinityDialog {
         if let Some(accept) = close_as {
             self.open = false;
             if accept {
-                let selected: HashSet<u32> = self.checkboxes.iter()
+                let selected: HashSet<u32> = self
+                    .checkboxes
+                    .iter()
                     .enumerate()
                     .filter(|(_, &b)| b)
                     .map(|(i, _)| i as u32)
@@ -453,12 +524,17 @@ pub struct NiceDialog {
     pub open: bool,
     pub title: String,
     pub value: i32,
-    pub result: Option<Option<i32>>,  // None = cancelled, Some(v) = accepted
+    pub result: Option<Option<i32>>, // None = cancelled, Some(v) = accepted
 }
 
 impl NiceDialog {
     pub fn new(current: i32, title: &str) -> Self {
-        Self { open: true, title: title.to_string(), value: current, result: None }
+        Self {
+            open: true,
+            title: title.to_string(),
+            value: current,
+            result: None,
+        }
     }
 
     pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<i32>> {
@@ -477,7 +553,11 @@ impl NiceDialog {
                 ViewportBuilder::default()
                     .with_title(title_str)
                     .with_app_id("argus-lasso")
-                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
+                    .with_icon(egui::IconData {
+                        rgba: crate::icon::RGBA.to_vec(),
+                        width: crate::icon::W,
+                        height: crate::icon::H,
+                    })
                     .with_min_inner_size([380.0, 160.0])
                     .with_transparent(true)
                     .with_resizable(false),
@@ -487,14 +567,21 @@ impl NiceDialog {
                         close_as = Some(false);
                     }
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        ui.label("Nice priority: lower = higher priority. Negative values require root.");
+                        ui.label(
+                            "Nice priority: lower = higher priority. Negative values require root.",
+                        );
                         ui.add(egui::Slider::new(value, -20..=19).text("nice"));
                         ui.horizontal(|ui| {
                             for (label, val) in [
-                                ("High (-10)", -10i32), ("Normal (0)", 0),
-                                ("Low (5)", 5), ("Very Low (15)", 15), ("Idle (19)", 19),
+                                ("High (-10)", -10i32),
+                                ("Normal (0)", 0),
+                                ("Low (5)", 5),
+                                ("Very Low (15)", 15),
+                                ("Idle (19)", 19),
                             ] {
-                                if ui.small_button(label).clicked() { *value = val; }
+                                if ui.small_button(label).clicked() {
+                                    *value = val;
+                                }
                             }
                         });
                         ui.separator();
@@ -540,11 +627,19 @@ pub struct IoNiceDialog {
 
 impl IoNiceDialog {
     pub fn new(title: &str) -> Self {
-        Self { open: true, title: title.to_string(), class: 2, level: 4, result: None }
+        Self {
+            open: true,
+            title: title.to_string(),
+            class: 2,
+            level: 4,
+            result: None,
+        }
     }
 
     pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<(i32, i32)>> {
-        if !self.open { return self.result.clone(); }
+        if !self.open {
+            return self.result.clone();
+        }
 
         let mut close_as: Option<bool> = None;
 
@@ -558,7 +653,11 @@ impl IoNiceDialog {
                 ViewportBuilder::default()
                     .with_title(title_str)
                     .with_app_id("argus-lasso")
-                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
+                    .with_icon(egui::IconData {
+                        rgba: crate::icon::RGBA.to_vec(),
+                        width: crate::icon::W,
+                        height: crate::icon::H,
+                    })
                     .with_min_inner_size([340.0, 160.0])
                     .with_transparent(true)
                     .with_resizable(false),
@@ -647,7 +746,9 @@ impl RuleEditDialog {
     }
 
     pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<Rule>> {
-        if !self.open { return self.result.clone(); }
+        if !self.open {
+            return self.result.clone();
+        }
 
         let mut close_as: Option<bool> = None;
 
@@ -657,18 +758,22 @@ impl RuleEditDialog {
             } else {
                 format!("Edit Rule — {}", self.rule.name)
             };
-            let rule             = &mut self.rule;
+            let rule = &mut self.rule;
             let affinity_enabled = &mut self.affinity_enabled;
-            let nice_enabled     = &mut self.nice_enabled;
-            let ionice_enabled   = &mut self.ionice_enabled;
-            let picker           = &mut self.affinity_picker;
+            let nice_enabled = &mut self.nice_enabled;
+            let ionice_enabled = &mut self.ionice_enabled;
+            let picker = &mut self.affinity_picker;
 
             ctx.show_viewport_immediate(
                 ViewportId::from_hash_of("rule_edit_dialog"),
                 ViewportBuilder::default()
                     .with_title(title_str)
                     .with_app_id("argus-lasso")
-                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
+                    .with_icon(egui::IconData {
+                        rgba: crate::icon::RGBA.to_vec(),
+                        width: crate::icon::W,
+                        height: crate::icon::H,
+                    })
                     .with_min_inner_size([540.0, 520.0])
                     .with_transparent(true)
                     .with_resizable(true),
@@ -684,7 +789,9 @@ impl RuleEditDialog {
                             ui.end_row();
 
                             ui.label("Pattern:");
-                            ui.add(egui::TextEdit::singleline(&mut rule.pattern).desired_width(260.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut rule.pattern).desired_width(260.0),
+                            );
                             ui.end_row();
 
                             ui.label("Match type:");
@@ -692,7 +799,11 @@ impl RuleEditDialog {
                                 .selected_text(&rule.match_type)
                                 .show_ui(ui, |ui| {
                                     for mt in ["contains", "exact", "regex"] {
-                                        ui.selectable_value(&mut rule.match_type, mt.to_string(), mt);
+                                        ui.selectable_value(
+                                            &mut rule.match_type,
+                                            mt.to_string(),
+                                            mt,
+                                        );
                                     }
                                 });
                             ui.end_row();
@@ -701,7 +812,10 @@ impl RuleEditDialog {
                             ui.horizontal(|ui| {
                                 ui.checkbox(nice_enabled, "Enable");
                                 let nice = rule.nice.get_or_insert(0);
-                                ui.add_enabled(*nice_enabled, egui::DragValue::new(nice).range(-20..=19));
+                                ui.add_enabled(
+                                    *nice_enabled,
+                                    egui::DragValue::new(nice).range(-20..=19),
+                                );
                             });
                             ui.end_row();
 
@@ -709,10 +823,16 @@ impl RuleEditDialog {
                             ui.horizontal(|ui| {
                                 ui.checkbox(ionice_enabled, "Enable");
                                 let class = rule.ionice_class.get_or_insert(2);
-                                ui.add_enabled(*ionice_enabled, egui::DragValue::new(class).range(0..=3));
+                                ui.add_enabled(
+                                    *ionice_enabled,
+                                    egui::DragValue::new(class).range(0..=3),
+                                );
                                 ui.label("class, level:");
                                 let level = rule.ionice_level.get_or_insert(4);
-                                ui.add_enabled(*ionice_enabled, egui::DragValue::new(level).range(0..=7));
+                                ui.add_enabled(
+                                    *ionice_enabled,
+                                    egui::DragValue::new(level).range(0..=7),
+                                );
                             });
                             ui.end_row();
 
@@ -725,7 +845,10 @@ impl RuleEditDialog {
                         ui.horizontal(|ui| {
                             ui.checkbox(affinity_enabled, "CPU Affinity");
                             if *affinity_enabled {
-                                ui.label(egui::RichText::new("(select cores below)").color(ui.visuals().weak_text_color()));
+                                ui.label(
+                                    egui::RichText::new("(select cores below)")
+                                        .color(ui.visuals().weak_text_color()),
+                                );
                             }
                         });
                         if *affinity_enabled {
@@ -757,11 +880,17 @@ impl RuleEditDialog {
             if accept {
                 if self.affinity_enabled {
                     let cpulist = self.affinity_picker.cpulist();
-                    self.rule.affinity = if cpulist.is_empty() { None } else { Some(cpulist) };
+                    self.rule.affinity = if cpulist.is_empty() {
+                        None
+                    } else {
+                        Some(cpulist)
+                    };
                 } else {
                     self.rule.affinity = None;
                 }
-                if !self.nice_enabled { self.rule.nice = None; }
+                if !self.nice_enabled {
+                    self.rule.nice = None;
+                }
                 if !self.ionice_enabled {
                     self.rule.ionice_class = None;
                     self.rule.ionice_level = None;
@@ -781,26 +910,125 @@ impl RuleEditDialog {
 // ── RulePresetsDialog ─────────────────────────────────────────────────────────
 
 /// Generate rule presets dynamically based on detected CPU topology.
-pub fn rule_presets() -> Vec<(&'static str, &'static str, &'static str, Option<String>, Option<i32>, Option<i32>, Option<i32>)> {
+pub fn rule_presets() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<String>,
+    Option<i32>,
+    Option<i32>,
+    Option<i32>,
+)> {
     let topo = detect_topology();
     let (pref, npref) = if topo.has_asymmetry() {
-        (Some(cpuset_to_cpulist(&topo.preferred)), Some(cpuset_to_cpulist(&topo.non_preferred)))
+        (
+            Some(cpuset_to_cpulist(&topo.preferred)),
+            Some(cpuset_to_cpulist(&topo.non_preferred)),
+        )
     } else {
         (None, None)
     };
     vec![
-        ("Steam (preferred)",   "steam",           "exact",    pref.clone(),  None,    None, None),
-        ("steamwebhelper",      "steamwebhelper",  "exact",    pref.clone(),  Some(5), None, None),
-        ("Wine / Proton",       "wine",            "contains", pref.clone(),  None,    None, None),
-        ("Proton",              "proton",          "contains", pref.clone(),  None,    None, None),
-        ("OBS Studio",          "obs",             "exact",    pref.clone(),  Some(-1),None, None),
-        ("Discord",             "discord",         "contains", npref.clone(), Some(5), None, None),
-        ("Firefox",             "firefox",         "contains", npref.clone(), None,    None, None),
-        ("Chromium / Chrome",   "chrom",           "contains", npref.clone(), None,    None, None),
-        ("KWin",                "kwin",            "contains", None,          None,    None, None),
-        ("Plasma Shell",        "plasmashell",     "exact",    npref.clone(), Some(5), None, None),
-        ("Compiler (gcc/clang)","gcc",             "contains", None,          None,    Some(2), Some(4)),
-        ("Archive / compress",  "7z",              "contains", npref.clone(), Some(10),Some(3), None),
+        (
+            "Steam (preferred)",
+            "steam",
+            "exact",
+            pref.clone(),
+            None,
+            None,
+            None,
+        ),
+        (
+            "steamwebhelper",
+            "steamwebhelper",
+            "exact",
+            pref.clone(),
+            Some(5),
+            None,
+            None,
+        ),
+        (
+            "Wine / Proton",
+            "wine",
+            "contains",
+            pref.clone(),
+            None,
+            None,
+            None,
+        ),
+        (
+            "Proton",
+            "proton",
+            "contains",
+            pref.clone(),
+            None,
+            None,
+            None,
+        ),
+        (
+            "OBS Studio",
+            "obs",
+            "exact",
+            pref.clone(),
+            Some(-1),
+            None,
+            None,
+        ),
+        (
+            "Discord",
+            "discord",
+            "contains",
+            npref.clone(),
+            Some(5),
+            None,
+            None,
+        ),
+        (
+            "Firefox",
+            "firefox",
+            "contains",
+            npref.clone(),
+            None,
+            None,
+            None,
+        ),
+        (
+            "Chromium / Chrome",
+            "chrom",
+            "contains",
+            npref.clone(),
+            None,
+            None,
+            None,
+        ),
+        ("KWin", "kwin", "contains", None, None, None, None),
+        (
+            "Plasma Shell",
+            "plasmashell",
+            "exact",
+            npref.clone(),
+            Some(5),
+            None,
+            None,
+        ),
+        (
+            "Compiler (gcc/clang)",
+            "gcc",
+            "contains",
+            None,
+            None,
+            Some(2),
+            Some(4),
+        ),
+        (
+            "Archive / compress",
+            "7z",
+            "contains",
+            npref.clone(),
+            Some(10),
+            Some(3),
+            None,
+        ),
     ]
 }
 
@@ -812,11 +1040,17 @@ pub struct RulePresetsDialog {
 
 impl RulePresetsDialog {
     pub fn new() -> Self {
-        Self { open: true, selected: None, result: None }
+        Self {
+            open: true,
+            selected: None,
+            result: None,
+        }
     }
 
     pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<Rule>> {
-        if !self.open { return self.result.clone(); }
+        if !self.open {
+            return self.result.clone();
+        }
 
         let mut close_as: Option<bool> = None;
 
@@ -828,7 +1062,11 @@ impl RulePresetsDialog {
                 ViewportBuilder::default()
                     .with_title("Rule Templates")
                     .with_app_id("argus-lasso")
-                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
+                    .with_icon(egui::IconData {
+                        rgba: crate::icon::RGBA.to_vec(),
+                        width: crate::icon::W,
+                        height: crate::icon::H,
+                    })
                     .with_min_inner_size([640.0, 360.0])
                     .with_transparent(true)
                     .with_resizable(true),
@@ -845,50 +1083,65 @@ impl RulePresetsDialog {
                         let hdr_col = ui.visuals().strong_text_color();
                         egui::Frame::new().fill(hdr_bg).show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
-                            egui::Grid::new("preset_hdr").num_columns(4).min_col_width(60.0)
-                                .spacing([16.0, 2.0]).show(ui, |ui| {
-                                for label in ["NAME", "PATTERN", "MATCH", "AFFINITY"] {
-                                    ui.label(egui::RichText::new(label).strong().color(hdr_col));
-                                }
-                                ui.end_row();
-                            });
+                            egui::Grid::new("preset_hdr")
+                                .num_columns(4)
+                                .min_col_width(60.0)
+                                .spacing([16.0, 2.0])
+                                .show(ui, |ui| {
+                                    for label in ["NAME", "PATTERN", "MATCH", "AFFINITY"] {
+                                        ui.label(
+                                            egui::RichText::new(label).strong().color(hdr_col),
+                                        );
+                                    }
+                                    ui.end_row();
+                                });
                         });
                         let presets = rule_presets();
-                        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                            for (i, (name, pat, match_type, ref aff, _nice, _ioc, _iol)) in presets.iter().enumerate() {
-                                let is_sel = *selected == Some(i);
-                                let bg = if is_sel {
-                                    ui.visuals().selection.bg_fill
-                                } else if i % 2 == 1 {
-                                    ui.visuals().faint_bg_color
-                                } else {
-                                    ui.visuals().extreme_bg_color
-                                };
-                                egui::Frame::new().fill(bg).show(ui, |ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    let resp = egui::Grid::new(("preset_row", i))
-                                        .num_columns(4)
-                                        .min_col_width(60.0)
-                                        .spacing([16.0, 2.0])
-                                        .show(ui, |ui| {
-                                            ui.label(*name);
-                                            ui.label(*pat);
-                                            ui.label(*match_type);
-                                            ui.label(aff.as_deref().unwrap_or(""));
-                                            ui.end_row();
-                                        }).response;
-                                    if resp.clicked() { *selected = Some(i); }
-                                    if resp.double_clicked() {
-                                        *selected = Some(i);
-                                        close_as = Some(true);
-                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                    }
-                                });
-                            }
-                        });
+                        egui::ScrollArea::vertical()
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                for (i, (name, pat, match_type, ref aff, _nice, _ioc, _iol)) in
+                                    presets.iter().enumerate()
+                                {
+                                    let is_sel = *selected == Some(i);
+                                    let bg = if is_sel {
+                                        ui.visuals().selection.bg_fill
+                                    } else if i % 2 == 1 {
+                                        ui.visuals().faint_bg_color
+                                    } else {
+                                        ui.visuals().extreme_bg_color
+                                    };
+                                    egui::Frame::new().fill(bg).show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        let resp = egui::Grid::new(("preset_row", i))
+                                            .num_columns(4)
+                                            .min_col_width(60.0)
+                                            .spacing([16.0, 2.0])
+                                            .show(ui, |ui| {
+                                                ui.label(*name);
+                                                ui.label(*pat);
+                                                ui.label(*match_type);
+                                                ui.label(aff.as_deref().unwrap_or(""));
+                                                ui.end_row();
+                                            })
+                                            .response;
+                                        if resp.clicked() {
+                                            *selected = Some(i);
+                                        }
+                                        if resp.double_clicked() {
+                                            *selected = Some(i);
+                                            close_as = Some(true);
+                                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                        }
+                                    });
+                                }
+                            });
                         ui.separator();
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(selected.is_some(), egui::Button::new("Use Preset")).clicked() {
+                            if ui
+                                .add_enabled(selected.is_some(), egui::Button::new("Use Preset"))
+                                .clicked()
+                            {
                                 close_as = Some(true);
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
@@ -932,7 +1185,7 @@ impl RulePresetsDialog {
 
 pub struct SteamGamePickerDialog {
     pub open: bool,
-    pub games: Vec<(String, String)>,  // (appid, name)
+    pub games: Vec<(String, String)>, // (appid, name)
     pub filter: String,
     pub selected: Option<usize>,
     pub result: Option<Option<(String, String)>>,
@@ -955,19 +1208,25 @@ impl SteamGamePickerDialog {
     }
 
     pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<(String, String)>> {
-        if !self.open { return self.result.clone(); }
+        if !self.open {
+            return self.result.clone();
+        }
         let mut accepted = false;
         let mut cancelled = false;
         {
-            let filter  = &mut self.filter;
-            let games   = &self.games;
+            let filter = &mut self.filter;
+            let games = &self.games;
             let selected = &mut self.selected;
             ctx.show_viewport_immediate(
                 ViewportId::from_hash_of("steam_game_picker"),
                 ViewportBuilder::default()
                     .with_title("Pick Steam Game")
                     .with_app_id("argus-lasso")
-                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
+                    .with_icon(egui::IconData {
+                        rgba: crate::icon::RGBA.to_vec(),
+                        width: crate::icon::W,
+                        height: crate::icon::H,
+                    })
                     .with_min_inner_size([560.0, 520.0])
                     .with_transparent(true)
                     .with_resizable(true),
@@ -983,25 +1242,31 @@ impl SteamGamePickerDialog {
                         });
 
                         let filter_lower = filter.to_lowercase();
-                        let filtered: Vec<_> = games.iter().enumerate()
-                            .filter(|(_, (id, name))| filter_lower.is_empty()
-                                || name.to_lowercase().contains(&filter_lower)
-                                || id.contains(&filter_lower))
+                        let filtered: Vec<_> = games
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, (id, name))| {
+                                filter_lower.is_empty()
+                                    || name.to_lowercase().contains(&filter_lower)
+                                    || id.contains(&filter_lower)
+                            })
                             .collect();
 
-                        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                            for (orig_i, (appid, name)) in &filtered {
-                                let sel = *selected == Some(*orig_i);
-                                let row = format!("{appid:<10} {name}");
-                                let resp = ui.selectable_label(sel, &row);
-                                if resp.double_clicked() {
-                                    *selected = Some(*orig_i);
-                                    accepted = true;
-                                } else if resp.clicked() {
-                                    *selected = Some(*orig_i);
+                        egui::ScrollArea::vertical()
+                            .max_height(400.0)
+                            .show(ui, |ui| {
+                                for (orig_i, (appid, name)) in &filtered {
+                                    let sel = *selected == Some(*orig_i);
+                                    let row = format!("{appid:<10} {name}");
+                                    let resp = ui.selectable_label(sel, &row);
+                                    if resp.double_clicked() {
+                                        *selected = Some(*orig_i);
+                                        accepted = true;
+                                    } else if resp.clicked() {
+                                        *selected = Some(*orig_i);
+                                    }
                                 }
-                            }
-                        });
+                            });
 
                         ui.label(format!("{} games found", games.len()));
                         ui.separator();
@@ -1114,10 +1379,10 @@ fn extract_vdf_field(text: &str, field: &str) -> Option<String> {
 
 pub struct LutrisGamePickerDialog {
     pub open: bool,
-    pub games: Vec<(String, String)>,  // (slug, display_label)
+    pub games: Vec<(String, String)>, // (slug, display_label)
     pub filter: String,
     pub selected: Option<usize>,
-    pub result: Option<Option<(String, String)>>,  // (slug, name)
+    pub result: Option<Option<(String, String)>>, // (slug, name)
     pub status: String,
 }
 
@@ -1135,20 +1400,26 @@ impl LutrisGamePickerDialog {
     }
 
     pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<(String, String)>> {
-        if !self.open { return self.result.clone(); }
+        if !self.open {
+            return self.result.clone();
+        }
         let mut accepted = false;
         let mut cancelled = false;
         {
-            let filter   = &mut self.filter;
-            let games    = &self.games;
+            let filter = &mut self.filter;
+            let games = &self.games;
             let selected = &mut self.selected;
-            let status   = &self.status;
+            let status = &self.status;
             ctx.show_viewport_immediate(
                 ViewportId::from_hash_of("lutris_game_picker"),
                 ViewportBuilder::default()
                     .with_title("Pick Lutris Game")
                     .with_app_id("argus-lasso")
-                    .with_icon(egui::IconData { rgba: crate::icon::RGBA.to_vec(), width: crate::icon::W, height: crate::icon::H })
+                    .with_icon(egui::IconData {
+                        rgba: crate::icon::RGBA.to_vec(),
+                        width: crate::icon::W,
+                        height: crate::icon::H,
+                    })
                     .with_min_inner_size([560.0, 520.0])
                     .with_transparent(true)
                     .with_resizable(true),
@@ -1164,22 +1435,28 @@ impl LutrisGamePickerDialog {
                         });
 
                         let fl = filter.to_lowercase();
-                        let filtered: Vec<_> = games.iter().enumerate()
-                            .filter(|(_, (_, label))| fl.is_empty() || label.to_lowercase().contains(&fl))
+                        let filtered: Vec<_> = games
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, (_, label))| {
+                                fl.is_empty() || label.to_lowercase().contains(&fl)
+                            })
                             .collect();
 
-                        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                            for (orig_i, (_, label)) in &filtered {
-                                let sel = *selected == Some(*orig_i);
-                                let resp = ui.selectable_label(sel, label.as_str());
-                                if resp.double_clicked() {
-                                    *selected = Some(*orig_i);
-                                    accepted = true;
-                                } else if resp.clicked() {
-                                    *selected = Some(*orig_i);
+                        egui::ScrollArea::vertical()
+                            .max_height(400.0)
+                            .show(ui, |ui| {
+                                for (orig_i, (_, label)) in &filtered {
+                                    let sel = *selected == Some(*orig_i);
+                                    let resp = ui.selectable_label(sel, label.as_str());
+                                    if resp.double_clicked() {
+                                        *selected = Some(*orig_i);
+                                        accepted = true;
+                                    } else if resp.clicked() {
+                                        *selected = Some(*orig_i);
+                                    }
                                 }
-                            }
-                        });
+                            });
 
                         ui.label(status.as_str());
                         ui.separator();
@@ -1226,12 +1503,16 @@ fn scan_lutris_library() -> (Vec<(String, String)>, String) {
     }
     // We don't want to pull in rusqlite; parse the sqlite file via the sqlite3 CLI.
     let output = std::process::Command::new("sqlite3")
-        .args([&db, "SELECT name,slug,runner FROM games WHERE installed=1 ORDER BY name COLLATE NOCASE"])
+        .args([
+            &db,
+            "SELECT name,slug,runner FROM games WHERE installed=1 ORDER BY name COLLATE NOCASE",
+        ])
         .output();
     match output {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
-            let games: Vec<(String, String)> = text.lines()
+            let games: Vec<(String, String)> = text
+                .lines()
                 .filter_map(|line| {
                     let parts: Vec<_> = line.splitn(3, '|').collect();
                     if parts.len() == 3 {

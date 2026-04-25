@@ -41,7 +41,11 @@ impl Default for Sensor {
 
 impl Sensor {
     pub fn new(label: &'static str, unit: &'static str) -> Self {
-        Self { label, unit, ..Default::default() }
+        Self {
+            label,
+            unit,
+            ..Default::default()
+        }
     }
 
     pub fn push(&mut self, value: f32) {
@@ -50,8 +54,12 @@ impl Sensor {
             self.min = value;
             self.max = value;
         } else {
-            if value < self.min { self.min = value; }
-            if value > self.max { self.max = value; }
+            if value < self.min {
+                self.min = value;
+            }
+            if value > self.max {
+                self.max = value;
+            }
         }
         self.avg_sum += value as f64;
         self.avg_count += 1;
@@ -62,15 +70,27 @@ impl Sensor {
     }
 
     pub fn avg(&self) -> f32 {
-        if self.avg_count == 0 { 0.0 } else { (self.avg_sum / self.avg_count as f64) as f32 }
+        if self.avg_count == 0 {
+            0.0
+        } else {
+            (self.avg_sum / self.avg_count as f64) as f32
+        }
     }
 
     pub fn min_display(&self) -> f32 {
-        if self.avg_count == 0 { 0.0 } else { self.min }
+        if self.avg_count == 0 {
+            0.0
+        } else {
+            self.min
+        }
     }
 
     pub fn max_display(&self) -> f32 {
-        if self.avg_count == 0 { 0.0 } else { self.max }
+        if self.avg_count == 0 {
+            0.0
+        } else {
+            self.max
+        }
     }
 }
 
@@ -112,7 +132,7 @@ impl HwCollector {
             prev_time: Instant::now(),
         };
         c.prev_disk = read_disk_raw();
-        c.prev_net  = read_net_raw();
+        c.prev_net = read_net_raw();
         c
     }
 
@@ -121,12 +141,12 @@ impl HwCollector {
         let dt = now.duration_since(self.prev_time).as_secs_f32().max(0.1);
 
         let new_disk = read_disk_raw();
-        let new_net  = read_net_raw();
+        let new_net = read_net_raw();
 
         let readings = collect_all(&self.prev_disk, &new_disk, &self.prev_net, &new_net, dt);
 
         self.prev_disk = new_disk;
-        self.prev_net  = new_net;
+        self.prev_net = new_net;
         self.prev_time = now;
 
         self.merge(readings);
@@ -173,17 +193,21 @@ type GroupReading = (&'static str, String, Vec<Reading>);
 
 fn collect_all(
     prev_disk: &HashMap<String, [u64; 2]>,
-    new_disk:  &HashMap<String, [u64; 2]>,
-    prev_net:  &HashMap<String, [u64; 2]>,
-    new_net:   &HashMap<String, [u64; 2]>,
+    new_disk: &HashMap<String, [u64; 2]>,
+    prev_net: &HashMap<String, [u64; 2]>,
+    new_net: &HashMap<String, [u64; 2]>,
     dt: f32,
 ) -> Vec<GroupReading> {
     let mut out: Vec<GroupReading> = Vec::new();
 
     // CPU: hwmon temps + frequencies + load + RAPL package power
     out.extend(collect_hwmon_cpu());
-    if let Some(g) = collect_cpu_freqs()  { out.push(g); }
-    if let Some(g) = collect_load_avg()   { out.push(g); }
+    if let Some(g) = collect_cpu_freqs() {
+        out.push(g);
+    }
+    if let Some(g) = collect_load_avg() {
+        out.push(g);
+    }
     out.extend(collect_rapl_power());
 
     // GPU: prefer NVML (NVIDIA); fall back to amdgpu hwmon
@@ -196,7 +220,9 @@ fn collect_all(
 
     // Memory: SPD temps + /proc/meminfo
     out.extend(collect_hwmon_memory());
-    if let Some(g) = collect_meminfo() { out.push(g); }
+    if let Some(g) = collect_meminfo() {
+        out.push(g);
+    }
 
     // Storage: NVMe hwmon + disk I/O
     out.extend(collect_hwmon_storage());
@@ -217,26 +243,35 @@ fn collect_hwmon_cpu() -> Vec<GroupReading> {
     // Detect topology for P/E labels.
     let topo = crate::cpu_park::detect_topology();
 
-    collect_hwmon_where(|hw_name| matches!(hw_name, "k10temp" | "zenpower" | "coretemp"), |_path, hw_name| {
-        let label = match hw_name {
-            "k10temp"  => "AMD CPU [k10temp]",
-            "zenpower" => "AMD CPU [zenpower]",
-            _          => "Intel CPU [coretemp]",
-        };
-        ("CPU", label.to_string())
-    })
+    collect_hwmon_where(
+        |hw_name| matches!(hw_name, "k10temp" | "zenpower" | "coretemp"),
+        |_path, hw_name| {
+            let label = match hw_name {
+                "k10temp" => "AMD CPU [k10temp]",
+                "zenpower" => "AMD CPU [zenpower]",
+                _ => "Intel CPU [coretemp]",
+            };
+            ("CPU", label.to_string())
+        },
+    )
     .into_iter()
     .map(|(cat, name, sensors)| {
-        let remapped: Vec<Reading> = sensors.into_iter().map(|(label, unit, value)| {
-            // Remap "Core N" → "CPU X (suffix)" using topology-aware labels
-            if let Some(core_id) = label.strip_prefix("Core ").and_then(|s| s.parse::<u32>().ok()) {
-                if let Some(&cpu_num) = core_id_map.get(&core_id) {
-                    let kind = core_kind_suffix(&topo, cpu_num);
-                    return (intern(format!("CPU {cpu_num}{kind}")), unit, value);
+        let remapped: Vec<Reading> = sensors
+            .into_iter()
+            .map(|(label, unit, value)| {
+                // Remap "Core N" → "CPU X (suffix)" using topology-aware labels
+                if let Some(core_id) = label
+                    .strip_prefix("Core ")
+                    .and_then(|s| s.parse::<u32>().ok())
+                {
+                    if let Some(&cpu_num) = core_id_map.get(&core_id) {
+                        let kind = core_kind_suffix(&topo, cpu_num);
+                        return (intern(format!("CPU {cpu_num}{kind}")), unit, value);
+                    }
                 }
-            }
-            (label, unit, value)
-        }).collect();
+                (label, unit, value)
+            })
+            .collect();
         (cat, name, remapped)
     })
     .collect()
@@ -255,7 +290,11 @@ fn build_core_id_to_cpu_map() -> HashMap<u32, u32> {
                 if let Some(core_id) = read_u64(&core_path).map(|v| v as u32) {
                     // Keep the lowest CPU number for each core_id
                     map.entry(core_id)
-                        .and_modify(|existing| { if cpu_num < *existing { *existing = cpu_num; } })
+                        .and_modify(|existing| {
+                            if cpu_num < *existing {
+                                *existing = cpu_num;
+                            }
+                        })
                         .or_insert(cpu_num);
                 }
             }
@@ -265,26 +304,34 @@ fn build_core_id_to_cpu_map() -> HashMap<u32, u32> {
 }
 
 fn collect_hwmon_memory() -> Vec<GroupReading> {
-    collect_hwmon_where(|hw_name| matches!(hw_name, "spd5118" | "ee1004"), |path, _hw_name| {
-        let slot = dimm_slot_name(path);
-        ("Memory", slot)
-    })
+    collect_hwmon_where(
+        |hw_name| matches!(hw_name, "spd5118" | "ee1004"),
+        |path, _hw_name| {
+            let slot = dimm_slot_name(path);
+            ("Memory", slot)
+        },
+    )
 }
 
 fn collect_hwmon_storage() -> Vec<GroupReading> {
-    collect_hwmon_where(|hw_name| hw_name == "nvme", |path, _hw_name| {
-        let model = read_trimmed(&path.join("device/model"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "NVMe".into());
-        ("Storage", model)
-    })
+    collect_hwmon_where(
+        |hw_name| hw_name == "nvme",
+        |path, _hw_name| {
+            let model = read_trimmed(&path.join("device/model"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "NVMe".into());
+            ("Storage", model)
+        },
+    )
 }
 
 fn collect_hwmon_network() -> Vec<GroupReading> {
     collect_hwmon_where(
         |hw_name| {
-            hw_name.starts_with("r8") || hw_name.starts_with("atlantic")
-                || hw_name.starts_with("igb") || hw_name.starts_with("ixgbe")
+            hw_name.starts_with("r8")
+                || hw_name.starts_with("atlantic")
+                || hw_name.starts_with("igb")
+                || hw_name.starts_with("ixgbe")
                 || hw_name.starts_with("e1000")
         },
         |path, hw_name| {
@@ -325,7 +372,9 @@ where
             Some(n) => n,
             None => continue,
         };
-        if !filter(&hw_name) { continue; }
+        if !filter(&hw_name) {
+            continue;
+        }
 
         let mut sensors: Vec<Reading> = Vec::new();
 
@@ -360,7 +409,9 @@ where
         // Fan
         for i in 1..=8u32 {
             let input = path.join(format!("fan{i}_input"));
-            if !input.exists() { continue; }
+            if !input.exists() {
+                continue;
+            }
             if let Some(rpm) = read_u64(&input) {
                 let lbl_file = path.join(format!("fan{i}_label"));
                 let lbl = read_trimmed(&lbl_file).unwrap_or_else(|| format!("Fan {i}"));
@@ -371,7 +422,9 @@ where
         // Power (µW → W)
         for i in 1..=8u32 {
             let input = path.join(format!("power{i}_input"));
-            if !input.exists() { continue; }
+            if !input.exists() {
+                continue;
+            }
             if let Some(uw) = read_u64(&input) {
                 let lbl_file = path.join(format!("power{i}_label"));
                 let lbl = read_trimmed(&lbl_file).unwrap_or_else(|| format!("Power {i}"));
@@ -382,7 +435,9 @@ where
         // Voltage (mV → V)
         for i in 0..=16u32 {
             let input = path.join(format!("in{i}_input"));
-            if !input.exists() { continue; }
+            if !input.exists() {
+                continue;
+            }
             if let Some(mv) = read_u64(&input) {
                 let lbl_file = path.join(format!("in{i}_label"));
                 let lbl = read_trimmed(&lbl_file).unwrap_or_else(|| format!("In {i}"));
@@ -393,7 +448,9 @@ where
         // Frequency (Hz → MHz; amdgpu etc.)
         for i in 1..=4u32 {
             let input = path.join(format!("freq{i}_input"));
-            if !input.exists() { continue; }
+            if !input.exists() {
+                continue;
+            }
             if let Some(hz) = read_u64(&input) {
                 let lbl_file = path.join(format!("freq{i}_label"));
                 let lbl = read_trimmed(&lbl_file).unwrap_or_else(|| format!("Freq {i}"));
@@ -421,12 +478,13 @@ fn collect_nvidia_nvml() -> Vec<GroupReading> {
     let mut guard = NVML.lock().unwrap();
     let nvml = match guard.as_ref() {
         Some(n) => n,
-        None => {
-            match nvml_wrapper::Nvml::init() {
-                Ok(n) => { *guard = Some(n); guard.as_ref().unwrap() }
-                Err(_) => return Vec::new(),
+        None => match nvml_wrapper::Nvml::init() {
+            Ok(n) => {
+                *guard = Some(n);
+                guard.as_ref().unwrap()
             }
-        }
+            Err(_) => return Vec::new(),
+        },
     };
 
     let count = match nvml.device_count() {
@@ -444,31 +502,47 @@ fn collect_nvidia_nvml() -> Vec<GroupReading> {
 
         let gpu_name = dev.name().unwrap_or_else(|_| format!("GPU {i}"));
 
-        let temp = dev.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu)
-            .map(|t| t as f32).unwrap_or(0.0);
-        let power = dev.power_usage().map(|mw| mw as f32 / 1000.0).unwrap_or(0.0);
-        let g_clk = dev.clock_info(nvml_wrapper::enum_wrappers::device::Clock::Graphics)
-            .map(|mhz| mhz as f32).unwrap_or(0.0);
-        let m_clk = dev.clock_info(nvml_wrapper::enum_wrappers::device::Clock::Memory)
-            .map(|mhz| mhz as f32).unwrap_or(0.0);
+        let temp = dev
+            .temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu)
+            .map(|t| t as f32)
+            .unwrap_or(0.0);
+        let power = dev
+            .power_usage()
+            .map(|mw| mw as f32 / 1000.0)
+            .unwrap_or(0.0);
+        let g_clk = dev
+            .clock_info(nvml_wrapper::enum_wrappers::device::Clock::Graphics)
+            .map(|mhz| mhz as f32)
+            .unwrap_or(0.0);
+        let m_clk = dev
+            .clock_info(nvml_wrapper::enum_wrappers::device::Clock::Memory)
+            .map(|mhz| mhz as f32)
+            .unwrap_or(0.0);
 
-        let (g_util, m_util) = dev.utilization_rates()
+        let (g_util, m_util) = dev
+            .utilization_rates()
             .map(|u| (u.gpu as f32, u.memory as f32))
             .unwrap_or((0.0, 0.0));
 
         let mem = dev.memory_info();
-        let m_used  = mem.as_ref().map(|m| m.used as f32 / (1024.0 * 1024.0 * 1024.0)).unwrap_or(0.0);
-        let m_total = mem.as_ref().map(|m| m.total as f32 / (1024.0 * 1024.0 * 1024.0)).unwrap_or(0.0);
+        let m_used = mem
+            .as_ref()
+            .map(|m| m.used as f32 / (1024.0 * 1024.0 * 1024.0))
+            .unwrap_or(0.0);
+        let m_total = mem
+            .as_ref()
+            .map(|m| m.total as f32 / (1024.0 * 1024.0 * 1024.0))
+            .unwrap_or(0.0);
 
         let sensors: Vec<Reading> = vec![
-            ("Temperature",  "°C",  temp),
-            ("GPU Load",     "%",   g_util),
-            ("Memory Usage", "%",   m_util),
-            ("Power Draw",   "W",   power),
-            ("GPU Clock",    "MHz", g_clk),
+            ("Temperature", "°C", temp),
+            ("GPU Load", "%", g_util),
+            ("Memory Usage", "%", m_util),
+            ("Power Draw", "W", power),
+            ("GPU Clock", "MHz", g_clk),
             ("Memory Clock", "MHz", m_clk),
-            ("VRAM Used",    "GiB", m_used),
-            ("VRAM Total",   "GiB", m_total),
+            ("VRAM Used", "GiB", m_used),
+            ("VRAM Total", "GiB", m_total),
         ];
 
         groups.push(("GPU", intern(&gpu_name).to_string(), sensors));
@@ -493,7 +567,9 @@ fn collect_nvidia_nvml() -> Vec<GroupReading> {
 /// Compute watts from two RAPL energy samples, handling counter wrap at max_uj.
 /// Returns None if dt is non-positive.
 fn rapl_watts(prev_uj: u64, now_uj: u64, max_uj: u64, dt_secs: f64) -> Option<f32> {
-    if !(dt_secs > 0.0) { return None; }
+    if !(dt_secs > 0.0) {
+        return None;
+    }
     let delta_uj = if now_uj >= prev_uj {
         now_uj - prev_uj
     } else {
@@ -530,11 +606,15 @@ fn collect_rapl_power() -> Vec<GroupReading> {
         let path = entry.path();
         let fname = entry.file_name();
         let kname = fname.to_string_lossy();
-        if !kname.starts_with("intel-rapl:") { continue; }
+        if !kname.starts_with("intel-rapl:") {
+            continue;
+        }
         // Only top-level zones (package). Skip sub-zones like "intel-rapl:0:0"
         // (core/uncore/dram), which are already part of the package total.
         let suffix = &kname["intel-rapl:".len()..];
-        if suffix.contains(':') { continue; }
+        if suffix.contains(':') {
+            continue;
+        }
         let label = read_trimmed(&path.join("name")).unwrap_or_else(|| kname.to_string());
         let energy = match read_u64(&path.join("energy_uj")) {
             Some(v) => v,
@@ -544,7 +624,9 @@ fn collect_rapl_power() -> Vec<GroupReading> {
         current.insert(kname.into_owned(), (label, energy, max));
     }
 
-    if current.is_empty() { return Vec::new(); }
+    if current.is_empty() {
+        return Vec::new();
+    }
 
     let mut guard = STATE.lock().unwrap();
     let mut sensors: Vec<Reading> = Vec::new();
@@ -566,7 +648,14 @@ fn collect_rapl_power() -> Vec<GroupReading> {
     // Replace previous sample set with the one we just took.
     let mut new_state: HashMap<String, ZoneSample> = HashMap::with_capacity(current.len());
     for (k, (_label, energy, max)) in current {
-        new_state.insert(k, ZoneSample { energy_uj: energy, max_uj: max, at: now });
+        new_state.insert(
+            k,
+            ZoneSample {
+                energy_uj: energy,
+                max_uj: max,
+                at: now,
+            },
+        );
     }
     *guard = Some(new_state);
 
@@ -583,11 +672,11 @@ fn pretty_rapl_label(raw: &str) -> String {
     }
     match lc.as_str() {
         "package" => "Package".into(),
-        "dram"    => "DRAM".into(),
-        "core"    => "Core".into(),
-        "uncore"  => "Uncore".into(),
-        "psys"    => "PSys".into(),
-        _         => raw.to_string(),
+        "dram" => "DRAM".into(),
+        "core" => "Core".into(),
+        "uncore" => "Uncore".into(),
+        "psys" => "PSys".into(),
+        _ => raw.to_string(),
     }
 }
 
@@ -606,20 +695,32 @@ fn collect_cpu_freqs() -> Option<GroupReading> {
         })
         .collect();
     entries.sort_by_key(|e| {
-        e.file_name().to_string_lossy()[3..].parse::<u32>().unwrap_or(0)
+        e.file_name().to_string_lossy()[3..]
+            .parse::<u32>()
+            .unwrap_or(0)
     });
 
     let mut sensors: Vec<Reading> = Vec::new();
     for entry in entries {
-        let num: u32 = entry.file_name().to_string_lossy()[3..].parse().unwrap_or(0);
+        let num: u32 = entry.file_name().to_string_lossy()[3..]
+            .parse()
+            .unwrap_or(0);
         let freq_path = entry.path().join("cpufreq/scaling_cur_freq");
         if let Some(khz) = read_u64(&freq_path) {
             let kind = core_kind_suffix(&topo, num);
-            sensors.push((intern(format!("CPU {num}{kind}")), "MHz", khz as f32 / 1000.0));
+            sensors.push((
+                intern(format!("CPU {num}{kind}")),
+                "MHz",
+                khz as f32 / 1000.0,
+            ));
         }
     }
 
-    if sensors.is_empty() { None } else { Some(("CPU", "CPU Frequencies".into(), sensors)) }
+    if sensors.is_empty() {
+        None
+    } else {
+        Some(("CPU", "CPU Frequencies".into(), sensors))
+    }
 }
 
 // ── Load average ──────────────────────────────────────────────────────────────
@@ -627,15 +728,15 @@ fn collect_cpu_freqs() -> Option<GroupReading> {
 fn collect_load_avg() -> Option<GroupReading> {
     let text = std::fs::read_to_string("/proc/loadavg").ok()?;
     let mut parts = text.split_whitespace();
-    let l1:  f32 = parts.next()?.parse().ok()?;
-    let l5:  f32 = parts.next()?.parse().ok()?;
+    let l1: f32 = parts.next()?.parse().ok()?;
+    let l5: f32 = parts.next()?.parse().ok()?;
     let l15: f32 = parts.next()?.parse().ok()?;
 
-    Some(("CPU", "Load Average".into(), vec![
-        ("1 min",  "", l1),
-        ("5 min",  "", l5),
-        ("15 min", "", l15),
-    ]))
+    Some((
+        "CPU",
+        "Load Average".into(),
+        vec![("1 min", "", l1), ("5 min", "", l5), ("15 min", "", l15)],
+    ))
 }
 
 // ── /proc/meminfo ─────────────────────────────────────────────────────────────
@@ -654,24 +755,24 @@ fn collect_meminfo() -> Option<GroupReading> {
 
     let gib = |k: &str| map.get(k).copied().unwrap_or(0) as f32 / (1024.0 * 1024.0);
 
-    let total     = gib("MemTotal");
+    let total = gib("MemTotal");
     let available = gib("MemAvailable");
-    let used      = total - available;
-    let buffers   = gib("Buffers");
-    let cached    = gib("Cached");
+    let used = total - available;
+    let buffers = gib("Buffers");
+    let cached = gib("Cached");
     let swap_total = gib("SwapTotal");
-    let swap_used  = swap_total - gib("SwapFree");
+    let swap_used = swap_total - gib("SwapFree");
 
     let mut sensors: Vec<Reading> = vec![
-        ("Total",     "GiB", total),
-        ("Used",      "GiB", used),
+        ("Total", "GiB", total),
+        ("Used", "GiB", used),
         ("Available", "GiB", available),
-        ("Buffers",   "GiB", buffers),
-        ("Cached",    "GiB", cached),
+        ("Buffers", "GiB", buffers),
+        ("Cached", "GiB", cached),
     ];
     if swap_total > 0.0 {
         sensors.push(("Swap Total", "GiB", swap_total));
-        sensors.push(("Swap Used",  "GiB", swap_used));
+        sensors.push(("Swap Used", "GiB", swap_used));
     }
 
     Some(("Memory", "RAM".into(), sensors))
@@ -682,18 +783,28 @@ fn collect_meminfo() -> Option<GroupReading> {
 fn read_disk_raw() -> HashMap<String, [u64; 2]> {
     let mut map = HashMap::new();
     let text = match std::fs::read_to_string("/proc/diskstats") {
-        Ok(t) => t, Err(_) => return map,
+        Ok(t) => t,
+        Err(_) => return map,
     };
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
-        if p.len() < 14 { continue; }
+        if p.len() < 14 {
+            continue;
+        }
         let dev = p[2].to_string();
         // Skip plain partition entries (sdXN, nvmeXnXpX, etc.) — keep whole disks
-        let is_partition = dev.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false)
-            && !dev.starts_with("nvme") && !dev.starts_with("mmcblk");
-        if is_partition { continue; }
-        let r: u64 = p[5].parse().unwrap_or(0);  // sectors read
-        let w: u64 = p[9].parse().unwrap_or(0);  // sectors written
+        let is_partition = dev
+            .chars()
+            .last()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+            && !dev.starts_with("nvme")
+            && !dev.starts_with("mmcblk");
+        if is_partition {
+            continue;
+        }
+        let r: u64 = p[5].parse().unwrap_or(0); // sectors read
+        let w: u64 = p[9].parse().unwrap_or(0); // sectors written
         map.insert(dev, [r, w]);
     }
     map
@@ -701,7 +812,7 @@ fn read_disk_raw() -> HashMap<String, [u64; 2]> {
 
 fn collect_disk_io(
     prev: &HashMap<String, [u64; 2]>,
-    new:  &HashMap<String, [u64; 2]>,
+    new: &HashMap<String, [u64; 2]>,
     dt: f32,
 ) -> Vec<GroupReading> {
     let mut groups = Vec::new();
@@ -714,7 +825,7 @@ fn collect_disk_io(
         let n = &new[dev];
         let p = prev.get(dev).copied().unwrap_or(*n);
 
-        let read_mb  = n[0].saturating_sub(p[0]) as f32 * sector / (dt * 1_048_576.0);
+        let read_mb = n[0].saturating_sub(p[0]) as f32 * sector / (dt * 1_048_576.0);
         let write_mb = n[1].saturating_sub(p[1]) as f32 * sector / (dt * 1_048_576.0);
 
         // Try to find a human-readable model for this block device
@@ -722,10 +833,11 @@ fn collect_disk_io(
             .map(|m| format!("{dev} — {m}"))
             .unwrap_or_else(|| dev.clone());
 
-        groups.push(("Storage", format!("I/O [{label}]"), vec![
-            ("Read",  "MB/s", read_mb),
-            ("Write", "MB/s", write_mb),
-        ]));
+        groups.push((
+            "Storage",
+            format!("I/O [{label}]"),
+            vec![("Read", "MB/s", read_mb), ("Write", "MB/s", write_mb)],
+        ));
     }
     groups
 }
@@ -741,15 +853,23 @@ fn block_device_model(dev: &str) -> Option<String> {
 fn read_net_raw() -> HashMap<String, [u64; 2]> {
     let mut map = HashMap::new();
     let text = match std::fs::read_to_string("/proc/net/dev") {
-        Ok(t) => t, Err(_) => return map,
+        Ok(t) => t,
+        Err(_) => return map,
     };
     for line in text.lines().skip(2) {
         let line = line.trim();
-        let colon = match line.find(':') { Some(c) => c, None => continue };
+        let colon = match line.find(':') {
+            Some(c) => c,
+            None => continue,
+        };
         let iface = line[..colon].trim().to_string();
-        if iface == "lo" { continue; }
+        if iface == "lo" {
+            continue;
+        }
         let fields: Vec<&str> = line[colon + 1..].split_whitespace().collect();
-        if fields.len() < 9 { continue; }
+        if fields.len() < 9 {
+            continue;
+        }
         let rx: u64 = fields[0].parse().unwrap_or(0);
         let tx: u64 = fields[8].parse().unwrap_or(0);
         map.insert(iface, [rx, tx]);
@@ -759,7 +879,7 @@ fn read_net_raw() -> HashMap<String, [u64; 2]> {
 
 fn collect_net_io(
     prev: &HashMap<String, [u64; 2]>,
-    new:  &HashMap<String, [u64; 2]>,
+    new: &HashMap<String, [u64; 2]>,
     dt: f32,
 ) -> Vec<GroupReading> {
     let mut groups = Vec::new();
@@ -773,10 +893,11 @@ fn collect_net_io(
         let rx = n[0].saturating_sub(p[0]) as f32 / (dt * 1_048_576.0);
         let tx = n[1].saturating_sub(p[1]) as f32 / (dt * 1_048_576.0);
 
-        groups.push(("Network", format!("I/O [{iface}]"), vec![
-            ("Receive",  "MB/s", rx),
-            ("Transmit", "MB/s", tx),
-        ]));
+        groups.push((
+            "Network",
+            format!("I/O [{iface}]"),
+            vec![("Receive", "MB/s", rx), ("Transmit", "MB/s", tx)],
+        ));
     }
     groups
 }
@@ -784,7 +905,9 @@ fn collect_net_io(
 // ── sysfs helpers ─────────────────────────────────────────────────────────────
 
 fn read_trimmed(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn read_u64(path: &Path) -> Option<u64> {
@@ -801,7 +924,8 @@ fn nic_interface_name(hwmon_path: &Path) -> Option<String> {
     let dev = std::fs::canonicalize(hwmon_path.join("device")).ok()?;
     // /sys/devices/.../net/<iface>
     let net = dev.join("net");
-    std::fs::read_dir(&net).ok()?
+    std::fs::read_dir(&net)
+        .ok()?
         .flatten()
         .next()
         .map(|e| e.file_name().to_string_lossy().to_string())
@@ -813,7 +937,11 @@ fn dimm_slot_name(hwmon_path: &Path) -> String {
     // Address 0x51 → slot 1, 0x50 → slot 0, etc.
     let canon = std::fs::canonicalize(hwmon_path.join("device")).ok();
     if let Some(d) = canon {
-        let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = d
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         // name = "7-0051"  (bus-address)
         if let Some(addr_str) = name.split('-').last() {
             if let Ok(addr) = u64::from_str_radix(addr_str, 16) {
@@ -833,10 +961,18 @@ fn core_kind_suffix(topo: &crate::cpu_park::CpuTopology, cpu: u32) -> &'static s
     }
     match topo.kind {
         crate::cpu_park::TopologyKind::AmdX3D => {
-            if topo.preferred.contains(&cpu) { " (V-Cache)" } else { " (Std)" }
+            if topo.preferred.contains(&cpu) {
+                " (V-Cache)"
+            } else {
+                " (Std)"
+            }
         }
         crate::cpu_park::TopologyKind::IntelHybrid => {
-            if topo.preferred.contains(&cpu) { " (P)" } else { " (E)" }
+            if topo.preferred.contains(&cpu) {
+                " (P)"
+            } else {
+                " (E)"
+            }
         }
         crate::cpu_park::TopologyKind::Uniform => "",
     }

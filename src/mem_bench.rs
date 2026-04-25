@@ -7,9 +7,9 @@
 //! prefetcher.  The measured nanoseconds-per-access at each working-set size
 //! maps directly onto L1 / L2 / L3 / DRAM latency.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::path::Path;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -20,23 +20,23 @@ const STRIDE: usize = CACHE_LINE / 8;
 
 /// Working-set sizes tested, from L1 through DRAM (powers of two).
 pub const TEST_SIZES: &[usize] = &[
-         4 * 1024,   //   4 KiB  (L1)
-         8 * 1024,   //   8 KiB
-        16 * 1024,   //  16 KiB
-        32 * 1024,   //  32 KiB
-        64 * 1024,   //  64 KiB  (L2)
-       128 * 1024,   // 128 KiB
-       256 * 1024,   // 256 KiB
-       512 * 1024,   // 512 KiB
-     1 * 1024 * 1024, //  1 MiB  (L3)
-     2 * 1024 * 1024, //  2 MiB
-     4 * 1024 * 1024, //  4 MiB
-     8 * 1024 * 1024, //  8 MiB
-    16 * 1024 * 1024, // 16 MiB
-    32 * 1024 * 1024, // 32 MiB
-    64 * 1024 * 1024, // 64 MiB  (DRAM)
-   128 * 1024 * 1024, // 128 MiB
-   256 * 1024 * 1024, // 256 MiB
+    4 * 1024,          //   4 KiB  (L1)
+    8 * 1024,          //   8 KiB
+    16 * 1024,         //  16 KiB
+    32 * 1024,         //  32 KiB
+    64 * 1024,         //  64 KiB  (L2)
+    128 * 1024,        // 128 KiB
+    256 * 1024,        // 256 KiB
+    512 * 1024,        // 512 KiB
+    1 * 1024 * 1024,   //  1 MiB  (L3)
+    2 * 1024 * 1024,   //  2 MiB
+    4 * 1024 * 1024,   //  4 MiB
+    8 * 1024 * 1024,   //  8 MiB
+    16 * 1024 * 1024,  // 16 MiB
+    32 * 1024 * 1024,  // 32 MiB
+    64 * 1024 * 1024,  // 64 MiB  (DRAM)
+    128 * 1024 * 1024, // 128 MiB
+    256 * 1024 * 1024, // 256 MiB
 ];
 
 // ── Cache topology ────────────────────────────────────────────────────────────
@@ -44,16 +44,16 @@ pub const TEST_SIZES: &[usize] = &[
 #[derive(Clone, Debug, Default)]
 pub struct CacheSizes {
     pub l1d: usize,
-    pub l2:  usize,
-    pub l3:  usize,
+    pub l2: usize,
+    pub l3: usize,
 }
 
 impl CacheSizes {
     pub fn read() -> Self {
         let base = Path::new("/sys/devices/system/cpu/cpu0/cache");
-        let mut l1d = 32  * 1024;
-        let mut l2  = 512 * 1024;
-        let mut l3  = 32  * 1024 * 1024;
+        let mut l1d = 32 * 1024;
+        let mut l2 = 512 * 1024;
+        let mut l3 = 32 * 1024 * 1024;
 
         for idx in 0..=8 {
             let dir = base.join(format!("index{idx}"));
@@ -61,9 +61,9 @@ impl CacheSizes {
             let ctype = read_s(&dir.join("type")).unwrap_or_default();
             if let Some(sz) = parse_cache_size(&dir.join("size")) {
                 match (level, ctype.as_str()) {
-                    (1, "Data")       => l1d = sz,
-                    (2, _)            => l2  = sz,
-                    (3, _) if sz > l3 => l3  = sz,
+                    (1, "Data") => l1d = sz,
+                    (2, _) => l2 = sz,
+                    (3, _) if sz > l3 => l3 = sz,
                     _ => {}
                 }
             }
@@ -73,7 +73,9 @@ impl CacheSizes {
 }
 
 fn read_s(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn read_u(path: &Path) -> Option<u32> {
@@ -101,12 +103,12 @@ pub struct LatencyPoint {
 
 #[derive(Clone, Debug, Default)]
 pub struct MemLatencyResult {
-    pub points:       Vec<LatencyPoint>,
+    pub points: Vec<LatencyPoint>,
     /// 0.0 → 1.0
-    pub progress:     f32,
+    pub progress: f32,
     pub current_size: Option<usize>,
-    pub running:      bool,
-    pub complete:     bool,
+    pub running: bool,
+    pub complete: bool,
 }
 
 // ── Benchmark controller ──────────────────────────────────────────────────────
@@ -126,13 +128,18 @@ impl MemLatencyBench {
 
     /// Spawn the benchmark thread.  No-op if already running.
     pub fn start(&self) {
-        if self.result.lock().unwrap().running { return; }
+        if self.result.lock().unwrap().running {
+            return;
+        }
 
         self.cancel.store(false, Ordering::Relaxed);
         let result = Arc::clone(&self.result);
         let cancel = Arc::clone(&self.cancel);
 
-        *result.lock().unwrap() = MemLatencyResult { running: true, ..Default::default() };
+        *result.lock().unwrap() = MemLatencyResult {
+            running: true,
+            ..Default::default()
+        };
 
         std::thread::Builder::new()
             .name("mem-latency".into())
@@ -156,24 +163,29 @@ fn run_bench(result: Arc<Mutex<MemLatencyResult>>, cancel: Arc<AtomicBool>) {
     let n = TEST_SIZES.len();
 
     for (i, &size) in TEST_SIZES.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) { break; }
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
 
         {
             let mut r = result.lock().unwrap();
-            r.progress     = i as f32 / n as f32;
+            r.progress = i as f32 / n as f32;
             r.current_size = Some(size);
         }
 
         if let Some(lat) = measure_latency(size, &cancel) {
             let mut r = result.lock().unwrap();
-            r.points.push(LatencyPoint { size_bytes: size, latency_ns: lat });
+            r.points.push(LatencyPoint {
+                size_bytes: size,
+                latency_ns: lat,
+            });
         }
     }
 
     let mut r = result.lock().unwrap();
-    r.running      = false;
-    r.complete     = !cancel.load(Ordering::Relaxed);
-    r.progress     = 1.0;
+    r.running = false;
+    r.complete = !cancel.load(Ordering::Relaxed);
+    r.progress = 1.0;
     r.current_size = None;
 }
 
@@ -212,17 +224,23 @@ fn measure_latency(size_bytes: usize, cancel: &AtomicBool) -> Option<f64> {
     // Warm-up: bring the chase array into whatever cache level applies
     chase(&buf, 20_000);
 
-    if cancel.load(Ordering::Relaxed) { return None; }
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
 
     // Quick estimate (50 K accesses) to calibrate timing
     let est = chase_timed(&buf, 50_000);
-    if est <= 0.0 { return None; }
+    if est <= 0.0 {
+        return None;
+    }
 
     // Target ~300 ms of measurement; clamp to avoid runaway on tiny arrays
     let target_ns: f64 = 300_000_000.0;
     let n = ((target_ns / est) as u64).clamp(100_000, 500_000_000);
 
-    if cancel.load(Ordering::Relaxed) { return None; }
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
 
     Some(chase_timed(&buf, n))
 }
@@ -256,11 +274,14 @@ fn chase_timed(buf: &[u64], n: u64) -> f64 {
 struct Lcg64(u64);
 
 impl Lcg64 {
-    fn new(seed: u64) -> Self { Self(seed) }
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
 
     #[inline]
     fn next(&mut self) -> u64 {
-        self.0 = self.0
+        self.0 = self
+            .0
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         self.0
@@ -277,12 +298,12 @@ impl Lcg64 {
 /// One test result: label + GB/s for read, write, copy.
 #[derive(Clone, Debug, Default)]
 pub struct BandwidthResult {
-    pub read_gb_s:  f64,
+    pub read_gb_s: f64,
     pub write_gb_s: f64,
-    pub copy_gb_s:  f64,
-    pub running:    bool,
-    pub complete:   bool,
-    pub progress:   f32,
+    pub copy_gb_s: f64,
+    pub running: bool,
+    pub complete: bool,
+    pub progress: f32,
 }
 
 pub struct MemBandwidthBench {
@@ -307,7 +328,10 @@ impl MemBandwidthBench {
         let cancel = Arc::clone(&self.cancel);
         cancel.store(false, Ordering::Relaxed);
         if let Ok(mut r) = result.lock() {
-            *r = BandwidthResult { running: true, ..Default::default() };
+            *r = BandwidthResult {
+                running: true,
+                ..Default::default()
+            };
         }
         let result2 = Arc::clone(&result);
         let cancel2 = Arc::clone(&cancel);
@@ -345,8 +369,12 @@ fn run_bandwidth(result: Arc<Mutex<BandwidthResult>>, cancel: Arc<AtomicBool>) {
 
     // Fully initialise both buffers — writes every element so all pages are
     // committed and cache lines are evicted from L3 before timing starts.
-    for (i, v) in src.iter_mut().enumerate() { *v = i as u64 ^ 0xDEAD_BEEF_CAFE_1234; }
-    for v in dst.iter_mut() { *v = 0; }
+    for (i, v) in src.iter_mut().enumerate() {
+        *v = i as u64 ^ 0xDEAD_BEEF_CAFE_1234;
+    }
+    for v in dst.iter_mut() {
+        *v = 0;
+    }
 
     let update = |progress: f32, r: f64, w: f64, c: f64| {
         if let Ok(mut res) = result.lock() {
@@ -357,7 +385,10 @@ fn run_bandwidth(result: Arc<Mutex<BandwidthResult>>, cancel: Arc<AtomicBool>) {
         }
     };
 
-    if cancel.load(Ordering::Relaxed) { mark_done(&result, false); return; }
+    if cancel.load(Ordering::Relaxed) {
+        mark_done(&result, false);
+        return;
+    }
 
     // ── Sequential READ ───────────────────────────────────────────────────────
     // Use 8 independent accumulators to avoid a serial dependency chain.
@@ -366,8 +397,14 @@ fn run_bandwidth(result: Arc<Mutex<BandwidthResult>>, cancel: Arc<AtomicBool>) {
     let read_bw = {
         let mut iters = 0u64;
         let start = std::time::Instant::now();
-        let mut a0 = 0u64; let mut a1 = 0u64; let mut a2 = 0u64; let mut a3 = 0u64;
-        let mut a4 = 0u64; let mut a5 = 0u64; let mut a6 = 0u64; let mut a7 = 0u64;
+        let mut a0 = 0u64;
+        let mut a1 = 0u64;
+        let mut a2 = 0u64;
+        let mut a3 = 0u64;
+        let mut a4 = 0u64;
+        let mut a5 = 0u64;
+        let mut a6 = 0u64;
+        let mut a7 = 0u64;
         loop {
             // Each iteration steps by 8 u64s = one cache line (64 bytes).
             for chunk in src.chunks_exact(8) {
@@ -381,7 +418,9 @@ fn run_bandwidth(result: Arc<Mutex<BandwidthResult>>, cancel: Arc<AtomicBool>) {
                 a7 = a7.wrapping_add(chunk[7]);
             }
             iters += 1;
-            if start.elapsed().as_secs_f64() >= BW_TARGET_SECS { break; }
+            if start.elapsed().as_secs_f64() >= BW_TARGET_SECS {
+                break;
+            }
         }
         std::hint::black_box((a0, a1, a2, a3, a4, a5, a6, a7));
         let elapsed = start.elapsed().as_secs_f64();
@@ -389,16 +428,23 @@ fn run_bandwidth(result: Arc<Mutex<BandwidthResult>>, cancel: Arc<AtomicBool>) {
     };
     update(0.33, read_bw, 0.0, 0.0);
 
-    if cancel.load(Ordering::Relaxed) { mark_done(&result, false); return; }
+    if cancel.load(Ordering::Relaxed) {
+        mark_done(&result, false);
+        return;
+    }
 
     // ── Sequential WRITE ──────────────────────────────────────────────────────
     let write_bw = {
         let mut iters = 0u64;
         let start = std::time::Instant::now();
         loop {
-            for (i, v) in dst.iter_mut().enumerate() { *v = i as u64; }
+            for (i, v) in dst.iter_mut().enumerate() {
+                *v = i as u64;
+            }
             iters += 1;
-            if start.elapsed().as_secs_f64() >= BW_TARGET_SECS { break; }
+            if start.elapsed().as_secs_f64() >= BW_TARGET_SECS {
+                break;
+            }
         }
         std::hint::black_box(dst[0]);
         let elapsed = start.elapsed().as_secs_f64();
@@ -406,7 +452,10 @@ fn run_bandwidth(result: Arc<Mutex<BandwidthResult>>, cancel: Arc<AtomicBool>) {
     };
     update(0.67, read_bw, write_bw, 0.0);
 
-    if cancel.load(Ordering::Relaxed) { mark_done(&result, false); return; }
+    if cancel.load(Ordering::Relaxed) {
+        mark_done(&result, false);
+        return;
+    }
 
     // ── COPY (src → dst) ─────────────────────────────────────────────────────
     let copy_bw = {
@@ -415,7 +464,9 @@ fn run_bandwidth(result: Arc<Mutex<BandwidthResult>>, cancel: Arc<AtomicBool>) {
         loop {
             dst.copy_from_slice(&src);
             iters += 1;
-            if start.elapsed().as_secs_f64() >= BW_TARGET_SECS { break; }
+            if start.elapsed().as_secs_f64() >= BW_TARGET_SECS {
+                break;
+            }
         }
         std::hint::black_box(dst[0]);
         let elapsed = start.elapsed().as_secs_f64();

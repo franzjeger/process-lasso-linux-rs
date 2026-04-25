@@ -1,12 +1,12 @@
 //! Gaming Mode tab: CPU topology display, parking, game launcher, profiles.
 
-use std::collections::{HashMap, HashSet};
 use egui::{Color32, RichText, Ui};
+use std::collections::{HashMap, HashSet};
 
 use crate::config::{Config, GamingProfile};
 use crate::cpu_park::{
-    self, detect_topology, get_smt_siblings_of, is_helper_current,
-    is_helper_installed, is_sudoers_installed, park_cpus, unpark_all, CpuTopology,
+    self, detect_topology, get_smt_siblings_of, is_helper_current, is_helper_installed,
+    is_sudoers_installed, park_cpus, unpark_all, CpuTopology,
 };
 use crate::utils::{get_offline_cpus, get_online_cpus};
 
@@ -151,8 +151,12 @@ impl GamingModeTab {
     }
 
     fn refresh_cpu_status(&mut self) {
-        let online = get_online_cpus().into_iter().collect::<std::collections::BTreeSet<_>>();
-        let offline = get_offline_cpus().into_iter().collect::<std::collections::BTreeSet<_>>();
+        let online = get_online_cpus()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let offline = get_offline_cpus()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
         if offline.is_empty() {
             self.cpu_status_text = format!("All CPUs online: {online:?}");
             self.cpu_status_color = None; // theme default text color
@@ -164,16 +168,23 @@ impl GamingModeTab {
 
     fn enable_gaming_mode(&mut self) {
         if let Some(ref topo) = self.topo.clone() {
-            if !topo.has_asymmetry() { return; }
+            if !topo.has_asymmetry() {
+                return;
+            }
             if !is_helper_installed() {
                 self.append_log("[Gaming Mode] Helper missing — install first.".into());
                 return;
             }
-            let unchecked: HashSet<u32> = self.preferred_checks.iter()
+            let unchecked: HashSet<u32> = self
+                .preferred_checks
+                .iter()
                 .filter(|(_, &checked)| !checked)
                 .map(|(&cpu, _)| cpu)
                 .collect();
-            let to_park: HashSet<u32> = topo.non_preferred.iter().copied()
+            let to_park: HashSet<u32> = topo
+                .non_preferred
+                .iter()
+                .copied()
                 .chain(unchecked.into_iter())
                 .collect();
             self.append_log(format!("[Gaming Mode] Parking CPUs {:?}…", {
@@ -201,7 +212,8 @@ impl GamingModeTab {
                     active: true,
                     elevate_nice: self.elevate_nice,
                 });
-                self.events.push(GamingEvent::LogMessage("[Gaming Mode] enabled".into()));
+                self.events
+                    .push(GamingEvent::LogMessage("[Gaming Mode] enabled".into()));
             } else {
                 self.append_log("[Gaming Mode] Parking failed — check log.".into());
             }
@@ -212,7 +224,9 @@ impl GamingModeTab {
         self.append_log("[Gaming Mode] Unparking all CPUs…".into());
         let log_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let ll = log_lines.clone();
-        let _ok = unpark_all(move |msg| { ll.lock().unwrap().push(msg); });
+        let _ok = unpark_all(move |msg| {
+            ll.lock().unwrap().push(msg);
+        });
         for msg in log_lines.lock().unwrap().drain(..) {
             self.append_log(msg);
         }
@@ -224,8 +238,12 @@ impl GamingModeTab {
         self.rebuild_preferred_checks(&topo);
         self.topo = Some(topo);
         self.append_log("[Gaming Mode] Disabled — all CPUs online.".into());
-        self.events.push(GamingEvent::GamingModeChanged { active: false, elevate_nice: false });
-        self.events.push(GamingEvent::LogMessage("[Gaming Mode] disabled".into()));
+        self.events.push(GamingEvent::GamingModeChanged {
+            active: false,
+            elevate_nice: false,
+        });
+        self.events
+            .push(GamingEvent::LogMessage("[Gaming Mode] disabled".into()));
 
         if self.pending_enable_after_unpark {
             self.pending_enable_after_unpark = false;
@@ -251,15 +269,29 @@ impl GamingModeTab {
     }
 
     fn poll_game_process(&mut self) {
-        if self.watch_phase == WatchPhase::Idle { return; }
-        if self.last_poll.elapsed().as_secs_f32() < if self.watch_phase == WatchPhase::Running { 5.0 } else { 2.0 } {
+        if self.watch_phase == WatchPhase::Idle {
+            return;
+        }
+        if self.last_poll.elapsed().as_secs_f32()
+            < if self.watch_phase == WatchPhase::Running {
+                5.0
+            } else {
+                2.0
+            }
+        {
             return;
         }
         self.last_poll = std::time::Instant::now();
 
         let pids: Vec<u32> = std::fs::read_dir("/proc")
             .ok()
-            .map(|d| d.filter_map(|e| e.ok().and_then(|e| e.file_name().to_str().and_then(|s| s.parse().ok()))).collect())
+            .map(|d| {
+                d.filter_map(|e| {
+                    e.ok()
+                        .and_then(|e| e.file_name().to_str().and_then(|s| s.parse().ok()))
+                })
+                .collect()
+            })
             .unwrap_or_default();
 
         let name = self.game_name.clone();
@@ -278,7 +310,9 @@ impl GamingModeTab {
             if let Some(pid) = self.launched_pid {
                 if !pids.contains(&pid) {
                     // Check for replacement
-                    if let Some(new_pid) = pids.iter().find(|&&p| proc_name_matches(&name, p)).copied() {
+                    if let Some(new_pid) =
+                        pids.iter().find(|&&p| proc_name_matches(&name, p)).copied()
+                    {
                         self.launched_pid = Some(new_pid);
                         self.append_log(format!("[Launcher] Game PID changed → {new_pid}"));
                     } else {
@@ -533,7 +567,8 @@ impl GamingModeTab {
         // ── Install helper dialog ─────────────────────────────────────────
         if self.show_install_dialog {
             egui::Window::new("Install Privileged Helper")
-                .resizable(false).collapsible(false)
+                .resizable(false)
+                .collapsible(false)
                 .show(ctx, |ui| {
                     ui.label("Enter root password to install the privileged sysfs helper:");
                     ui.add(egui::TextEdit::singleline(&mut self.install_password).password(true));
@@ -603,25 +638,35 @@ impl GamingModeTab {
         } else {
             self.selected_profile.clone()
         };
-        if name.is_empty() { return; }
+        if name.is_empty() {
+            return;
+        }
 
-        let cpu_states: HashMap<String, bool> = self.preferred_checks.iter()
+        let cpu_states: HashMap<String, bool> = self
+            .preferred_checks
+            .iter()
             .map(|(&k, &v)| (k.to_string(), v))
             .collect();
 
-        self.config.gaming_mode.profiles.insert(name.clone(), GamingProfile {
-            game_name: self.game_name.clone(),
-            command: self.command.clone(),
-            cpu_states,
-            elevate_nice: self.elevate_nice,
-        });
+        self.config.gaming_mode.profiles.insert(
+            name.clone(),
+            GamingProfile {
+                game_name: self.game_name.clone(),
+                command: self.command.clone(),
+                cpu_states,
+                elevate_nice: self.elevate_nice,
+            },
+        );
         self.selected_profile = name.clone();
-        self.events.push(GamingEvent::ConfigChanged(self.config.clone()));
+        self.events
+            .push(GamingEvent::ConfigChanged(self.config.clone()));
         self.append_log(format!("[Profile] Saved '{name}'"));
     }
 
     fn launch_game(&mut self) {
-        if !self.parked { self.enable_gaming_mode(); }
+        if !self.parked {
+            self.enable_gaming_mode();
+        }
 
         let cmd = self.command.clone();
         self.append_log(format!("[Launcher] Launching '{}': {cmd}", self.game_name));

@@ -52,12 +52,16 @@ impl HwMonitorTab {
             ui.separator();
             ui.label("Filter:");
             ui.text_edit_singleline(&mut self.filter);
-            if ui.small_button("x").clicked() { self.filter.clear(); }
+            if ui.small_button("x").clicked() {
+                self.filter.clear();
+            }
         });
         ui.separator();
 
         if data.groups.is_empty() {
-            ui.centered_and_justified(|ui| { ui.label("Reading sensors..."); });
+            ui.centered_and_justified(|ui| {
+                ui.label("Reading sensors...");
+            });
             return;
         }
 
@@ -83,15 +87,9 @@ impl HwMonitorTab {
         // ── Global column header (outside scroll area) ────────────────────────
         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
         let hdr_h = 22.0;
-        let (hdr_rect, _) = ui.allocate_exact_size(
-            Vec2::new(avail_w, hdr_h),
-            egui::Sense::hover(),
-        );
-        ui.painter().rect_filled(
-            hdr_rect,
-            0.0,
-            ui.visuals().widgets.noninteractive.bg_fill,
-        );
+        let (hdr_rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, hdr_h), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(hdr_rect, 0.0, ui.visuals().widgets.noninteractive.bg_fill);
         // Bottom separator doubles as the top border of the content below
         ui.painter().line_segment(
             [hdr_rect.left_bottom(), hdr_rect.right_bottom()],
@@ -111,7 +109,12 @@ impl HwMonitorTab {
         );
 
         let mut x = hdr_rect.min.x + col_name;
-        for (w, label) in [(col_val, "VALUE"), (col_min, "MIN"), (col_max, "MAX"), (col_avg, "AVG")] {
+        for (w, label) in [
+            (col_val, "VALUE"),
+            (col_min, "MIN"),
+            (col_max, "MAX"),
+            (col_avg, "AVG"),
+        ] {
             ui.painter().text(
                 egui::pos2(x + pad, hdr_rect.center().y),
                 egui::Align2::LEFT_CENTER,
@@ -134,7 +137,10 @@ impl HwMonitorTab {
         // Separator after SENSOR column (not resizable — name fills the rest)
         let name_edge = hdr_rect.min.x + col_name;
         ui.painter().line_segment(
-            [egui::pos2(name_edge, hdr_rect.min.y), egui::pos2(name_edge, hdr_rect.max.y)],
+            [
+                egui::pos2(name_edge, hdr_rect.min.y),
+                egui::pos2(name_edge, hdr_rect.max.y),
+            ],
             Stroke::new(1.0, border_color),
         );
 
@@ -159,7 +165,10 @@ impl HwMonitorTab {
                 border_color
             };
             ui.painter().line_segment(
-                [egui::pos2(hx, hdr_rect.min.y), egui::pos2(hx, hdr_rect.max.y)],
+                [
+                    egui::pos2(hx, hdr_rect.min.y),
+                    egui::pos2(hx, hdr_rect.max.y),
+                ],
                 Stroke::new(1.0, line_col),
             );
             if resp.dragged() {
@@ -184,19 +193,27 @@ impl HwMonitorTab {
                 let all_cats: Vec<&str> = {
                     let mut v: Vec<&str> = CATEGORY_ORDER.to_vec();
                     for g in &data.groups {
-                        if !v.contains(&g.category) { v.push(g.category); }
+                        if !v.contains(&g.category) {
+                            v.push(g.category);
+                        }
                     }
                     v
                 };
 
                 for category in all_cats {
-                    if rendered_cats.contains(category) { continue; }
+                    if rendered_cats.contains(category) {
+                        continue;
+                    }
                     rendered_cats.insert(category);
 
-                    let cat_groups: Vec<_> = data.groups.iter()
+                    let cat_groups: Vec<_> = data
+                        .groups
+                        .iter()
                         .filter(|g| g.category == category)
                         .collect();
-                    if cat_groups.is_empty() { continue; }
+                    if cat_groups.is_empty() {
+                        continue;
+                    }
 
                     // Category header
                     ui.add_space(6.0);
@@ -210,7 +227,9 @@ impl HwMonitorTab {
                     ui.add_space(2.0);
 
                     for group in &cat_groups {
-                        let visible: Vec<&Sensor> = group.sensors.iter()
+                        let visible: Vec<&Sensor> = group
+                            .sensors
+                            .iter()
                             .filter(|s| {
                                 filter_lc.is_empty()
                                     || s.label.to_lowercase().contains(&filter_lc)
@@ -218,7 +237,9 @@ impl HwMonitorTab {
                                     || category.to_lowercase().contains(&filter_lc)
                             })
                             .collect();
-                        if visible.is_empty() { continue; }
+                        if visible.is_empty() {
+                            continue;
+                        }
 
                         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
                         egui::Frame::new()
@@ -289,7 +310,11 @@ impl HwMonitorTab {
                                         egui::Align2::LEFT_CENTER,
                                         fmt_val(sensor.value, sensor.unit),
                                         egui::FontId::proportional(12.0),
-                                        value_color(sensor.value, sensor.unit, ui.visuals().text_color()),
+                                        value_color(
+                                            sensor.value,
+                                            sensor.unit,
+                                            ui.visuals().text_color(),
+                                        ),
                                     );
                                     rx += col_val;
 
@@ -329,7 +354,12 @@ impl HwMonitorTab {
                                             egui::pos2(rx + 2.0, row_rect.min.y + 2.0),
                                             Vec2::new(sparkline_w - 4.0, row_h - 4.0),
                                         );
-                                        draw_sparkline(ui, spark_rect, &sensor.history, sensor.unit);
+                                        draw_sparkline(
+                                            ui,
+                                            spark_rect,
+                                            &sensor.history,
+                                            sensor.unit,
+                                        );
                                     }
                                 }
                             }); // end group Frame
@@ -345,29 +375,29 @@ impl HwMonitorTab {
 
 fn category_color(cat: &str) -> Color32 {
     match cat {
-        "CPU"     => Color32::from_rgb(100, 180, 255),
-        "GPU"     => Color32::from_rgb(140, 230, 100),
-        "Memory"  => Color32::from_rgb(200, 140, 255),
+        "CPU" => Color32::from_rgb(100, 180, 255),
+        "GPU" => Color32::from_rgb(140, 230, 100),
+        "Memory" => Color32::from_rgb(200, 140, 255),
         "Storage" => Color32::from_rgb(255, 190, 80),
-        "Network" => Color32::from_rgb( 80, 220, 200),
-        _         => Color32::GRAY,
+        "Network" => Color32::from_rgb(80, 220, 200),
+        _ => Color32::GRAY,
     }
 }
 
 fn fmt_val(v: f32, unit: &str) -> String {
     match unit {
-        "°C"   => format!("{v:.1} °C"),
-        "RPM"  => format!("{v:.0} RPM"),
-        "W"    => format!("{v:.2} W"),
-        "V"    => format!("{v:.3} V"),
-        "MHz"  => format!("{v:.0} MHz"),
-        "GiB"  => format!("{v:.2} GiB"),
-        "MB"   => format!("{v:.0} MB"),
+        "°C" => format!("{v:.1} °C"),
+        "RPM" => format!("{v:.0} RPM"),
+        "W" => format!("{v:.2} W"),
+        "V" => format!("{v:.3} V"),
+        "MHz" => format!("{v:.0} MHz"),
+        "GiB" => format!("{v:.2} GiB"),
+        "MB" => format!("{v:.0} MB"),
         "MB/s" => format!("{v:.2} MB/s"),
-        "%"    => format!("{v:.1}%"),
-        "Wh"   => format!("{v:.2} Wh"),
-        ""     => format!("{v:.2}"),
-        u      => format!("{v:.2} {u}"),
+        "%" => format!("{v:.1}%"),
+        "Wh" => format!("{v:.2} Wh"),
+        "" => format!("{v:.2}"),
+        u => format!("{v:.2} {u}"),
     }
 }
 
@@ -375,25 +405,39 @@ fn value_color(v: f32, unit: &str, fallback: Color32) -> Color32 {
     match unit {
         "°C" => temp_color(v),
         "%" => {
-            if v >= 90.0      { Color32::from_rgb(240,  80,  60) }
-            else if v >= 70.0 { Color32::from_rgb(240, 180,  60) }
-            else              { Color32::from_rgb(100, 210, 140) }
+            if v >= 90.0 {
+                Color32::from_rgb(240, 80, 60)
+            } else if v >= 70.0 {
+                Color32::from_rgb(240, 180, 60)
+            } else {
+                Color32::from_rgb(100, 210, 140)
+            }
         }
         "W" => {
-            if v >= 300.0      { Color32::from_rgb(240, 100,  60) }
-            else if v >= 150.0 { Color32::from_rgb(240, 200,  80) }
-            else               { fallback }
+            if v >= 300.0 {
+                Color32::from_rgb(240, 100, 60)
+            } else if v >= 150.0 {
+                Color32::from_rgb(240, 200, 80)
+            } else {
+                fallback
+            }
         }
         _ => fallback,
     }
 }
 
 fn temp_color(c: f32) -> Color32 {
-    if c >= 90.0      { Color32::from_rgb(255,  50,  30) }
-    else if c >= 80.0 { Color32::from_rgb(255, 110,  40) }
-    else if c >= 70.0 { Color32::from_rgb(240, 195,  55) }
-    else if c >= 60.0 { Color32::from_rgb(180, 220,  75) }
-    else              { Color32::from_rgb( 80, 210, 130) }
+    if c >= 90.0 {
+        Color32::from_rgb(255, 50, 30)
+    } else if c >= 80.0 {
+        Color32::from_rgb(255, 110, 40)
+    } else if c >= 70.0 {
+        Color32::from_rgb(240, 195, 55)
+    } else if c >= 60.0 {
+        Color32::from_rgb(180, 220, 75)
+    } else {
+        Color32::from_rgb(80, 210, 130)
+    }
 }
 
 fn draw_sparkline(
@@ -402,7 +446,9 @@ fn draw_sparkline(
     history: &std::collections::VecDeque<f32>,
     unit: &str,
 ) {
-    if history.len() < 2 { return; }
+    if history.len() < 2 {
+        return;
+    }
 
     let painter = ui.painter_at(rect);
     let vals: Vec<f32> = history.iter().copied().collect();
@@ -415,20 +461,22 @@ fn draw_sparkline(
     let h = rect.height();
 
     let px = |i: usize| rect.left() + i as f32 / (HISTORY_LEN as f32 - 1.0) * w;
-    let py = |v: f32|   rect.bottom() - (v - lo) / range * (h - 1.0);
+    let py = |v: f32| rect.bottom() - (v - lo) / range * (h - 1.0);
 
     painter.rect_filled(rect, 2.0, Color32::from_black_alpha(50));
 
     let line_color = match unit {
-        "°C"   => Color32::from_rgb(240, 120,  60),
-        "%"    => Color32::from_rgb( 80, 180, 240),
-        "W"    => Color32::from_rgb(220, 180,  60),
-        "MHz"  => Color32::from_rgb(160, 100, 240),
-        "MB/s" => Color32::from_rgb( 80, 220, 200),
-        _      => Color32::from_rgb(120, 210, 140),
+        "°C" => Color32::from_rgb(240, 120, 60),
+        "%" => Color32::from_rgb(80, 180, 240),
+        "W" => Color32::from_rgb(220, 180, 60),
+        "MHz" => Color32::from_rgb(160, 100, 240),
+        "MB/s" => Color32::from_rgb(80, 220, 200),
+        _ => Color32::from_rgb(120, 210, 140),
     };
 
-    let points: Vec<egui::Pos2> = vals.iter().enumerate()
+    let points: Vec<egui::Pos2> = vals
+        .iter()
+        .enumerate()
         .map(|(i, &v)| egui::pos2(px(i), py(v)))
         .collect();
 

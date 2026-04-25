@@ -132,7 +132,11 @@ pub struct HwAlertConfig {
 
 impl Default for HwAlertConfig {
     fn default() -> Self {
-        Self { enabled: true, temp_threshold_celsius: 90.0, cooldown_secs: 60 }
+        Self {
+            enabled: true,
+            temp_threshold_celsius: 90.0,
+            cooldown_secs: 60,
+        }
     }
 }
 
@@ -243,16 +247,25 @@ pub fn config_path() -> PathBuf {
 
 /// Migrate config from the old process-lasso-rs path to the new argus-lasso path.
 fn migrate_old_config() {
-    let Ok(home) = std::env::var("HOME") else { return };
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
     let base = PathBuf::from(home);
-    let old_path = base.join(".config").join("process-lasso-rs").join("config.toml");
+    let old_path = base
+        .join(".config")
+        .join("process-lasso-rs")
+        .join("config.toml");
     let new_path = config_path();
     if old_path.exists() && !new_path.exists() {
         if let Some(parent) = new_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
         if fs::copy(&old_path, &new_path).is_ok() {
-            log::info!("Migrated config from {} to {}", old_path.display(), new_path.display());
+            log::info!(
+                "Migrated config from {} to {}",
+                old_path.display(),
+                new_path.display()
+            );
         }
     }
 }
@@ -286,9 +299,8 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
     fs::create_dir_all(&dir)?;
     let path = config_path();
     let tmp = path.with_extension("toml.tmp");
-    let text = toml::to_string_pretty(cfg).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-    })?;
+    let text = toml::to_string_pretty(cfg)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
     fs::write(&tmp, text)?;
     fs::rename(&tmp, &path)?;
     log::debug!("Config saved to {}", path.display());
