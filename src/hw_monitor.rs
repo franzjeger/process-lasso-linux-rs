@@ -180,10 +180,11 @@ fn collect_all(
 ) -> Vec<GroupReading> {
     let mut out: Vec<GroupReading> = Vec::new();
 
-    // CPU: hwmon temps + frequencies + load
+    // CPU: hwmon temps + frequencies + load + RAPL package power
     out.extend(collect_hwmon_cpu());
     if let Some(g) = collect_cpu_freqs()  { out.push(g); }
     if let Some(g) = collect_load_avg()   { out.push(g); }
+    out.extend(collect_rapl_power());
 
     // GPU: prefer NVML (NVIDIA); fall back to amdgpu hwmon
     let gpu = collect_nvidia_nvml();
@@ -476,6 +477,120 @@ fn collect_nvidia_nvml() -> Vec<GroupReading> {
     groups
 }
 
+// ── CPU package power via RAPL ───────────────────────────────────────────────
+// powercap/intel-rapl exposes per-zone energy counters on both Intel and AMD
+// (the "intel-rapl" name is historical; the Linux driver handles AMD Fam17h+
+// via the same sysfs interface). Power = Δenergy_uj / Δt.
+//
+// Counter wraps at max_energy_range_uj (~65 kJ → ~11 min at 100 W). Wrap is
+// detected by now < prev.
+//
+// energy_uj is root-only by default (Platypus side-channel mitigation). The
+// udev rule /etc/udev/rules.d/60-rapl-energy.rules makes it world-readable;
+// without it this function silently returns empty on the first sample since
+// read_u64 fails.
+
+/// Compute watts from two RAPL energy samples, handling counter wrap at max_uj.
+/// Returns None if dt is non-positive.
+fn rapl_watts(prev_uj: u64, now_uj: u64, max_uj: u64, dt_secs: f64) -> Option<f32> {
+    if !(dt_secs > 0.0) { return None; }
+    let delta_uj = if now_uj >= prev_uj {
+        now_uj - prev_uj
+    } else {
+        max_uj
+            .saturating_sub(prev_uj)
+            .saturating_add(now_uj)
+            .saturating_add(1)
+    };
+    Some((delta_uj as f64 / 1_000_000.0 / dt_secs) as f32)
+}
+
+fn collect_rapl_power() -> Vec<GroupReading> {
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    struct ZoneSample {
+        energy_uj: u64,
+        max_uj: u64,
+        at: Instant,
+    }
+
+    static STATE: Mutex<Option<HashMap<String, ZoneSample>>> = Mutex::new(None);
+
+    let root = Path::new("/sys/class/powercap");
+    let dir = match std::fs::read_dir(root) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let now = Instant::now();
+    // key = sysfs dir name ("intel-rapl:0"); value = (display label, energy, max)
+    let mut current: HashMap<String, (String, u64, u64)> = HashMap::new();
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let fname = entry.file_name();
+        let kname = fname.to_string_lossy();
+        if !kname.starts_with("intel-rapl:") { continue; }
+        // Only top-level zones (package). Skip sub-zones like "intel-rapl:0:0"
+        // (core/uncore/dram), which are already part of the package total.
+        let suffix = &kname["intel-rapl:".len()..];
+        if suffix.contains(':') { continue; }
+        let label = read_trimmed(&path.join("name")).unwrap_or_else(|| kname.to_string());
+        let energy = match read_u64(&path.join("energy_uj")) {
+            Some(v) => v,
+            None => continue,
+        };
+        let max = read_u64(&path.join("max_energy_range_uj")).unwrap_or(u64::MAX);
+        current.insert(kname.into_owned(), (label, energy, max));
+    }
+
+    if current.is_empty() { return Vec::new(); }
+
+    let mut guard = STATE.lock().unwrap();
+    let mut sensors: Vec<Reading> = Vec::new();
+
+    let mut keys: Vec<&String> = current.keys().collect();
+    keys.sort();
+    for key in keys {
+        let (label, now_uj, _max_uj) = &current[key];
+        // Skip on the first sample for this zone — without a prior reading we
+        // can't compute power, and emitting 0 W would show a spurious dip.
+        if let Some(prev) = guard.as_ref().and_then(|m| m.get(key)) {
+            let dt = now.duration_since(prev.at).as_secs_f64().max(0.05);
+            if let Some(watts) = rapl_watts(prev.energy_uj, *now_uj, prev.max_uj, dt) {
+                sensors.push((intern(pretty_rapl_label(label)), "W", watts));
+            }
+        }
+    }
+
+    // Replace previous sample set with the one we just took.
+    let mut new_state: HashMap<String, ZoneSample> = HashMap::with_capacity(current.len());
+    for (k, (_label, energy, max)) in current {
+        new_state.insert(k, ZoneSample { energy_uj: energy, max_uj: max, at: now });
+    }
+    *guard = Some(new_state);
+
+    if sensors.is_empty() {
+        return Vec::new();
+    }
+    vec![("CPU", "CPU Package Power [RAPL]".into(), sensors)]
+}
+
+fn pretty_rapl_label(raw: &str) -> String {
+    let lc = raw.to_ascii_lowercase();
+    if let Some(rest) = lc.strip_prefix("package-") {
+        return format!("Package {rest}");
+    }
+    match lc.as_str() {
+        "package" => "Package".into(),
+        "dram"    => "DRAM".into(),
+        "core"    => "Core".into(),
+        "uncore"  => "Uncore".into(),
+        "psys"    => "PSys".into(),
+        _         => raw.to_string(),
+    }
+}
+
 // ── CPU frequencies ───────────────────────────────────────────────────────────
 
 fn collect_cpu_freqs() -> Option<GroupReading> {
@@ -742,4 +857,49 @@ fn intern(s: impl Into<String>) -> &'static str {
     let leaked: &'static str = Box::leak(s.into_boxed_str());
     set.insert(leaked);
     leaked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rapl_watts_normal_delta() {
+        // 1 J delta over 1 s → 1 W
+        let w = rapl_watts(0, 1_000_000, u64::MAX, 1.0).unwrap();
+        assert!((w - 1.0).abs() < 1e-6, "got {w}");
+    }
+
+    #[test]
+    fn rapl_watts_counter_wrap() {
+        // Wrap at 65 kJ: prev = max - 1µJ, now = 999_999µJ → delta ≈ 1 J in 1 s
+        let max = 65_000_000_u64;
+        let prev = max - 1;
+        let now = 999_999;
+        let w = rapl_watts(prev, now, max, 1.0).unwrap();
+        assert!((w - 1.0).abs() < 1e-3, "wrap-handled watts off: {w}");
+    }
+
+    #[test]
+    fn rapl_watts_zero_dt_is_none() {
+        assert!(rapl_watts(0, 1_000_000, u64::MAX, 0.0).is_none());
+        assert!(rapl_watts(0, 1_000_000, u64::MAX, -1.0).is_none());
+    }
+
+    #[test]
+    fn rapl_watts_zero_delta_is_zero() {
+        // No energy consumed between samples → 0 W (idle counter, freeze, etc.)
+        let w = rapl_watts(42, 42, u64::MAX, 0.5).unwrap();
+        assert_eq!(w, 0.0);
+    }
+
+    #[test]
+    fn pretty_rapl_label_known_zones() {
+        assert_eq!(pretty_rapl_label("package-0"), "Package 0");
+        assert_eq!(pretty_rapl_label("Package-1"), "Package 1");
+        assert_eq!(pretty_rapl_label("dram"), "DRAM");
+        assert_eq!(pretty_rapl_label("psys"), "PSys");
+        // Unknown labels passed through verbatim
+        assert_eq!(pretty_rapl_label("custom-zone"), "custom-zone");
+    }
 }
