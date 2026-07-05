@@ -136,6 +136,27 @@ struct Args {
     command: Option<Cmd>,
 }
 
+/// Acquire a process-wide single-instance lock via flock(2).
+///
+/// Argus runs as a `--minimized` tray service *and* can be launched from the
+/// app menu. Without a guard, two instances each hold their own copy of the
+/// config and race to write `config.toml`, so one instance silently reverts
+/// the other's changes (e.g. a deleted rule reappears). The returned lock is
+/// held for the process lifetime; `None` means another instance already owns it.
+fn acquire_single_instance_lock() -> Option<nix::fcntl::Flock<std::fs::File>> {
+    use nix::fcntl::{Flock, FlockArg};
+    let path = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("argus-lasso.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(path)
+        .ok()?;
+    Flock::lock(file, FlockArg::LockExclusiveNonblock).ok()
+}
+
 fn main() {
     env_logger::init();
 
@@ -172,6 +193,18 @@ fn main() {
             }
         }
     }
+
+    // ── Single-instance guard ──────────────────────────────────────────────
+    // Prevents a second instance (e.g. launched from the app menu while the
+    // tray service runs) from clobbering config.toml. Held for the whole
+    // process lifetime; released automatically on exit.
+    let _instance_lock = match acquire_single_instance_lock() {
+        Some(lock) => lock,
+        None => {
+            eprintln!("Argus-Lasso is already running; exiting this instance.");
+            return;
+        }
+    };
 
     // Build icon RGBA once; reused for window decoration icon.
     let icon_rgba = make_icon_rgba();
