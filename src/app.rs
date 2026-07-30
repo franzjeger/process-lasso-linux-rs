@@ -495,15 +495,18 @@ impl ArgusLassoApp {
                 rule.nice = offer.nice;
                 rule.ionice_class = offer.ionice.map(|(c, _)| c);
                 rule.ionice_level = offer.ionice.map(|(_, l)| l);
-                if let Ok(mut re) = self.rule_engine.lock() {
+                // Lock ORDER matters: the daemon nests state inside the rule
+                // engine (engine → state via the log callback), so the GUI must
+                // never nest engine inside state or the two deadlock. Collect
+                // the rule list first, then take the state lock.
+                let rules_cfg = if let Ok(mut re) = self.rule_engine.lock() {
                     re.add_rule(rule);
-                }
+                    re.to_config_list()
+                } else {
+                    Vec::new()
+                };
                 if let Ok(mut s) = self.state.lock() {
-                    s.config.rules = self
-                        .rule_engine
-                        .lock()
-                        .map(|re| re.to_config_list())
-                        .unwrap_or_default();
+                    s.config.rules = rules_cfg;
                     s.append_log(format!(
                         "[Rule] Created rule for '{}' ({}) from manual change",
                         offer.proc_name,
@@ -511,6 +514,7 @@ impl ArgusLassoApp {
                     ));
                 }
                 self.save_config();
+                self.send(DaemonCmd::ReapplyDefaults);
             } else if dismiss {
                 self.rule_offer = None;
             }
@@ -780,12 +784,15 @@ impl eframe::App for ArgusLassoApp {
                         &mut profiles_changed,
                     );
                     if rules_changed {
+                        // Never nest the engine lock inside the state lock —
+                        // the daemon nests them the other way around.
+                        let rules_cfg = self
+                            .rule_engine
+                            .lock()
+                            .map(|re| re.to_config_list())
+                            .unwrap_or_default();
                         if let Ok(mut s) = self.state.lock() {
-                            s.config.rules = self
-                                .rule_engine
-                                .lock()
-                                .map(|re| re.to_config_list())
-                                .unwrap_or_default();
+                            s.config.rules = rules_cfg;
                         }
                         self.send(DaemonCmd::ReapplyDefaults);
                         self.save_config();

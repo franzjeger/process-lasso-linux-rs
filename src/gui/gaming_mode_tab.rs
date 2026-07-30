@@ -74,6 +74,10 @@ pub struct GamingModeTab {
     pub show_install_dialog: bool,
     /// "current: <governor> / <epp>" display next to the power-profile buttons
     power_status_text: String,
+    /// Result channel for the background helper-install thread — the polkit
+    /// auth dialog can stay open for minutes, so installing synchronously
+    /// would freeze the whole UI.
+    install_result_rx: Option<std::sync::mpsc::Receiver<String>>,
     steam_picker: Option<crate::gui::dialogs::SteamGamePickerDialog>,
     lutris_picker: Option<crate::gui::dialogs::LutrisGamePickerDialog>,
 
@@ -127,6 +131,7 @@ impl GamingModeTab {
             install_password: String::new(),
             show_install_dialog: false,
             power_status_text: String::new(),
+            install_result_rx: None,
             steam_picker: None,
             lutris_picker: None,
             pending_enable_after_unpark: false,
@@ -347,8 +352,28 @@ impl GamingModeTab {
     }
 
     pub fn show(&mut self, ui: &mut Ui, ctx: &egui::Context, opacity: f32) {
-        self.events.clear();
+        // Do NOT clear events here: app.rs drains them with mem::take AFTER
+        // show(), and the constructor may queue a startup GamingModeChanged
+        // event (CPUs already parked at launch) that a clear would discard.
         self.poll_game_process();
+
+        // Collect the result of a background helper install, if one finished.
+        if let Some(rx) = &self.install_result_rx {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    self.append_log(msg);
+                    self.refresh_helper_status();
+                    self.install_result_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.install_result_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // keep repainting while we wait for the auth dialog
+                    ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                }
+            }
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             // ── Topology info ─────────────────────────────────────────────
@@ -437,6 +462,27 @@ impl GamingModeTab {
             });
 
             ui.checkbox(&mut self.elevate_nice, "Elevate game priority (nice -1) — gives game processes higher scheduling priority");
+
+            // Auto-detection (daemon-side Steam/Proton heuristics)
+            let mut auto_changed = false;
+            auto_changed |= ui
+                .checkbox(
+                    &mut self.config.gaming_mode.auto_detect,
+                    "Auto-enable when a game is detected (Steam/Proton)",
+                )
+                .changed();
+            if self.config.gaming_mode.auto_detect {
+                auto_changed |= ui
+                    .checkbox(
+                        &mut self.config.gaming_mode.auto_park,
+                        "Also park non-preferred CPUs when auto-enabling",
+                    )
+                    .changed();
+            }
+            if auto_changed {
+                self.events
+                    .push(GamingEvent::ConfigChanged(Box::new(self.config.clone())));
+            }
             ui.add_space(4.0);
 
             // Enable/disable button
@@ -626,12 +672,22 @@ impl GamingModeTab {
                              authentication dialog (polkit):",
                         );
                         ui.horizontal(|ui| {
-                            if ui.button("Install (system authentication)").clicked() {
+                            let installing = self.install_result_rx.is_some();
+                            if ui
+                                .add_enabled(
+                                    !installing,
+                                    egui::Button::new("Install (system authentication)"),
+                                )
+                                .clicked()
+                            {
                                 self.show_install_dialog = false;
                                 self.append_log("Installing privileged helper via pkexec…".into());
-                                let (_ok, msg) = cpu_park::install_helper_via_pkexec("");
-                                self.append_log(msg);
-                                self.refresh_helper_status();
+                                let (tx, rx) = std::sync::mpsc::channel();
+                                self.install_result_rx = Some(rx);
+                                std::thread::spawn(move || {
+                                    let (_ok, msg) = cpu_park::install_helper_via_pkexec("");
+                                    let _ = tx.send(msg);
+                                });
                             }
                             if ui.button("Cancel").clicked() {
                                 self.install_password.clear();
@@ -654,9 +710,12 @@ impl GamingModeTab {
                             self.install_password.clear();
                             self.show_install_dialog = false;
                             self.append_log("Installing privileged helper…".into());
-                            let (_ok, msg) = cpu_park::install_helper_as_root("", &password);
-                            self.append_log(msg);
-                            self.refresh_helper_status();
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            self.install_result_rx = Some(rx);
+                            std::thread::spawn(move || {
+                                let (_ok, msg) = cpu_park::install_helper_as_root("", &password);
+                                let _ = tx.send(msg);
+                            });
                         }
                         if !pkexec && ui.button("Cancel").clicked() {
                             self.install_password.clear();

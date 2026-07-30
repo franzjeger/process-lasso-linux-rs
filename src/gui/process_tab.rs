@@ -18,6 +18,7 @@ pub enum SortCol {
     Pid,
     Name,
     Cpu,
+    Gpu,
     Mem,
     Nice,
     Affinity,
@@ -31,6 +32,7 @@ impl SortCol {
             SortCol::Pid => "PID",
             SortCol::Name => "NAME",
             SortCol::Cpu => "CPU%",
+            SortCol::Gpu => "GPU%",
             SortCol::Mem => "MEM(MB)",
             SortCol::Nice => "NICE",
             SortCol::Affinity => "AFFINITY",
@@ -192,7 +194,7 @@ pub struct ProcessTab {
     pub tree_view: bool,
     // Cached physical-core → HT-sibling map (read once from sysfs at startup)
     core_pairs: HashMap<u32, Vec<u32>>,
-    // User-adjustable column widths: [PID, Name, CPU%, Mem, Nice, Aff, I/O, Status]
+    // User-adjustable column widths: [PID, Name, CPU%, GPU%, Mem, Nice, Aff, I/O, Status]
     // Name column auto-fills; user can drag handles to resize others.
     pub col_widths: Vec<f32>,
     pub cols_initialized: bool,
@@ -210,10 +212,16 @@ pub struct ProcessTab {
 
 impl ProcessTab {
     pub fn new(cfg_col_widths: &[f32]) -> Self {
-        let col_widths = if cfg_col_widths.len() == 8 {
-            cfg_col_widths.to_vec()
-        } else {
-            vec![60.0, 0.0, 90.0, 75.0, 45.0, 110.0, 58.0, 85.0]
+        // 9 columns: PID, Name, CPU%, GPU%, Mem, Nice, Affinity, I/O, Status
+        let col_widths = match cfg_col_widths.len() {
+            9 => cfg_col_widths.to_vec(),
+            // Migrate pre-GPU-column configs: insert the GPU% width at index 3.
+            8 => {
+                let mut v = cfg_col_widths.to_vec();
+                v.insert(3, 55.0);
+                v
+            }
+            _ => vec![60.0, 0.0, 90.0, 55.0, 75.0, 45.0, 110.0, 58.0, 85.0],
         };
         Self {
             history: CpuHistoryWidget::new(),
@@ -345,6 +353,15 @@ impl ProcessTab {
                 ord.unwrap_or(std::cmp::Ordering::Equal)
                     .then(a.pid.cmp(&b.pid))
             }),
+            SortCol::Gpu => sorted.sort_by(|a, b| {
+                let ord = if asc {
+                    a.gpu_percent.partial_cmp(&b.gpu_percent)
+                } else {
+                    b.gpu_percent.partial_cmp(&a.gpu_percent)
+                };
+                ord.unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.pid.cmp(&b.pid))
+            }),
             SortCol::Mem => sorted.sort_by(|a, b| {
                 (if asc {
                     a.mem_rss.cmp(&b.mem_rss)
@@ -432,10 +449,11 @@ impl ProcessTab {
             }
         });
 
-        const COLS: [SortCol; 8] = [
+        const COLS: [SortCol; 9] = [
             SortCol::Pid,
             SortCol::Name,
             SortCol::Cpu,
+            SortCol::Gpu,
             SortCol::Mem,
             SortCol::Nice,
             SortCol::Affinity,
@@ -485,7 +503,7 @@ impl ProcessTab {
 
         // Wrap table in a visible border frame
         let frame_border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-        let mut col_width_deltas = [0.0f32; 8];
+        let mut col_width_deltas = [0.0f32; 9];
         egui::Frame::new()
             .stroke(egui::Stroke::new(1.0_f32, frame_border_color))
             .inner_margin(egui::Margin::same(1))
@@ -545,7 +563,7 @@ impl ProcessTab {
                     }
                     // Drag-to-resize handles — one between each column pair
                     x = header_rect.min.x;
-                    for i in 0..7usize {
+                    for i in 0..8usize {
                         x += col_widths[i];
                         let handle_rect = egui::Rect::from_min_size(
                             egui::pos2(x - 3.0, header_rect.min.y),
@@ -673,9 +691,19 @@ impl ProcessTab {
                             let drb = proc.disk_read_bps;
                             let dwb = proc.disk_write_bps;
 
-                            // Allocate the full row — advances the cursor
-                            let (row_rect, row_resp) = ui.allocate_exact_size(
+                            // Allocate the full row — advances the cursor.
+                            // Interact via a PID-stable id: the allocate
+                            // response uses a positional auto-id, so an open
+                            // context menu would rebind to whatever process
+                            // lands in that slot after a re-sort or scroll —
+                            // "Kill" could then hit the wrong process.
+                            let (row_rect, _) = ui.allocate_exact_size(
                                 egui::Vec2::new(total_cols_w, ROW_H),
+                                egui::Sense::hover(),
+                            );
+                            let row_resp = ui.interact(
+                                row_rect,
+                                ui.make_persistent_id(("proc_row", pid)),
                                 egui::Sense::click(),
                             );
 
@@ -706,12 +734,19 @@ impl ProcessTab {
                                         0 => pid.to_string().into(),
                                         1 => name.as_str().into(),
                                         2 => format!("{:.1}", cpu).into(),
-                                        3 => format!("{:.1}", proc.mem_rss as f64 / 1_048_576.0)
+                                        3 => {
+                                            if proc.gpu_percent > 0.0 {
+                                                format!("{:.0}", proc.gpu_percent).into()
+                                            } else {
+                                                "—".into()
+                                            }
+                                        }
+                                        4 => format!("{:.1}", proc.mem_rss as f64 / 1_048_576.0)
                                             .into(),
-                                        4 => nice.to_string().into(),
-                                        5 => aff_display.as_str().into(),
-                                        6 => ionice_str.as_str().into(),
-                                        7 => status_str.into(),
+                                        5 => nice.to_string().into(),
+                                        6 => aff_display.as_str().into(),
+                                        7 => ionice_str.as_str().into(),
+                                        8 => status_str.into(),
                                         _ => "".into(),
                                     };
                                     // Draw mini sparkline in left portion of CPU% cell
