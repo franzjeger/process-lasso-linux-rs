@@ -242,7 +242,7 @@ impl ArgusLassoApp {
             cmd_tx,
             rule_engine,
             active_tab: Tab::Overview,
-            process_tab: ProcessTab::new(&config.ui.col_widths),
+            process_tab: ProcessTab::new(&config.ui.col_widths, &config.ui.hidden_columns),
             rules_tab: RulesTab::new(),
             probalance_tab,
             gaming_mode_tab,
@@ -690,6 +690,23 @@ impl ArgusLassoApp {
 }
 
 impl eframe::App for ArgusLassoApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Closing the window exits the whole process (daemon included) — ask
+        // the daemon to restore nices/throttles/parked CPUs and wait briefly.
+        let _ = self.cmd_tx.send(DaemonCmd::Shutdown);
+        for _ in 0..30 {
+            let done = self
+                .state
+                .lock()
+                .map(|s| s.shutdown_complete)
+                .unwrap_or(true);
+            if done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Repaint rate diagnostics — log repaints/sec approximately every 10s
         self.repaint_count += 1;
@@ -954,6 +971,17 @@ impl eframe::App for ArgusLassoApp {
                     if self.process_tab.cols_dirty {
                         if let Ok(mut s) = self.state.lock() {
                             s.config.ui.col_widths = self.process_tab.col_widths.clone();
+                        }
+                        self.save_config();
+                    }
+                    // Persist column visibility from the header context menu
+                    if self.process_tab.hidden_dirty {
+                        self.process_tab.hidden_dirty = false;
+                        let mut hidden: Vec<String> =
+                            self.process_tab.hidden_cols.iter().cloned().collect();
+                        hidden.sort();
+                        if let Ok(mut s) = self.state.lock() {
+                            s.config.ui.hidden_columns = hidden;
                         }
                         self.save_config();
                     }

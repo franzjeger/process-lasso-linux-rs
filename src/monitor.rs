@@ -38,6 +38,9 @@ pub enum DaemonCmd {
     },
     ResetAffinities,
     ReapplyDefaults,
+    /// Restore everything we changed (nices, throttles, parked CPUs) before
+    /// the process exits; sets AppState::shutdown_complete when done.
+    Shutdown,
 }
 
 // ── Shared state (GUI reads this) ─────────────────────────────────────────────
@@ -113,6 +116,8 @@ pub struct AppState {
     pub cpu_model: String,
     /// PIDs manually suspended via SIGSTOP from the GUI
     pub suspended_pids: std::collections::HashSet<u32>,
+    /// Set by the daemon once a Shutdown command has finished restoring state
+    pub shutdown_complete: bool,
 }
 
 pub fn read_cpu_model() -> String {
@@ -315,6 +320,19 @@ fn run_loop(
                     // chance (an edited rule can now have an achievable nice).
                     enforce_nice_failed.clear();
                     reapply_defaults(&config, &rule_engine, &known_pids, &log_cb);
+                }
+                DaemonCmd::Shutdown => {
+                    log_cb("[Shutdown] Restoring system state…".into());
+                    if !gaming_niced.is_empty() {
+                        restore_gaming_nices(&mut gaming_niced, &log_cb);
+                    }
+                    probalance.shutdown();
+                    if !utils::get_offline_cpus().is_empty() {
+                        cpu_park::unpark_all(&log_cb);
+                    }
+                    if let Ok(mut s) = state.lock() {
+                        s.shutdown_complete = true;
+                    }
                 }
             }
         }
@@ -1058,4 +1076,78 @@ fn restore_gaming_nices(gaming_niced: &mut HashMap<u32, i32>, log_cb: &impl Fn(S
     log_cb(format!(
         "[Gaming Mode] Restored nice for {count} processes."
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proc_with_cmdline(cmd: &str) -> ProcInfo {
+        ProcInfo {
+            cmdline: std::sync::Arc::new(cmd.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn game_detection_matches_steam_and_proton() {
+        assert!(is_game_process(&proc_with_cmdline(
+            "/home/u/.local/share/Steam/steamapps/common/Hades/Hades.exe"
+        )));
+        assert!(is_game_process(&proc_with_cmdline(
+            "/usr/bin/python3 /path/proton waitforexitandrun game.exe"
+        )));
+    }
+
+    #[test]
+    fn game_detection_ignores_normal_processes() {
+        assert!(!is_game_process(&proc_with_cmdline("/usr/bin/firefox")));
+        assert!(!is_game_process(&proc_with_cmdline(
+            "/usr/lib/systemd/systemd --user"
+        )));
+        // Steam client itself lives outside steamapps/common
+        assert!(!is_game_process(&proc_with_cmdline(
+            "/home/u/.local/share/Steam/ubuntu12_32/steam"
+        )));
+    }
+
+    #[test]
+    fn hw_io_totals_sums_matching_groups_only() {
+        use crate::hw_monitor::{Sensor, SensorGroup};
+
+        fn sensor(label: &'static str, v: f32) -> Sensor {
+            let mut s = Sensor::new(label, "MB/s");
+            s.push(v);
+            s
+        }
+
+        let data = HwMonitorData {
+            groups: vec![
+                SensorGroup {
+                    category: "Storage",
+                    name: "I/O [nvme0n1]".into(),
+                    sensors: vec![sensor("Read", 1.5), sensor("Write", 0.5)],
+                },
+                SensorGroup {
+                    category: "Storage",
+                    name: "I/O [sda]".into(),
+                    sensors: vec![sensor("Read", 0.5), sensor("Write", 1.0)],
+                },
+                SensorGroup {
+                    category: "Network",
+                    name: "I/O [eth0]".into(),
+                    sensors: vec![sensor("Receive", 2.0), sensor("Transmit", 0.25)],
+                },
+                // Non-I/O group must be ignored even with matching labels
+                SensorGroup {
+                    category: "Storage",
+                    name: "nvme".into(),
+                    sensors: vec![sensor("Read", 99.0)],
+                },
+            ],
+        };
+        let ((dr, dw), (rx, tx)) = hw_io_totals(&data);
+        assert_eq!((dr, dw), (2.0, 1.5));
+        assert_eq!((rx, tx), (2.0, 0.25));
+    }
 }

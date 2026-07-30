@@ -212,13 +212,17 @@ pub struct ProcessTab {
     pub pending_kill: Option<PendingKill>,
     // Set to true when col_widths change so app.rs can persist them
     pub cols_dirty: bool,
+    /// Columns hidden by the user (by header label); Name can't be hidden
+    pub hidden_cols: HashSet<String>,
+    /// Set when hidden_cols changes so app.rs can persist it
+    pub hidden_dirty: bool,
     // Offline CPUs, refreshed on the daemon's display cadence in update_cpu()
     // — reading /sys/devices/system/cpu/offline every repaint is wasted I/O.
     cached_offline: HashSet<u32>,
 }
 
 impl ProcessTab {
-    pub fn new(cfg_col_widths: &[f32]) -> Self {
+    pub fn new(cfg_col_widths: &[f32], cfg_hidden_cols: &[String]) -> Self {
         // 9 columns: PID, Name, CPU%, GPU%, Mem, Nice, Affinity, I/O, Status
         let col_widths = match cfg_col_widths.len() {
             9 => cfg_col_widths.to_vec(),
@@ -247,6 +251,8 @@ impl ProcessTab {
             last_avail_w: 0.0,
             pending_kill: None,
             cols_dirty: false,
+            hidden_cols: cfg_hidden_cols.iter().cloned().collect(),
+            hidden_dirty: false,
             cached_offline: get_offline_cpus(),
         }
     }
@@ -499,14 +505,21 @@ impl ProcessTab {
         const HEADER_H: f32 = 24.0;
         const PAD: f32 = 4.0;
 
-        // Auto-fill Name column (index 1) from available width minus fixed columns.
+        // Visible columns, in table order. Name (index 1) can never be hidden.
+        let visible: Vec<usize> = (0..COLS.len())
+            .filter(|&i| i == 1 || !self.hidden_cols.contains(COLS[i].label()))
+            .collect();
+        let is_visible = |i: usize| visible.contains(&i);
+
+        // Auto-fill Name column (index 1) from available width minus the other
+        // VISIBLE columns.
         let avail_w = ui.available_width() - 4.0;
         if !self.cols_initialized {
             let fixed: f32 = self
                 .col_widths
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| *i != 1)
+                .filter(|(i, _)| *i != 1 && is_visible(*i))
                 .map(|(_, &w)| w)
                 .sum();
             self.col_widths[1] = (avail_w - fixed).max(150.0);
@@ -528,13 +541,24 @@ impl ProcessTab {
                 .col_widths
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| *i != 1)
+                .filter(|(i, _)| *i != 1 && is_visible(*i))
                 .map(|(_, &w)| w)
                 .sum();
             self.col_widths[1] = (avail_w - fixed).max(150.0);
         }
         let col_widths = self.col_widths.clone();
-        let total_cols_w: f32 = col_widths.iter().sum();
+        let total_cols_w: f32 = visible.iter().map(|&i| col_widths[i]).sum();
+        // Per-column (x offset, width) in the current visible layout — used by
+        // the hover-tooltip hit rects below.
+        let col_layout: HashMap<usize, (f32, f32)> = {
+            let mut m = HashMap::new();
+            let mut x = 0.0f32;
+            for &i in &visible {
+                m.insert(i, (x, col_widths[i]));
+                x += col_widths[i];
+            }
+            m
+        };
 
         // Wrap table in a visible border frame
         let frame_border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
@@ -556,7 +580,8 @@ impl ProcessTab {
                 );
                 {
                     let mut x = header_rect.min.x;
-                    for (i, col) in COLS.iter().enumerate() {
+                    for &i in &visible {
+                        let col = &COLS[i];
                         let cw = col_widths[i];
                         let cell_rect = egui::Rect::from_min_size(
                             egui::Pos2::new(x + PAD, header_rect.min.y),
@@ -594,11 +619,29 @@ impl ProcessTab {
                                 new_sort_asc = matches!(col, SortCol::Name | SortCol::Affinity);
                             }
                         }
+                        // Right-click any header → column chooser
+                        resp.context_menu(|ui| {
+                            ui.label(RichText::new("Columns").strong());
+                            for (ci, c) in COLS.iter().enumerate() {
+                                if ci == 1 {
+                                    continue; // Name is always shown
+                                }
+                                let mut shown = !self.hidden_cols.contains(c.label());
+                                if ui.checkbox(&mut shown, c.label()).changed() {
+                                    if shown {
+                                        self.hidden_cols.remove(c.label());
+                                    } else {
+                                        self.hidden_cols.insert(c.label().to_string());
+                                    }
+                                    self.hidden_dirty = true;
+                                }
+                            }
+                        });
                         x += cw;
                     }
-                    // Drag-to-resize handles — one between each column pair
+                    // Drag-to-resize handles — one between each visible column pair
                     x = header_rect.min.x;
-                    for i in 0..8usize {
+                    for &i in visible.iter().take(visible.len().saturating_sub(1)) {
                         x += col_widths[i];
                         let handle_rect = egui::Rect::from_min_size(
                             egui::pos2(x - 3.0, header_rect.min.y),
@@ -757,7 +800,8 @@ impl ProcessTab {
                                 let font = egui::FontId::proportional(13.5);
                                 let painter = ui.painter();
                                 let mut x = row_rect.min.x;
-                                for (ci, &cw) in col_widths.iter().enumerate() {
+                                for &ci in &visible {
+                                    let cw = col_widths[ci];
                                     let x_off = if ci == 1 { indent } else { 0.0 };
                                     // For CPU% column (ci==2): draw sparkline on left, shift text right
                                     let text_x_off = if ci == 2 { cw * 0.45 } else { 0.0 };
@@ -845,18 +889,18 @@ impl ProcessTab {
                                 // Tooltip: hover name → cmdline + disk I/O + full affinity
                                 if row_resp.hovered() {
                                     let ptr = ui.ctx().pointer_hover_pos();
-                                    // Name cell
-                                    let name_rect = egui::Rect::from_min_size(
-                                        egui::pos2(row_rect.min.x + col_widths[0], row_rect.min.y),
-                                        egui::vec2(col_widths[1], ROW_H),
-                                    );
-                                    // Affinity cell
-                                    let aff_x =
-                                        col_widths[..5].iter().sum::<f32>() + row_rect.min.x;
-                                    let aff_rect = egui::Rect::from_min_size(
-                                        egui::pos2(aff_x, row_rect.min.y),
-                                        egui::vec2(col_widths[5], ROW_H),
-                                    );
+                                    // Cell hit-rects from the visible layout
+                                    // (fixes stale hard-coded offsets too).
+                                    let cell_rect = |idx: usize| {
+                                        col_layout.get(&idx).map(|&(off, w)| {
+                                            egui::Rect::from_min_size(
+                                                egui::pos2(row_rect.min.x + off, row_rect.min.y),
+                                                egui::vec2(w, ROW_H),
+                                            )
+                                        })
+                                    };
+                                    let name_rect = cell_rect(1).unwrap_or(egui::Rect::NOTHING);
+                                    let aff_rect = cell_rect(6).unwrap_or(egui::Rect::NOTHING);
                                     if ptr.is_some_and(|p| name_rect.contains(p)) {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
                                         #[allow(deprecated)]

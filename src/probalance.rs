@@ -181,6 +181,11 @@ impl ProBalance {
         self.cfg = cfg;
     }
 
+    /// Restore all throttled processes before the app exits.
+    pub fn shutdown(&mut self) {
+        self.restore_all("shutdown");
+    }
+
     /// Restore every currently throttled process to its original nice and
     /// forget all tracked state.
     fn restore_all(&mut self, reason: &str) {

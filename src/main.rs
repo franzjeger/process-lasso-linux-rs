@@ -97,18 +97,20 @@ impl ksni::Tray for ArgusLassoTray {
             ksni::MenuItem::Standard(ksni::menu::StandardItem {
                 label: "Quit".into(),
                 activate: Box::new(|tray: &mut Self| {
-                    // Undo Gaming Mode side effects before exiting — a plain
-                    // exit(0) would leave CPUs permanently parked (offline)
-                    // and elevated nice values in place.
-                    let gaming_active = tray.state.lock().map(|s| s.gaming_active).unwrap_or(false);
-                    if gaming_active {
-                        let _ = tray.cmd_tx.send(monitor::DaemonCmd::SetGamingMode {
-                            active: false,
-                            elevate_nice: false,
-                            park: true,
-                        });
-                        // Give the daemon a moment to unpark before exiting.
-                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                    // Ask the daemon to restore everything (nices, throttles,
+                    // parked CPUs), then wait for its completion flag instead
+                    // of sleeping a fixed interval.
+                    let _ = tray.cmd_tx.send(monitor::DaemonCmd::Shutdown);
+                    for _ in 0..30 {
+                        let done = tray
+                            .state
+                            .lock()
+                            .map(|s| s.shutdown_complete)
+                            .unwrap_or(true);
+                        if done {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     std::process::exit(0);
                 }),
