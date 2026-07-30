@@ -7,6 +7,7 @@ mod file_dialog;
 mod gui;
 mod hw_monitor;
 mod icon;
+mod logfile;
 mod mem_bench;
 mod monitor;
 mod probalance;
@@ -134,6 +135,12 @@ enum Cmd {
         /// CPU list, e.g. "0-7" or "0,2,4"
         mask: String,
     },
+    /// Print a JSON status snapshot (system + top processes) and exit
+    Status {
+        /// Include only the top N processes by CPU (0 = all)
+        #[arg(long, default_value_t = 15)]
+        top: usize,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -205,6 +212,47 @@ fn main() {
                     eprintln!("Failed to set affinity for PID {pid}");
                     std::process::exit(1);
                 }
+                return;
+            }
+            Cmd::Status { top } => {
+                let mut procs = monitor::oneshot_snapshot();
+                procs.sort_by(|a, b| {
+                    b.cpu_percent
+                        .partial_cmp(&a.cpu_percent)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(a.pid.cmp(&b.pid))
+                });
+                let total_count = procs.len();
+                if top > 0 {
+                    procs.truncate(top);
+                }
+                let load = std::fs::read_to_string("/proc/loadavg")
+                    .ok()
+                    .map(|s| {
+                        s.split_whitespace()
+                            .take(3)
+                            .filter_map(|v| v.parse::<f64>().ok())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut offline: Vec<u32> = utils::get_offline_cpus().into_iter().collect();
+                offline.sort_unstable();
+                let json = serde_json::json!({
+                    "cpu_model": monitor::read_cpu_model(),
+                    "cpus_online": utils::get_online_cpus().len(),
+                    "cpus_offline": offline,
+                    "load_avg": load,
+                    "process_count": total_count,
+                    "processes": procs.iter().map(|p| serde_json::json!({
+                        "pid": p.pid,
+                        "name": p.name,
+                        "cpu_percent": (p.cpu_percent as f64 * 10.0).round() / 10.0,
+                        "mem_bytes": p.mem_rss,
+                        "nice": p.nice,
+                        "affinity": p.affinity,
+                    })).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&json).unwrap());
                 return;
             }
         }

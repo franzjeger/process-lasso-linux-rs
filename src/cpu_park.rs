@@ -680,41 +680,86 @@ impl PowerProfile {
         }
     }
 
-    /// (governor, energy_performance_preference) for this profile.
-    /// Both amd-pstate and intel_pstate expose performance/powersave governors
-    /// and the EPP knob; the helper writes best-effort to every CPU.
-    fn settings(&self) -> (&'static str, &'static str) {
+    /// EPP value for this profile (only meaningful on EPP-capable drivers).
+    fn epp(&self) -> &'static str {
         match self {
-            PowerProfile::Performance => ("performance", "performance"),
-            PowerProfile::Balanced => ("powersave", "balance_performance"),
-            PowerProfile::PowerSave => ("powersave", "power"),
+            PowerProfile::Performance => "performance",
+            PowerProfile::Balanced => "balance_performance",
+            PowerProfile::PowerSave => "power",
+        }
+    }
+
+    /// Pick the governor for this profile based on what the platform offers.
+    ///
+    /// With an EPP-capable driver (intel_pstate / amd-pstate in active mode),
+    /// "powersave" means "EPP-controlled" and is the right base for both
+    /// Balanced and Power Save. WITHOUT EPP (acpi-cpufreq, amd-pstate
+    /// passive/guided, cpufreq-dt), the static "powersave" governor pins every
+    /// core to its minimum frequency — so Balanced must use a scaling governor
+    /// (schedutil/ondemand/conservative) instead.
+    fn pick_governor(&self, epp_supported: bool, available: &[String]) -> Option<String> {
+        let first_of = |cands: &[&str]| {
+            cands
+                .iter()
+                .find(|g| available.iter().any(|a| a == *g))
+                .map(|g| g.to_string())
+        };
+        match self {
+            PowerProfile::Performance => first_of(&["performance"]),
+            PowerProfile::Balanced => {
+                if epp_supported {
+                    first_of(&["powersave"])
+                } else {
+                    first_of(&["schedutil", "ondemand", "conservative"])
+                }
+            }
+            // Static "powersave" (min frequency) is acceptable semantics for
+            // Power Save even without EPP.
+            PowerProfile::PowerSave => first_of(&["powersave", "conservative", "schedutil"]),
         }
     }
 }
 
+fn available_governors() -> Vec<String> {
+    fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
+        .map(|s| s.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 /// Apply a power profile via the privileged helper. Returns (ok, message).
 pub fn apply_power_profile(profile: PowerProfile) -> (bool, String) {
-    let (governor, epp) = profile.settings();
-    let (gov_ok, gov_msg) = run_helper(&["cpu-governor", governor]);
-    // EPP is absent on acpi-cpufreq systems — the helper's glob writes are
-    // best-effort, so a failure here is only reported, not fatal.
-    let (epp_ok, epp_msg) = run_helper(&["cpu-epp", epp]);
-    if gov_ok {
-        let epp_note = if epp_ok {
-            format!(", EPP={epp}")
-        } else {
-            format!(" (EPP unavailable: {epp_msg})")
-        };
-        (
-            true,
+    // The helper's cpu-epp glob writes are best-effort and always exit 0, so
+    // detect EPP support from sysfs instead of trusting the helper.
+    let epp_supported = current_epp().is_some();
+    let available = available_governors();
+    let Some(governor) = profile.pick_governor(epp_supported, &available) else {
+        return (
+            false,
             format!(
-                "[Power] {} — governor={governor}{epp_note}",
-                profile.label()
+                "[Power] no suitable governor for {} (available: {})",
+                profile.label(),
+                available.join(" ")
             ),
-        )
-    } else {
-        (false, format!("[Power] governor change failed: {gov_msg}"))
+        );
+    };
+    let (gov_ok, gov_msg) = run_helper(&["cpu-governor", &governor]);
+    if !gov_ok {
+        return (false, format!("[Power] governor change failed: {gov_msg}"));
     }
+    let epp_note = if epp_supported {
+        let epp = profile.epp();
+        let _ = run_helper(&["cpu-epp", epp]);
+        format!(", EPP={epp}")
+    } else {
+        String::new()
+    };
+    (
+        true,
+        format!(
+            "[Power] {} — governor={governor}{epp_note}",
+            profile.label()
+        ),
+    )
 }
 
 /// Read the current scaling governor of cpu0 (representative for display).

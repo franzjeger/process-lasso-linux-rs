@@ -148,6 +148,11 @@ pub struct GamingProfile {
 #[derive(Default)]
 pub struct GamingModeConfig {
     pub profiles: std::collections::HashMap<String, GamingProfile>,
+    /// Auto-enable Gaming Mode when a running game is detected
+    /// (Steam/Proton heuristics on the process cmdline).
+    pub auto_detect: bool,
+    /// Also park non-preferred CPUs when auto-enabling (requires the helper).
+    pub auto_park: bool,
 }
 
 // ── Rule (stored inline in config) ───────────────────────────────────────────
