@@ -87,10 +87,12 @@ pub struct UiConfig {
     /// HW Monitor column widths: [val, min, max, avg]
     #[serde(default = "default_hw_mon_col_widths")]
     pub hw_mon_col_widths: Vec<f32>,
+    /// Process-table columns hidden by the user (by header label, e.g. "GPU%")
+    pub hidden_columns: Vec<String>,
 }
 
 fn default_col_widths() -> Vec<f32> {
-    vec![60.0, 0.0, 90.0, 75.0, 45.0, 110.0, 58.0, 85.0]
+    vec![60.0, 0.0, 90.0, 55.0, 75.0, 45.0, 110.0, 58.0, 85.0]
 }
 
 fn default_hw_mon_col_widths() -> Vec<f32> {
@@ -108,6 +110,7 @@ impl Default for UiConfig {
             col_widths: default_col_widths(),
             notifications_enabled: true,
             hw_mon_col_widths: default_hw_mon_col_widths(),
+            hidden_columns: Vec::new(),
         }
     }
 }

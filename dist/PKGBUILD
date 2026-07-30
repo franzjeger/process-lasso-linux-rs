@@ -1,0 +1,42 @@
+# Maintainer: franzjeger
+# AUR package template for Argus-Lasso. To publish: copy to an AUR repo,
+# update pkgver, run `updpkgsums` (replaces the SKIP checksum), then
+# `makepkg --printsrcinfo > .SRCINFO`.
+pkgname=argus-lasso
+pkgver=1.0.2
+pkgrel=1
+pkgdesc="Linux process manager with CPU affinity, ProBalance, Gaming Mode CPU parking, and HW monitoring"
+arch=(x86_64 aarch64)
+url="https://github.com/franzjeger/process-lasso-linux-rs"
+license=(MIT)
+depends=(gcc-libs libxkbcommon wayland)
+makedepends=(cargo)
+optdepends=(
+  'polkit: password-less privileged helper install'
+  'zenity: file dialogs on GNOME'
+  'kdialog: file dialogs on KDE'
+)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+_srcdir="process-lasso-linux-rs-$pkgver"
+
+build() {
+  cd "$_srcdir"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo build --release --locked
+}
+
+check() {
+  cd "$_srcdir"
+  cargo test --release --locked
+}
+
+package() {
+  cd "$_srcdir"
+  install -Dm755 "target/release/argus-lasso" "$pkgdir/usr/bin/argus-lasso"
+  install -Dm644 dist/argus-lasso.desktop "$pkgdir/usr/share/applications/argus-lasso.desktop"
+  install -Dm644 assets/icon.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/argus-lasso.png"
+  install -Dm644 dist/argus-lasso.service "$pkgdir/usr/lib/systemd/user/argus-lasso.service"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
