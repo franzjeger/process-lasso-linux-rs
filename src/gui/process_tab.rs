@@ -525,6 +525,14 @@ impl ProcessTab {
                             egui::Label::new(RichText::new(label_str).color(color).strong())
                                 .sense(egui::Sense::click()),
                         );
+                        let resp = if *col == SortCol::Cpu {
+                            resp.on_hover_text(
+                                "Per-core scale, like top: 100% = one core fully busy.\n\
+                                 Multithreaded processes can exceed 100%.",
+                            )
+                        } else {
+                            resp
+                        };
                         if resp.clicked() && !self.tree_view {
                             if *col == sort_col_cur {
                                 new_sort_asc = !sort_asc_cur;

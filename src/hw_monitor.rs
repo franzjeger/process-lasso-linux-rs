@@ -201,8 +201,11 @@ fn collect_all(
     let mut out: Vec<GroupReading> = Vec::new();
 
     // CPU: hwmon temps + frequencies + load + RAPL package power
-    out.extend(collect_hwmon_cpu());
-    if let Some(g) = collect_cpu_freqs() {
+    // Detect topology once per tick — both collectors need it, and each
+    // detection is a full per-CPU sysfs scan on uniform machines.
+    let topo = crate::cpu_park::detect_topology();
+    out.extend(collect_hwmon_cpu(&topo));
+    if let Some(g) = collect_cpu_freqs(&topo) {
         out.push(g);
     }
     if let Some(g) = collect_load_avg() {
@@ -237,11 +240,9 @@ fn collect_all(
 
 // ── hwmon: per-category collectors ───────────────────────────────────────────
 
-fn collect_hwmon_cpu() -> Vec<GroupReading> {
+fn collect_hwmon_cpu(topo: &crate::cpu_park::CpuTopology) -> Vec<GroupReading> {
     // Build core_id → logical CPU mapping for friendly labels.
     let core_id_map = build_core_id_to_cpu_map();
-    // Detect topology for P/E labels.
-    let topo = crate::cpu_park::detect_topology();
 
     collect_hwmon_where(
         |hw_name| matches!(hw_name, "k10temp" | "zenpower" | "coretemp"),
@@ -265,7 +266,7 @@ fn collect_hwmon_cpu() -> Vec<GroupReading> {
                     .and_then(|s| s.parse::<u32>().ok())
                 {
                     if let Some(&cpu_num) = core_id_map.get(&core_id) {
-                        let kind = core_kind_suffix(&topo, cpu_num);
+                        let kind = core_kind_suffix(topo, cpu_num);
                         return (intern(format!("CPU {cpu_num}{kind}")), unit, value);
                     }
                 }
@@ -695,9 +696,8 @@ fn pretty_rapl_label(raw: &str) -> String {
 
 // ── CPU frequencies ───────────────────────────────────────────────────────────
 
-fn collect_cpu_freqs() -> Option<GroupReading> {
+fn collect_cpu_freqs(topo: &crate::cpu_park::CpuTopology) -> Option<GroupReading> {
     let cpu_dir = Path::new("/sys/devices/system/cpu");
-    let topo = crate::cpu_park::detect_topology();
     let mut entries: Vec<_> = std::fs::read_dir(cpu_dir)
         .ok()?
         .flatten()
@@ -720,7 +720,7 @@ fn collect_cpu_freqs() -> Option<GroupReading> {
             .unwrap_or(0);
         let freq_path = entry.path().join("cpufreq/scaling_cur_freq");
         if let Some(khz) = read_u64(&freq_path) {
-            let kind = core_kind_suffix(&topo, num);
+            let kind = core_kind_suffix(topo, num);
             sensors.push((
                 intern(format!("CPU {num}{kind}")),
                 "MHz",

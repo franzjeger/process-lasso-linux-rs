@@ -1,5 +1,9 @@
 # Argus-Lasso
 
+[![CI](https://github.com/franzjeger/process-lasso-linux-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/franzjeger/process-lasso-linux-rs/actions/workflows/ci.yml)
+[![Security audit](https://github.com/franzjeger/process-lasso-linux-rs/actions/workflows/audit.yml/badge.svg)](https://github.com/franzjeger/process-lasso-linux-rs/actions/workflows/audit.yml)
+[![Release](https://img.shields.io/github/v/release/franzjeger/process-lasso-linux-rs)](https://github.com/franzjeger/process-lasso-linux-rs/releases/latest)
+
 A native Linux process manager written in Rust with an immediate-mode GUI (egui/eframe).
 Inspired by Windows Process Lasso, rebuilt from scratch for Linux with KDE/Wayland first-class support — and significantly expanded in scope.
 
