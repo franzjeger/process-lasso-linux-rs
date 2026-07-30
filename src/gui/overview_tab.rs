@@ -18,6 +18,8 @@ impl OverviewTab {
         cpu_history: &VecDeque<f32>,
         cpu_avg: f32,
         snapshot: &[ProcInfo],
+        disk_io_history: &VecDeque<(f32, f32)>,
+        net_io_history: &VecDeque<(f32, f32)>,
     ) {
         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
         let spacing = 8.0;
@@ -171,6 +173,32 @@ impl OverviewTab {
                         }
                     });
             });
+        });
+
+        ui.add_space(spacing);
+
+        // ── Row 2: Disk + Network I/O graphs ─────────────────────────────────
+        ui.horizontal(|ui| {
+            let half_w = (ui.available_width() - spacing) / 2.0;
+            dual_io_graph(
+                ui,
+                "Disk I/O",
+                disk_io_history,
+                ("Read", Color32::from_rgb(80, 180, 100)),
+                ("Write", Color32::from_rgb(220, 160, 40)),
+                half_w,
+                border_color,
+            );
+            ui.add_space(spacing);
+            dual_io_graph(
+                ui,
+                "Network I/O",
+                net_io_history,
+                ("Recv", Color32::from_rgb(100, 170, 240)),
+                ("Send", Color32::from_rgb(180, 140, 240)),
+                half_w,
+                border_color,
+            );
         });
 
         ui.add_space(spacing);
@@ -349,4 +377,78 @@ fn read_load_avg() -> Option<(f32, f32, f32)> {
     let l5: f32 = parts.next()?.parse().ok()?;
     let l15: f32 = parts.next()?.parse().ok()?;
     Some((l1, l5, l15))
+}
+
+/// Small two-line rate graph (e.g. disk read/write, net rx/tx) with
+/// autoscaled Y axis and current-value labels.
+#[allow(clippy::too_many_arguments)]
+fn dual_io_graph(
+    ui: &mut egui::Ui,
+    title: &str,
+    history: &VecDeque<(f32, f32)>,
+    (label_a, color_a): (&str, Color32),
+    (label_b, color_b): (&str, Color32),
+    width: f32,
+    border_color: Color32,
+) {
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0_f32, border_color))
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_min_width(width - 16.0);
+            ui.set_max_width(width - 16.0);
+            let (cur_a, cur_b) = history.back().copied().unwrap_or((0.0, 0.0));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.colored_label(color_b, format!("{label_b} {cur_b:.1} MB/s"));
+                    ui.colored_label(color_a, format!("{label_a} {cur_a:.1} MB/s"));
+                });
+            });
+            ui.add_space(4.0);
+
+            let graph_h = 60.0;
+            let (rect, _) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), graph_h),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter();
+            painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+
+            if history.len() >= 2 {
+                // Shared autoscale so the two lines are comparable.
+                let peak = history
+                    .iter()
+                    .map(|&(a, b)| a.max(b))
+                    .fold(0.0f32, f32::max)
+                    .max(0.1);
+                let n = history.len();
+                for (select, color) in [
+                    (0usize, color_a), // .0 = first series
+                    (1usize, color_b), // .1 = second series
+                ] {
+                    let pts: Vec<egui::Pos2> = history
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &(a, b))| {
+                            let v = if select == 0 { a } else { b };
+                            let x = rect.left() + i as f32 / (n - 1) as f32 * rect.width();
+                            let y = rect.bottom() - (v / peak) * (rect.height() - 4.0) - 2.0;
+                            egui::pos2(x, y)
+                        })
+                        .collect();
+                    for pair in pts.windows(2) {
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, color));
+                    }
+                }
+                // Peak label top-right
+                painter.text(
+                    rect.right_top() + Vec2::new(-4.0, 2.0),
+                    egui::Align2::RIGHT_TOP,
+                    format!("peak {peak:.1} MB/s"),
+                    egui::FontId::proportional(10.0),
+                    ui.visuals().weak_text_color(),
+                );
+            }
+        });
 }

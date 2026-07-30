@@ -89,6 +89,10 @@ pub struct AppState {
     pub cpu_generation: u64,
     /// Rolling average CPU history (120 samples)
     pub cpu_history: std::collections::VecDeque<f32>,
+    /// Rolling totals across all disks: (read MB/s, write MB/s), 120 samples
+    pub disk_io_history: std::collections::VecDeque<(f32, f32)>,
+    /// Rolling totals across all NICs: (rx MB/s, tx MB/s), 120 samples
+    pub net_io_history: std::collections::VecDeque<(f32, f32)>,
     /// Throttled PID set from ProBalance
     pub throttled_pids: HashSet<u32>,
     /// Detailed throttle info for ProBalance tab live view
@@ -536,6 +540,16 @@ fn run_loop(
                 while s.cpu_history.len() > 120 {
                     s.cpu_history.pop_front();
                 }
+                // Aggregate disk/net totals for the Overview graphs
+                let (disk, net) = hw_io_totals(&hw_collector.data);
+                s.disk_io_history.push_back(disk);
+                while s.disk_io_history.len() > 120 {
+                    s.disk_io_history.pop_front();
+                }
+                s.net_io_history.push_back(net);
+                while s.net_io_history.len() > 120 {
+                    s.net_io_history.pop_front();
+                }
                 s.hw_monitor = hw_collector.data.clone();
                 // Update per-PID CPU history
                 let current_pids: std::collections::HashSet<u32> =
@@ -573,6 +587,28 @@ pub fn oneshot_snapshot() -> Vec<ProcInfo> {
     std::thread::sleep(Duration::from_millis(500));
     let (snap, _, _) = collect_snapshot(&mut prev_times, sys_total, &mut prev_io);
     snap
+}
+
+/// Sum current disk (read, write) and network (rx, tx) MB/s across all
+/// devices from the hw-monitor readings, for the Overview graphs.
+fn hw_io_totals(data: &HwMonitorData) -> ((f32, f32), (f32, f32)) {
+    let mut disk = (0.0f32, 0.0f32);
+    let mut net = (0.0f32, 0.0f32);
+    for group in &data.groups {
+        if !group.name.starts_with("I/O [") {
+            continue;
+        }
+        for s in &group.sensors {
+            match (group.category, s.label) {
+                ("Storage", "Read") => disk.0 += s.value,
+                ("Storage", "Write") => disk.1 += s.value,
+                ("Network", "Receive") => net.0 += s.value,
+                ("Network", "Transmit") => net.1 += s.value,
+                _ => {}
+            }
+        }
+    }
+    (disk, net)
 }
 
 /// Heuristic: does this process look like a running game?

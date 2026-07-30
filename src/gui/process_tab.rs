@@ -109,6 +109,9 @@ pub enum TableAction {
     AddRule {
         name: String,
     },
+    ShowDetails {
+        pid: u32,
+    },
     None,
 }
 
@@ -184,6 +187,10 @@ pub struct ProcessTab {
     pub history: CpuHistoryWidget,
     pub bars: CpuBarsWidget,
     pub filter: String,
+    /// Interpret the filter as a regex instead of a plain substring
+    pub filter_is_regex: bool,
+    /// (pattern, compiled) cache so the regex isn't recompiled every frame
+    filter_regex_cache: Option<(String, Option<regex::Regex>)>,
     pub sort_col: SortCol,
     pub sort_asc: bool,
     // Single-row selection (by PID)
@@ -227,6 +234,8 @@ impl ProcessTab {
             history: CpuHistoryWidget::new(),
             bars: CpuBarsWidget::new(),
             filter: String::new(),
+            filter_is_regex: false,
+            filter_regex_cache: None,
             sort_col: SortCol::Cpu,
             sort_asc: false,
             selected_pid: None,
@@ -301,6 +310,25 @@ impl ProcessTab {
             if !self.filter.is_empty() && ui.small_button("✕").clicked() {
                 self.filter.clear();
             }
+            ui.checkbox(&mut self.filter_is_regex, ".*")
+                .on_hover_text("Interpret the filter as a regular expression");
+            if self.filter_is_regex && !self.filter.is_empty() {
+                // (Re)compile only when the pattern changed
+                let stale = self
+                    .filter_regex_cache
+                    .as_ref()
+                    .is_none_or(|(pat, _)| pat != &self.filter);
+                if stale {
+                    let compiled = regex::RegexBuilder::new(&self.filter)
+                        .case_insensitive(true)
+                        .build()
+                        .ok();
+                    self.filter_regex_cache = Some((self.filter.clone(), compiled));
+                }
+                if matches!(&self.filter_regex_cache, Some((_, None))) {
+                    ui.colored_label(Breeze::NEGATIVE, "invalid regex");
+                }
+            }
             ui.separator();
             ui.checkbox(&mut self.tree_view, "Tree view");
             if gaming_active {
@@ -317,13 +345,20 @@ impl ProcessTab {
         // Sort references, not clones — deep-copying ~1000 ProcInfo rows
         // (several heap Strings each) on every repaint is pure waste.
         let mut sorted: Vec<&ProcInfo> = snapshot.iter().collect();
-        let filter_lower = self.filter.to_lowercase();
-        if !filter_lower.is_empty() {
-            sorted.retain(|p| {
-                p.name.to_lowercase().contains(&filter_lower)
-                    || p.pid.to_string().contains(&filter_lower)
-                    || p.cmdline.to_lowercase().contains(&filter_lower)
-            });
+        if !self.filter.is_empty() {
+            if self.filter_is_regex {
+                // Invalid regex: keep everything rather than hiding all rows
+                if let Some((_, Some(re))) = &self.filter_regex_cache {
+                    sorted.retain(|p| re.is_match(&p.name) || re.is_match(&p.cmdline));
+                }
+            } else {
+                let filter_lower = self.filter.to_lowercase();
+                sorted.retain(|p| {
+                    p.name.to_lowercase().contains(&filter_lower)
+                        || p.pid.to_string().contains(&filter_lower)
+                        || p.cmdline.to_lowercase().contains(&filter_lower)
+                });
+            }
         }
 
         let asc = self.sort_asc;
@@ -866,9 +901,12 @@ impl ProcessTab {
                                 }
                             }
 
-                            // Click → select row
+                            // Click → select row; double-click → details window
                             if row_resp.clicked() {
                                 new_selected = Some(pid);
+                            }
+                            if row_resp.double_clicked() {
+                                action = TableAction::ShowDetails { pid };
                             }
 
                             // Right-click context menu on the entire row
