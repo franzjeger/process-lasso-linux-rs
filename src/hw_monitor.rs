@@ -470,12 +470,47 @@ where
 
 // ── NVIDIA GPU via NVML ──────────────────────────────────────────────────────
 
+// Keep NVML handle alive across calls (init is expensive, ~50ms).
+// Module-level so both the sensor collector and the per-process utilization
+// query share one context.
+static NVML: std::sync::Mutex<Option<nvml_wrapper::Nvml>> = std::sync::Mutex::new(None);
+
+/// Per-process GPU utilization (SM %) across all NVIDIA devices, keyed by PID.
+/// Empty on systems without NVML. Uses the driver's rolling sample buffer,
+/// querying only samples newer than the previous call.
+pub fn collect_gpu_process_util() -> HashMap<u32, f32> {
+    static LAST_TS: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+
+    let mut map: HashMap<u32, f32> = HashMap::new();
+    let guard = NVML.lock().unwrap();
+    let Some(nvml) = guard.as_ref() else {
+        return map; // sensor collector initializes NVML; nothing yet
+    };
+    let Ok(count) = nvml.device_count() else {
+        return map;
+    };
+    let mut last_ts = LAST_TS.lock().unwrap();
+    let mut newest = *last_ts;
+    for i in 0..count {
+        let Ok(dev) = nvml.device_by_index(i) else {
+            continue;
+        };
+        // Errors (e.g. NotFound when no process used the GPU since last call)
+        // are expected — just skip.
+        let Ok(samples) = dev.process_utilization_stats(*last_ts) else {
+            continue;
+        };
+        for s in samples {
+            newest = newest.max(s.timestamp);
+            let entry = map.entry(s.pid).or_insert(0.0);
+            *entry = entry.max(s.sm_util as f32);
+        }
+    }
+    *last_ts = newest;
+    map
+}
+
 fn collect_nvidia_nvml() -> Vec<GroupReading> {
-    use std::sync::Mutex;
-
-    // Keep NVML handle alive across calls (init is expensive, ~50ms).
-    static NVML: Mutex<Option<nvml_wrapper::Nvml>> = Mutex::new(None);
-
     let mut guard = NVML.lock().unwrap();
     let nvml = match guard.as_ref() {
         Some(n) => n,

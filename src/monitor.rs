@@ -48,6 +48,8 @@ pub struct ProcInfo {
     pub ppid: u32,
     pub name: String,
     pub cpu_percent: f32,
+    /// GPU utilization % (NVML per-process SM util; 0.0 without NVIDIA/NVML)
+    pub gpu_percent: f32,
     pub mem_rss: u64, // bytes
     pub nice: i32,
     pub affinity: String,
@@ -65,6 +67,7 @@ impl Default for ProcInfo {
             ppid: 0,
             name: String::new(),
             cpu_percent: 0.0,
+            gpu_percent: 0.0,
             mem_rss: 0,
             nice: 0,
             affinity: String::new(),
@@ -123,7 +126,9 @@ pub fn read_cpu_model() -> String {
 impl AppState {
     pub fn append_log(&mut self, msg: String) {
         let ts = chrono_ts();
-        self.log_lines.push_back(format!("[{ts}] {msg}"));
+        let line = format!("[{ts}] {msg}");
+        crate::logfile::append(&line);
+        self.log_lines.push_back(line);
         while self.log_lines.len() > 2000 {
             self.log_lines.pop_front();
         }
@@ -207,6 +212,10 @@ fn run_loop(
     let mut gaming_mode = false;
     let mut gaming_elevate_nice = false;
     let mut gaming_niced: HashMap<u32, i32> = HashMap::new();
+    // Did WE auto-enable Gaming Mode? (never auto-disable a manual activation)
+    let mut auto_gaming = false;
+    // Consecutive snapshots without a detected game before auto-disabling
+    let mut game_absent_snapshots: u32 = 0;
     // Disk I/O tracking: pid → (read_bytes, write_bytes) at last sample
     let mut prev_io: HashMap<u32, (u64, u64)> = HashMap::new();
     // HW alert cooldown: sensor_label → last alert time
@@ -298,6 +307,9 @@ fn run_loop(
                     reset_all_affinities(&mut original_affinities, &log_cb);
                 }
                 DaemonCmd::ReapplyDefaults => {
+                    // Rules may have changed — failed nice attempts get a fresh
+                    // chance (an edited rule can now have an achievable nice).
+                    enforce_nice_failed.clear();
                     reapply_defaults(&config, &rule_engine, &known_pids, &log_cb);
                 }
             }
@@ -351,6 +363,48 @@ fn run_loop(
                 first_snapshot = false;
             }
             known_pids = current_pids;
+
+            // ── Auto Gaming Mode (Steam/Proton detection) ───────────────────
+            if config.gaming_mode.auto_detect {
+                let game = raw_snapshot.iter().find(|p| is_game_process(p));
+                if let Some(game) = game {
+                    game_absent_snapshots = 0;
+                    if !gaming_mode {
+                        gaming_mode = true;
+                        gaming_elevate_nice = true;
+                        auto_gaming = true;
+                        log_cb(format!(
+                            "[Gaming Mode] Auto-enabled — game detected: {} ({})",
+                            game.name, game.pid
+                        ));
+                        if let Ok(mut s) = state.lock() {
+                            s.gaming_active = true;
+                        }
+                        if config.gaming_mode.auto_park {
+                            park_non_preferred(&log_cb);
+                        }
+                    }
+                } else if auto_gaming && gaming_mode {
+                    // Require a couple of game-free snapshots before restoring,
+                    // so a brief exec/restart doesn't bounce the CPUs.
+                    game_absent_snapshots += 1;
+                    if game_absent_snapshots >= 2 {
+                        gaming_mode = false;
+                        auto_gaming = false;
+                        game_absent_snapshots = 0;
+                        log_cb("[Gaming Mode] Auto-disabled — game exited.".into());
+                        if !gaming_niced.is_empty() {
+                            restore_gaming_nices(&mut gaming_niced, &log_cb);
+                        }
+                        if let Ok(mut s) = state.lock() {
+                            s.gaming_active = false;
+                        }
+                        if config.gaming_mode.auto_park {
+                            cpu_park::unpark_all(&log_cb);
+                        }
+                    }
+                }
+            }
         }
 
         // ── Rule enforcement every enforce_interval ─────────────────────────
@@ -454,6 +508,14 @@ fn run_loop(
             // Update hardware sensor readings
             hw_collector.update();
 
+            // Per-process GPU utilization (empty map without NVIDIA/NVML)
+            let gpu_util = crate::hw_monitor::collect_gpu_process_util();
+            if !gpu_util.is_empty() {
+                for p in &mut raw_snapshot {
+                    p.gpu_percent = gpu_util.get(&p.pid).copied().unwrap_or(0.0);
+                }
+            }
+
             // Check temperature alerts
             check_hw_alerts(
                 &hw_collector.data,
@@ -498,6 +560,41 @@ fn run_loop(
         // rule_enforce_interval_ms is honoured instead of silently ignored.
         let tick = enforce_interval.clamp(Duration::from_millis(50), Duration::from_millis(500));
         std::thread::sleep(tick);
+    }
+}
+
+/// One-shot two-sample process snapshot for CLI use (`status --json`).
+/// Samples 500ms apart so CPU% deltas are meaningful.
+pub fn oneshot_snapshot() -> Vec<ProcInfo> {
+    let mut prev_times: HashMap<u32, u64> = HashMap::new();
+    let mut prev_io: HashMap<u32, (u64, u64)> = HashMap::new();
+    let (_, times, sys_total) = collect_snapshot(&mut prev_times, 0, &mut prev_io);
+    prev_times = times;
+    std::thread::sleep(Duration::from_millis(500));
+    let (snap, _, _) = collect_snapshot(&mut prev_times, sys_total, &mut prev_io);
+    snap
+}
+
+/// Heuristic: does this process look like a running game?
+/// Matches binaries living under a Steam library ("steamapps/common") and
+/// Proton wrapper invocations — the launchers/wrappers matched alongside the
+/// game exit together with it, so they don't hold auto-mode on.
+fn is_game_process(p: &ProcInfo) -> bool {
+    let cmd = p.cmdline.as_str();
+    cmd.contains("steamapps/common") || cmd.contains("/proton ")
+}
+
+/// Park the non-preferred CPUs (used by both manual SetGamingMode and
+/// auto-detection). No-op without an asymmetric topology or the helper.
+fn park_non_preferred(log_cb: &impl Fn(String)) {
+    let topo = cpu_park::detect_topology();
+    if topo.has_asymmetry() && cpu_park::is_helper_installed() {
+        let to_park: HashSet<u32> = topo.non_preferred.iter().copied().collect();
+        if cpu_park::park_cpus(&to_park, log_cb) {
+            log_cb("[Gaming Mode] Non-preferred CPUs parked.".into());
+        } else {
+            log_cb("[Gaming Mode] Parking failed — check log.".into());
+        }
     }
 }
 
@@ -572,6 +669,7 @@ fn collect_snapshot(
             ppid,
             name,
             cpu_percent,
+            gpu_percent: 0.0, // filled at publish time from NVML
             mem_rss,
             nice,
             affinity,
