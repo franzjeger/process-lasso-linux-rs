@@ -810,11 +810,24 @@ impl eframe::App for ArgusLassoApp {
                         }
                     }
                     if save {
-                        if let Some(p) = crate::file_dialog::save("argus-lasso.log", "*.log *.txt")
-                        {
-                            let content = log_lines.iter().cloned().collect::<Vec<_>>().join("\n");
-                            let _ = std::fs::write(&p, content);
-                        }
+                        // Run the picker + write on a background thread — the
+                        // dialog subprocess blocks until closed and would
+                        // freeze the whole UI (same pattern as rules import).
+                        let content = log_lines.iter().cloned().collect::<Vec<_>>().join("\n");
+                        let state = self.state.clone();
+                        std::thread::spawn(move || {
+                            if let Some(p) =
+                                crate::file_dialog::save("argus-lasso.log", "*.log *.txt")
+                            {
+                                let msg = match std::fs::write(&p, content) {
+                                    Ok(_) => format!("Log saved to {}", p.display()),
+                                    Err(e) => format!("Log save FAILED: {e}"),
+                                };
+                                if let Ok(mut s) = state.lock() {
+                                    s.append_log(msg);
+                                }
+                            }
+                        });
                     }
                 }
             }

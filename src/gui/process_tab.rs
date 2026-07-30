@@ -203,6 +203,9 @@ pub struct ProcessTab {
     pub pending_kill: Option<PendingKill>,
     // Set to true when col_widths change so app.rs can persist them
     pub cols_dirty: bool,
+    // Offline CPUs, refreshed on the daemon's display cadence in update_cpu()
+    // — reading /sys/devices/system/cpu/offline every repaint is wasted I/O.
+    cached_offline: HashSet<u32>,
 }
 
 impl ProcessTab {
@@ -227,6 +230,7 @@ impl ProcessTab {
             last_avail_w: 0.0,
             pending_kill: None,
             cols_dirty: false,
+            cached_offline: get_offline_cpus(),
         }
     }
 
@@ -238,6 +242,7 @@ impl ProcessTab {
         };
         self.history.push(avg);
         self.bars.update(pcts);
+        self.cached_offline = get_offline_cpus();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -300,8 +305,10 @@ impl ProcessTab {
         });
         ui.add_space(2.0);
 
-        // Sort + filter (name, PID, or cmdline)
-        let mut sorted = snapshot.to_vec();
+        // Sort + filter (name, PID, or cmdline).
+        // Sort references, not clones — deep-copying ~1000 ProcInfo rows
+        // (several heap Strings each) on every repaint is pure waste.
+        let mut sorted: Vec<&ProcInfo> = snapshot.iter().collect();
         let filter_lower = self.filter.to_lowercase();
         if !filter_lower.is_empty() {
             sorted.retain(|p| {
@@ -390,9 +397,9 @@ impl ProcessTab {
             }),
         }
 
-        // Offline CPUs for affinity display
+        // Offline CPUs for affinity display (cached; refreshed in update_cpu)
         let offline = if gaming_active && self.hide_parked_in_proc_view {
-            get_offline_cpus()
+            self.cached_offline.clone()
         } else {
             HashSet::new()
         };
@@ -592,7 +599,7 @@ impl ProcessTab {
                     stack.reverse();
                     while let Some((idx, depth)) = stack.pop() {
                         result.push(RowItem {
-                            proc: &sorted[idx],
+                            proc: sorted[idx],
                             depth,
                         });
                         if let Some(ch) = children.get(&sorted[idx].pid) {
@@ -607,15 +614,18 @@ impl ProcessTab {
                 } else {
                     sorted
                         .iter()
-                        .map(|p| RowItem { proc: p, depth: 0 })
+                        .map(|&p| RowItem { proc: p, depth: 0 })
                         .collect()
                 };
 
+                // show_rows virtualizes the table: only visible rows are
+                // formatted and painted (rows are fixed ROW_H height).
                 egui::ScrollArea::vertical()
                     .id_salt("process_scroll")
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for (row_idx, item) in row_items.iter().enumerate() {
+                    .show_rows(ui, ROW_H, row_items.len(), |ui, range| {
+                        for (i, item) in row_items[range.clone()].iter().enumerate() {
+                            let row_idx = range.start + i;
                             let proc = item.proc;
                             let indent = item.depth as f32 * 14.0;
                             let pid = proc.pid;
