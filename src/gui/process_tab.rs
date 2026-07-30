@@ -480,7 +480,7 @@ impl ProcessTab {
         let frame_border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
         let mut col_width_deltas = [0.0f32; 8];
         egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, frame_border_color))
+            .stroke(egui::Stroke::new(1.0_f32, frame_border_color))
             .inner_margin(egui::Margin::same(1))
             .show(ui, |ui| {
                 // ── Sortable header (pinned, outside scroll area) ─────────────────
@@ -552,7 +552,7 @@ impl ProcessTab {
                                 egui::pos2(x, header_rect.min.y),
                                 egui::pos2(x, header_rect.max.y),
                             ],
-                            egui::Stroke::new(1.0, sep_color),
+                            egui::Stroke::new(1.0_f32, sep_color),
                         );
                         if resp.dragged() {
                             col_width_deltas[i] += resp.drag_delta().x;
@@ -562,7 +562,7 @@ impl ProcessTab {
                 // Separator line between header and body
                 ui.painter().line_segment(
                     [header_rect.left_bottom(), header_rect.right_bottom()],
-                    egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                    egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
                 );
 
                 // ── Scrollable body ───────────────────────────────────────────────
@@ -738,7 +738,7 @@ impl ProcessTab {
                                                 for pair in pts.windows(2) {
                                                     painter.line_segment(
                                                         [pair[0], pair[1]],
-                                                        egui::Stroke::new(1.0, spark_col),
+                                                        egui::Stroke::new(1.0_f32, spark_col),
                                                     );
                                                 }
                                             }

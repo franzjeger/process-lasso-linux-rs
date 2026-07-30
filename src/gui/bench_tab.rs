@@ -72,7 +72,7 @@ impl BenchTab {
         // ── Progress view ─────────────────────────────────────────────────────
         if self.last.running {
             egui::Frame::new()
-                .stroke(Stroke::new(1.0, border_color))
+                .stroke(Stroke::new(1.0_f32, border_color))
                 .inner_margin(egui::Margin::same(12))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -369,7 +369,7 @@ fn show_results(
     };
 
     egui::Frame::new()
-        .stroke(Stroke::new(1.0, border_color))
+        .stroke(Stroke::new(1.0_f32, border_color))
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -505,7 +505,7 @@ fn show_results(
     painter.rect_stroke(
         graph_rect,
         2.0,
-        Stroke::new(1.0, Color32::from_gray(70)),
+        Stroke::new(1.0_f32, Color32::from_gray(70)),
         egui::StrokeKind::Outside,
     );
 
@@ -520,7 +520,7 @@ fn show_results(
                 Pos2::new(graph_rect.left(), y),
                 Pos2::new(graph_rect.right(), y),
             ],
-            Stroke::new(1.0, Color32::from_gray(45)),
+            Stroke::new(1.0_f32, Color32::from_gray(45)),
         );
         painter.text(
             Pos2::new(graph_rect.left() - 5.0, y),
@@ -539,7 +539,7 @@ fn show_results(
                 Pos2::new(x, graph_rect.top()),
                 Pos2::new(x, graph_rect.bottom()),
             ],
-            Stroke::new(1.0, Color32::from_gray(40)),
+            Stroke::new(1.0_f32, Color32::from_gray(40)),
         );
         painter.text(
             Pos2::new(x, graph_rect.bottom() + 5.0),
@@ -571,7 +571,7 @@ fn show_results(
         for seg in pts.windows(2) {
             painter.line_segment(
                 [seg[0], seg[1]],
-                Stroke::new(2.0, Color32::from_rgb(80, 165, 255)),
+                Stroke::new(2.0_f32, Color32::from_rgb(80, 165, 255)),
             );
         }
 
@@ -593,7 +593,7 @@ fn show_results(
             let r = if hover { 6.0 } else { 4.0 };
             let col = latency_color(p.latency_ns, max_ns);
             painter.circle_filled(*pt, r, col);
-            painter.circle_stroke(*pt, r, Stroke::new(1.0, Color32::WHITE));
+            painter.circle_stroke(*pt, r, Stroke::new(1.0_f32, Color32::WHITE));
 
             if hover {
                 let tip = format!("{}  →  {:.1} ns", fmt_size(p.size_bytes), p.latency_ns);
@@ -622,7 +622,7 @@ fn show_results(
     ui.add_space(4.0);
 
     egui::Frame::new()
-        .stroke(Stroke::new(1.0, border_color))
+        .stroke(Stroke::new(1.0_f32, border_color))
         .inner_margin(egui::Margin::same(0))
         .show(ui, |ui| {
             let hdr_bg = ui.visuals().widgets.noninteractive.bg_fill;
@@ -645,7 +645,7 @@ fn show_results(
             }
             ui.painter().line_segment(
                 [hr.left_bottom(), hr.right_bottom()],
-                Stroke::new(1.0, border_color),
+                Stroke::new(1.0_f32, border_color),
             );
 
             egui::ScrollArea::vertical()
@@ -667,7 +667,7 @@ fn show_results(
                         if idx > 0 {
                             ui.painter().line_segment(
                                 [rr.left_top(), rr.right_top()],
-                                Stroke::new(1.0, border_color),
+                                Stroke::new(1.0_f32, border_color),
                             );
                         }
                         let region = if p.size_bytes <= cache.l1d {
@@ -720,7 +720,7 @@ fn show_results(
 
 fn latency_card(ui: &mut egui::Ui, label: &str, ns: Option<f64>, color: Color32, border: Color32) {
     egui::Frame::new()
-        .stroke(Stroke::new(1.0, border))
+        .stroke(Stroke::new(1.0_f32, border))
         .inner_margin(egui::Margin::symmetric(14, 8))
         .show(ui, |ui| {
             ui.set_min_width(110.0);
@@ -841,7 +841,7 @@ fn bench_group(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, border_color))
+        .stroke(egui::Stroke::new(1.0_f32, border_color))
         .inner_margin(egui::Margin::same(12))
         .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {

@@ -289,7 +289,7 @@ impl RulesTab {
         let col_iolv = (avail_w * 0.05).clamp(45.0, 75.0);
 
         egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, border_color))
+            .stroke(egui::Stroke::new(1.0_f32, border_color))
             .inner_margin(egui::Margin::same(1))
             .show(ui, |ui| {
                 TableBuilder::new(ui)
