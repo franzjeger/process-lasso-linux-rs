@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  # Manual trigger for environments that can't push tags: creates the tag
+  # (via the release action) on the selected ref and publishes the release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v1.0.1 (created if it doesn't exist)"
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,8 +49,10 @@ jobs:
         run: cargo build --release --locked
 
       - name: Package tarball
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           pkg="argus-lasso-${version}-x86_64-linux"
           mkdir -p "${pkg}"
           cp target/release/argus-lasso "${pkg}/"
@@ -53,6 +63,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             argus-lasso-*.tar.gz
             argus-lasso-*.tar.gz.sha256
