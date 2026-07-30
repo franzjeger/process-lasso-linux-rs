@@ -346,3 +346,60 @@ pub fn resolve_name(comm: &str, cmdline: &[String]) -> String {
     }
     comm.to_string()
 }
+
+// ── Per-process detail readout (for the details window) ──────────────────────
+
+/// Snapshot of one process's procfs details. Cheap to read (a handful of
+/// small files for a single PID); refreshed on the display cadence.
+#[derive(Debug, Clone, Default)]
+pub struct ProcDetails {
+    /// Kernel state, e.g. "S (sleeping)"
+    pub state: String,
+    /// (tid, thread name), capped at 128 entries
+    pub threads: Vec<(u32, String)>,
+    pub thread_count: usize,
+    /// Open file descriptors; None if /proc/<pid>/fd is unreadable
+    pub fd_count: Option<usize>,
+    pub cwd: String,
+    pub exe: String,
+}
+
+/// Read details for one PID. Returns None if the process is gone.
+pub fn read_proc_details(pid: u32) -> Option<ProcDetails> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let mut d = ProcDetails::default();
+    for line in status.lines() {
+        if let Some(v) = line.strip_prefix("State:") {
+            d.state = v.trim().to_string();
+        }
+    }
+
+    let task_dir = format!("/proc/{pid}/task");
+    if let Ok(entries) = std::fs::read_dir(&task_dir) {
+        for entry in entries.flatten() {
+            let tid_str = entry.file_name();
+            let Ok(tid) = tid_str.to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            d.thread_count += 1;
+            if d.threads.len() < 128 {
+                let comm = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/comm"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                d.threads.push((tid, comm));
+            }
+        }
+    }
+    d.threads.sort_unstable_by_key(|(tid, _)| *tid);
+
+    d.fd_count = std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .ok()
+        .map(|it| it.count());
+    d.cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    d.exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    Some(d)
+}
