@@ -54,10 +54,9 @@ impl OverviewTab {
                             })
                             .collect();
 
-                        // Fill under curve
-                        let mut fill_pts = pts.clone();
-                        fill_pts.push(egui::pos2(rect.right(), rect.bottom()));
-                        fill_pts.push(egui::pos2(rect.left(), rect.bottom()));
+                        // Fill under curve — one trapezoid per segment; the
+                        // curve is not convex, so a single convex_polygon
+                        // renders with self-overlap artifacts.
                         let fill_color = if cpu_avg > 80.0 {
                             Color32::from_rgba_unmultiplied(220, 60, 60, 60)
                         } else if cpu_avg > 50.0 {
@@ -65,11 +64,18 @@ impl OverviewTab {
                         } else {
                             Color32::from_rgba_unmultiplied(60, 160, 80, 60)
                         };
-                        painter.add(egui::epaint::PathShape::convex_polygon(
-                            fill_pts,
-                            fill_color,
-                            egui::Stroke::NONE,
-                        ));
+                        for pair in pts.windows(2) {
+                            painter.add(egui::Shape::convex_polygon(
+                                vec![
+                                    pair[0],
+                                    pair[1],
+                                    egui::pos2(pair[1].x, rect.bottom()),
+                                    egui::pos2(pair[0].x, rect.bottom()),
+                                ],
+                                fill_color,
+                                egui::Stroke::NONE,
+                            ));
+                        }
 
                         // Line
                         let line_color = if cpu_avg > 80.0 {

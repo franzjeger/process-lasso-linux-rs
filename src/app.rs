@@ -85,6 +85,33 @@ fn read_cpu_temp() -> Option<f32> {
     None
 }
 
+// ── "Remember settings" offer ─────────────────────────────────────────────────
+
+/// After a manual affinity/nice/ionice change, offer to persist it as a rule
+/// so it survives process restarts (à la Process Lasso's "remember" prompt).
+struct RuleOffer {
+    proc_name: String,
+    affinity: Option<String>,
+    nice: Option<i32>,
+    ionice: Option<(i32, i32)>,
+}
+
+impl RuleOffer {
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(a) = &self.affinity {
+            parts.push(format!("affinity {a}"));
+        }
+        if let Some(n) = self.nice {
+            parts.push(format!("nice {n}"));
+        }
+        if let Some((c, l)) = self.ionice {
+            parts.push(format!("ionice {c}/{l}"));
+        }
+        parts.join(", ")
+    }
+}
+
 // ── ArgusLassoApp ─────────────────────────────────────────────────────────────
 
 pub struct ArgusLassoApp {
@@ -135,6 +162,8 @@ pub struct ArgusLassoApp {
     cpu_temp: Option<f32>,
     // Pending kill awaiting undo
     pending_kill: Option<crate::gui::process_tab::PendingKill>,
+    // Pending "create a rule from this manual change?" offer
+    rule_offer: Option<RuleOffer>,
     // CPU model string for status bar
     cpu_model: String,
 }
@@ -233,7 +262,40 @@ impl ArgusLassoApp {
             last_saved_theme,
             cpu_temp,
             pending_kill: None,
+            rule_offer: None,
             cpu_model,
+        }
+    }
+
+    /// Record a manual change so the "remember as rule?" prompt can offer it.
+    /// Consecutive changes to the same process merge into one offer.
+    fn offer_rule(
+        &mut self,
+        proc_name: String,
+        affinity: Option<String>,
+        nice: Option<i32>,
+        ionice: Option<(i32, i32)>,
+    ) {
+        match &mut self.rule_offer {
+            Some(offer) if offer.proc_name == proc_name => {
+                if affinity.is_some() {
+                    offer.affinity = affinity;
+                }
+                if nice.is_some() {
+                    offer.nice = nice;
+                }
+                if ionice.is_some() {
+                    offer.ionice = ionice;
+                }
+            }
+            _ => {
+                self.rule_offer = Some(RuleOffer {
+                    proc_name,
+                    affinity,
+                    nice,
+                    ionice,
+                });
+            }
         }
     }
 
@@ -348,6 +410,7 @@ impl ArgusLassoApp {
     fn poll_dialogs(&mut self, ctx: &Context) {
         // Affinity dialog
         if let Some((pid, ref mut dlg)) = self.affinity_dialog {
+            let proc_name = dlg.title.clone();
             if let Some(result) = dlg.show(ctx, self.opacity) {
                 let cpulist = result.as_str();
                 if !cpulist.is_empty() && utils::set_affinity(pid, cpulist) {
@@ -358,6 +421,7 @@ impl ArgusLassoApp {
                     if let Ok(mut s) = self.state.lock() {
                         s.append_log(format!("[Manual] affinity={cpulist} → PID {pid}"));
                     }
+                    self.offer_rule(proc_name, Some(result.clone()), None, None);
                 }
                 self.affinity_dialog = None;
             }
@@ -365,12 +429,14 @@ impl ArgusLassoApp {
 
         // Nice dialog
         if let Some((pid, ref mut dlg)) = self.nice_dialog {
+            let proc_name = dlg.title.clone();
             if let Some(result) = dlg.show(ctx, self.opacity) {
                 if let Some(nice) = result {
                     if utils::set_nice(pid, nice) {
                         if let Ok(mut s) = self.state.lock() {
                             s.append_log(format!("[Manual] nice={nice} → PID {pid}"));
                         }
+                        self.offer_rule(proc_name, None, Some(nice), None);
                     }
                 }
                 self.nice_dialog = None;
@@ -379,6 +445,7 @@ impl ArgusLassoApp {
 
         // IoNice dialog
         if let Some((pid, ref mut dlg)) = self.ionice_dialog {
+            let proc_name = dlg.title.clone();
             if let Some(result) = dlg.show(ctx, self.opacity) {
                 if let Some((class, level)) = result {
                     if utils::set_ionice(pid, class, Some(level)) {
@@ -387,9 +454,65 @@ impl ArgusLassoApp {
                                 "[Manual] ionice class={class} level={level} → PID {pid}"
                             ));
                         }
+                        self.offer_rule(proc_name, None, None, Some((class, level)));
                     }
                 }
                 self.ionice_dialog = None;
+            }
+        }
+
+        // "Remember settings?" prompt for the latest manual change
+        if let Some(offer) = &self.rule_offer {
+            let mut create = false;
+            let mut dismiss = false;
+            egui::Window::new("Remember settings?")
+                .id(egui::Id::new("rule_offer_window"))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -40.0))
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "Keep {} for '{}' with a rule?\nThe setting will be re-applied every time the process starts.",
+                        offer.summary(),
+                        offer.proc_name
+                    ));
+                    ui.horizontal(|ui| {
+                        if ui.button("Create rule").clicked() {
+                            create = true;
+                        }
+                        if ui.button("No thanks").clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+            if create {
+                let offer = self.rule_offer.take().unwrap();
+                let mut rule = crate::rules::Rule::new_empty();
+                rule.name = offer.proc_name.clone();
+                rule.pattern = offer.proc_name.clone();
+                rule.match_type = "exact".into();
+                rule.affinity = offer.affinity.clone();
+                rule.nice = offer.nice;
+                rule.ionice_class = offer.ionice.map(|(c, _)| c);
+                rule.ionice_level = offer.ionice.map(|(_, l)| l);
+                if let Ok(mut re) = self.rule_engine.lock() {
+                    re.add_rule(rule);
+                }
+                if let Ok(mut s) = self.state.lock() {
+                    s.config.rules = self
+                        .rule_engine
+                        .lock()
+                        .map(|re| re.to_config_list())
+                        .unwrap_or_default();
+                    s.append_log(format!(
+                        "[Rule] Created rule for '{}' ({}) from manual change",
+                        offer.proc_name,
+                        offer.summary()
+                    ));
+                }
+                self.save_config();
+            } else if dismiss {
+                self.rule_offer = None;
             }
         }
     }

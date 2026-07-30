@@ -523,21 +523,29 @@ pub fn set_process_nice_via_helper(pid: u32, nice: i32) -> bool {
 
 // ── Helper installation ───────────────────────────────────────────────────────
 
-/// Write helper + sudoers rule via `su root` with a PTY.
-/// Returns (ok, message).
-pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) {
-    use std::io::Write;
+/// True if polkit's pkexec is available — the preferred install path, since
+/// authentication happens in the system dialog and no password ever passes
+/// through this process.
+pub fn is_pkexec_available() -> bool {
+    Command::new("which")
+        .arg("pkexec")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
 
+/// Validate the username, stage the helper script in the user's private config
+/// dir, and build the root shell command that installs helper + sudoers rule.
+/// Returns (command, staged_path) — the caller removes the staged file after
+/// the privileged command finishes.
+fn stage_install(username: &str) -> Result<(String, std::path::PathBuf), String> {
     let username = if username.is_empty() {
         std::env::var("USER").unwrap_or_default()
     } else {
         username.to_string()
     };
     if username.is_empty() {
-        return (false, "Could not determine current username.".into());
-    }
-    if password.is_empty() {
-        return (false, "No root password provided.".into());
+        return Err("Could not determine current username.".into());
     }
     // The username is interpolated into a root shell command and a sudoers
     // file — reject anything outside the safe POSIX username charset so a
@@ -547,7 +555,7 @@ pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) 
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
         || username.starts_with('-')
     {
-        return (false, format!("Invalid username: {username:?}"));
+        return Err(format!("Invalid username: {username:?}"));
     }
 
     let sudoers_line = format!("{username} ALL=(root) NOPASSWD: {HELPER}");
@@ -556,17 +564,14 @@ pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) 
     // world-writable /tmp path, which another local user could swap between
     // our write and root's cp (a straight local-root escalation).
     let stage_dir = crate::config::config_dir();
-    if let Err(e) = fs::create_dir_all(&stage_dir) {
-        return (false, format!("Failed to create staging dir: {e}"));
-    }
+    fs::create_dir_all(&stage_dir).map_err(|e| format!("Failed to create staging dir: {e}"))?;
     let tmp_path = stage_dir.join("pl-sysfs.staged");
     let tmp = match tmp_path.to_str() {
         Some(s) if !s.contains('\'') && !s.contains(char::is_whitespace) => s.to_string(),
-        _ => return (false, "Staging path contains unsafe characters.".into()),
+        _ => return Err("Staging path contains unsafe characters.".into()),
     };
-    if let Err(e) = fs::write(&tmp_path, HELPER_CONTENT) {
-        return (false, format!("Failed to write staged helper: {e}"));
-    }
+    fs::write(&tmp_path, HELPER_CONTENT)
+        .map_err(|e| format!("Failed to write staged helper: {e}"))?;
 
     let cmd = format!(
         "cp {tmp} {HELPER} && \
@@ -576,9 +581,61 @@ pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) 
          chmod 440 {SUDOERS_FILE} && \
          echo INSTALL_OK"
     );
+    Ok((cmd, tmp_path))
+}
 
-    // Use `su -c` and pipe the password via stdin on a PTY
-    // We use the `script` approach: spawn `su root -c cmd`, feed password
+fn install_outcome(o: &std::process::Output) -> (bool, String) {
+    let out = String::from_utf8_lossy(&o.stdout);
+    let err = String::from_utf8_lossy(&o.stderr);
+    let combined = format!("{out}{err}");
+    if combined.contains("INSTALL_OK") {
+        (true, "Helper and sudoers rule installed.".into())
+    } else {
+        let tail: String = {
+            let t: Vec<char> = combined.trim().chars().collect();
+            t[t.len().saturating_sub(300)..].iter().collect()
+        };
+        (
+            false,
+            format!("Install failed (rc={:?}): {tail}", o.status.code()),
+        )
+    }
+}
+
+/// Install helper + sudoers rule via polkit (pkexec). Authentication is
+/// handled by the desktop's polkit agent — no password touches this process.
+pub fn install_helper_via_pkexec(username: &str) -> (bool, String) {
+    let (cmd, tmp_path) = match stage_install(username) {
+        Ok(v) => v,
+        Err(e) => return (false, e),
+    };
+    let result = Command::new("pkexec")
+        .args(["/bin/sh", "-c", &cmd])
+        .output();
+    let _ = fs::remove_file(&tmp_path);
+    match result {
+        Ok(o) if o.status.code() == Some(126) || o.status.code() == Some(127) => {
+            // 126 = auth dialog dismissed, 127 = auth failed / no agent
+            (false, "Authentication cancelled or failed.".into())
+        }
+        Ok(o) => install_outcome(&o),
+        Err(e) => (false, format!("pkexec spawn failed: {e}")),
+    }
+}
+
+/// Fallback install path via `su root -c`, feeding the root password on stdin.
+/// Used only when pkexec/polkit is unavailable.
+pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) {
+    use std::io::Write;
+
+    if password.is_empty() {
+        return (false, "No root password provided.".into());
+    }
+    let (cmd, tmp_path) = match stage_install(username) {
+        Ok(v) => v,
+        Err(e) => return (false, e),
+    };
+
     let output = Command::new("su")
         .args(["root", "-c", &cmd])
         .stdin(std::process::Stdio::piped())
@@ -594,34 +651,82 @@ pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) 
             let result = child.wait_with_output();
             let _ = fs::remove_file(&tmp_path);
             match result {
-                Ok(o) => {
-                    let out = String::from_utf8_lossy(&o.stdout);
-                    let err = String::from_utf8_lossy(&o.stderr);
-                    let combined = format!("{out}{err}");
-                    if combined.contains("INSTALL_OK") {
-                        (true, "Helper and sudoers rule installed.".into())
-                    } else {
-                        (
-                            false,
-                            format!(
-                                "Install failed (rc={:?}): {}",
-                                o.status.code(),
-                                combined
-                                    .trim()
-                                    .chars()
-                                    .rev()
-                                    .take(300)
-                                    .collect::<String>()
-                                    .chars()
-                                    .rev()
-                                    .collect::<String>()
-                            ),
-                        )
-                    }
-                }
+                Ok(o) => install_outcome(&o),
                 Err(e) => (false, format!("su wait failed: {e}")),
             }
         }
-        Err(e) => (false, format!("su spawn failed: {e}")),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_path);
+            (false, format!("su spawn failed: {e}"))
+        }
     }
+}
+
+// ── Power profiles (governor + EPP via helper) ───────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PowerProfile {
+    Performance,
+    Balanced,
+    PowerSave,
+}
+
+impl PowerProfile {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PowerProfile::Performance => "Performance",
+            PowerProfile::Balanced => "Balanced",
+            PowerProfile::PowerSave => "Power Save",
+        }
+    }
+
+    /// (governor, energy_performance_preference) for this profile.
+    /// Both amd-pstate and intel_pstate expose performance/powersave governors
+    /// and the EPP knob; the helper writes best-effort to every CPU.
+    fn settings(&self) -> (&'static str, &'static str) {
+        match self {
+            PowerProfile::Performance => ("performance", "performance"),
+            PowerProfile::Balanced => ("powersave", "balance_performance"),
+            PowerProfile::PowerSave => ("powersave", "power"),
+        }
+    }
+}
+
+/// Apply a power profile via the privileged helper. Returns (ok, message).
+pub fn apply_power_profile(profile: PowerProfile) -> (bool, String) {
+    let (governor, epp) = profile.settings();
+    let (gov_ok, gov_msg) = run_helper(&["cpu-governor", governor]);
+    // EPP is absent on acpi-cpufreq systems — the helper's glob writes are
+    // best-effort, so a failure here is only reported, not fatal.
+    let (epp_ok, epp_msg) = run_helper(&["cpu-epp", epp]);
+    if gov_ok {
+        let epp_note = if epp_ok {
+            format!(", EPP={epp}")
+        } else {
+            format!(" (EPP unavailable: {epp_msg})")
+        };
+        (
+            true,
+            format!(
+                "[Power] {} — governor={governor}{epp_note}",
+                profile.label()
+            ),
+        )
+    } else {
+        (false, format!("[Power] governor change failed: {gov_msg}"))
+    }
+}
+
+/// Read the current scaling governor of cpu0 (representative for display).
+pub fn current_governor() -> Option<String> {
+    fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+/// Read the current EPP of cpu0, if the platform exposes it.
+pub fn current_epp() -> Option<String> {
+    fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
+        .ok()
+        .map(|s| s.trim().to_string())
 }

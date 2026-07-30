@@ -208,12 +208,21 @@ impl CpuHistoryWidget {
             Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)
         };
 
-        let mut path: Vec<Pos2> = Vec::with_capacity(pts.len() + 2);
-        path.push(Pos2::new(pts[0].x, rect.max.y - 2.0));
-        path.extend_from_slice(&pts);
-        path.push(Pos2::new(pts.last().unwrap().x, rect.max.y - 2.0));
-
-        painter.add(egui::Shape::convex_polygon(path, fill_color, Stroke::NONE));
+        // Fill as one trapezoid per segment — the curve itself is not convex,
+        // and feeding it to convex_polygon makes the tessellator self-overlap.
+        let bottom = rect.max.y - 2.0;
+        for pair in pts.windows(2) {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    pair[0],
+                    pair[1],
+                    Pos2::new(pair[1].x, bottom),
+                    Pos2::new(pair[0].x, bottom),
+                ],
+                fill_color,
+                Stroke::NONE,
+            ));
+        }
 
         // Line on top
         painter.add(egui::Shape::line(

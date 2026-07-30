@@ -72,6 +72,8 @@ pub struct GamingModeTab {
     // Dialogs
     pub install_password: String,
     pub show_install_dialog: bool,
+    /// "current: <governor> / <epp>" display next to the power-profile buttons
+    power_status_text: String,
     steam_picker: Option<crate::gui::dialogs::SteamGamePickerDialog>,
     lutris_picker: Option<crate::gui::dialogs::LutrisGamePickerDialog>,
 
@@ -124,6 +126,7 @@ impl GamingModeTab {
             selected_profile: String::new(),
             install_password: String::new(),
             show_install_dialog: false,
+            power_status_text: String::new(),
             steam_picker: None,
             lutris_picker: None,
             pending_enable_after_unpark: false,
@@ -131,6 +134,7 @@ impl GamingModeTab {
         };
         tab.refresh_helper_status();
         tab.refresh_cpu_status();
+        tab.refresh_power_status();
 
         if parked {
             tab.events.push(GamingEvent::GamingModeChanged {
@@ -152,6 +156,14 @@ impl GamingModeTab {
             "Helper needs update — click 'Install / Update Helper'".into()
         } else {
             "Helper not installed — click 'Install / Update Helper' to enable parking".into()
+        };
+    }
+
+    fn refresh_power_status(&mut self) {
+        let gov = cpu_park::current_governor().unwrap_or_else(|| "?".into());
+        self.power_status_text = match cpu_park::current_epp() {
+            Some(epp) => format!("current: {gov} / {epp}"),
+            None => format!("current: {gov}"),
         };
     }
 
@@ -451,6 +463,35 @@ impl GamingModeTab {
             let status_color = self.cpu_status_color.unwrap_or_else(|| ui.visuals().text_color());
             ui.colored_label(status_color, &self.cpu_status_text);
 
+            // ── Power profile (governor + EPP via helper) ─────────────────
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(RichText::new("Power Profile").strong());
+            ui.label("Sets the CPU frequency governor and energy-performance preference on all cores.");
+            ui.horizontal(|ui| {
+                use cpu_park::PowerProfile;
+                for profile in [
+                    PowerProfile::Performance,
+                    PowerProfile::Balanced,
+                    PowerProfile::PowerSave,
+                ] {
+                    if ui
+                        .add_enabled(self.helper_ok, egui::Button::new(profile.label()))
+                        .clicked()
+                    {
+                        let (_ok, msg) = cpu_park::apply_power_profile(profile);
+                        self.append_log(msg);
+                        self.refresh_power_status();
+                    }
+                }
+                ui.label(egui::RichText::new(&self.power_status_text).weak());
+            });
+            if !self.helper_ok {
+                ui.label(
+                    egui::RichText::new("Requires the privileged helper (install above).").weak(),
+                );
+            }
+
             ui.add_space(8.0);
             ui.separator();
 
@@ -578,10 +619,37 @@ impl GamingModeTab {
                 .resizable(false)
                 .collapsible(false)
                 .show(ctx, |ui| {
-                    ui.label("Enter root password to install the privileged sysfs helper:");
+                    let pkexec = cpu_park::is_pkexec_available();
+                    if pkexec {
+                        ui.label(
+                            "Install the privileged sysfs helper via the system \
+                             authentication dialog (polkit):",
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button("Install (system authentication)").clicked() {
+                                self.show_install_dialog = false;
+                                self.append_log("Installing privileged helper via pkexec…".into());
+                                let (_ok, msg) = cpu_park::install_helper_via_pkexec("");
+                                self.append_log(msg);
+                                self.refresh_helper_status();
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.install_password.clear();
+                                self.show_install_dialog = false;
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new("Fallback — root password (only if polkit fails):")
+                                .weak(),
+                        );
+                    } else {
+                        ui.label("Enter root password to install the privileged sysfs helper:");
+                    }
                     ui.add(egui::TextEdit::singleline(&mut self.install_password).password(true));
                     ui.horizontal(|ui| {
-                        if ui.button("Install").clicked() {
+                        if ui.button("Install with root password").clicked() {
                             let password = self.install_password.clone();
                             self.install_password.clear();
                             self.show_install_dialog = false;
@@ -590,7 +658,7 @@ impl GamingModeTab {
                             self.append_log(msg);
                             self.refresh_helper_status();
                         }
-                        if ui.button("Cancel").clicked() {
+                        if !pkexec && ui.button("Cancel").clicked() {
                             self.install_password.clear();
                             self.show_install_dialog = false;
                         }
