@@ -246,7 +246,7 @@ fn main() {
                     "processes": procs.iter().map(|p| serde_json::json!({
                         "pid": p.pid,
                         "name": p.name,
-                        "cpu_percent": (p.cpu_percent * 10.0).round() / 10.0,
+                        "cpu_percent": (p.cpu_percent as f64 * 10.0).round() / 10.0,
                         "mem_bytes": p.mem_rss,
                         "nice": p.nice,
                         "affinity": p.affinity,
