@@ -30,11 +30,14 @@ impl LogTab {
         });
         ui.separator();
 
+        // show_rows virtualizes the list — only visible lines are laid out,
+        // instead of all 2000 buffered lines on every repaint.
+        let row_height = ui.text_style_height(&egui::TextStyle::Monospace).max(14.0);
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .stick_to_bottom(self.auto_scroll)
-            .show(ui, |ui| {
-                for line in lines {
+            .show_rows(ui, row_height, lines.len(), |ui, range| {
+                for line in lines.range(range) {
                     let color = if line.contains("[Gaming Mode]")
                         || line.contains("[Launcher]")
                         || line.contains("[Profile]")

@@ -97,7 +97,7 @@ impl CpuBarsWidget {
             painter.rect_stroke(
                 rect,
                 CornerRadius::same(4),
-                Stroke::new(1.0, border_color),
+                Stroke::new(1.0_f32, border_color),
                 egui::StrokeKind::Middle,
             );
 
@@ -218,7 +218,7 @@ impl CpuHistoryWidget {
         // Line on top
         painter.add(egui::Shape::line(
             pts,
-            Stroke::new(1.5, theme::cpu_load_color(last_avg)),
+            Stroke::new(1.5_f32, theme::cpu_load_color(last_avg)),
         ));
 
         // Border
@@ -226,7 +226,7 @@ impl CpuHistoryWidget {
         painter.rect_stroke(
             rect,
             CornerRadius::ZERO,
-            Stroke::new(1.0, border_color),
+            Stroke::new(1.0_f32, border_color),
             egui::StrokeKind::Middle,
         );
     }

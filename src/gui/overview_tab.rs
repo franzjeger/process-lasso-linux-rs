@@ -27,7 +27,7 @@ impl OverviewTab {
             // CPU History Graph
             let graph_w = (ui.available_width() * 0.55).max(200.0);
             egui::Frame::new()
-                .stroke(egui::Stroke::new(1.0, border_color))
+                .stroke(egui::Stroke::new(1.0_f32, border_color))
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     ui.set_min_width(graph_w - 16.0);
@@ -82,7 +82,7 @@ impl OverviewTab {
                         for pair in pts.windows(2) {
                             painter.line_segment(
                                 [pair[0], pair[1]],
-                                egui::Stroke::new(1.5, line_color),
+                                egui::Stroke::new(1.5_f32, line_color),
                             );
                         }
                     }
@@ -103,7 +103,7 @@ impl OverviewTab {
             ui.vertical(|ui| {
                 // RAM
                 egui::Frame::new()
-                    .stroke(egui::Stroke::new(1.0, border_color))
+                    .stroke(egui::Stroke::new(1.0_f32, border_color))
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         ui.set_min_width(180.0);
@@ -139,7 +139,7 @@ impl OverviewTab {
 
                 // Load Average
                 egui::Frame::new()
-                    .stroke(egui::Stroke::new(1.0, border_color))
+                    .stroke(egui::Stroke::new(1.0_f32, border_color))
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         ui.set_min_width(180.0);
@@ -171,7 +171,7 @@ impl OverviewTab {
 
         // ── Top Processes by CPU ─────────────────────────────────────────────
         egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, border_color))
+            .stroke(egui::Stroke::new(1.0_f32, border_color))
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -250,8 +250,11 @@ impl OverviewTab {
                     );
                     rx += pid_w;
                     // Name
-                    let name_display = if proc.name.len() > 22 {
-                        format!("{}…", &proc.name[..21])
+                    // Truncate on chars, not bytes — a byte slice can split a
+                    // multibyte UTF-8 name and panic every frame.
+                    let name_display = if proc.name.chars().count() > 22 {
+                        let truncated: String = proc.name.chars().take(21).collect();
+                        format!("{truncated}…")
                     } else {
                         proc.name.clone()
                     };

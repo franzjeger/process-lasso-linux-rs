@@ -41,6 +41,10 @@ case "$1" in
             fi
         done
         ;;
+    --check-only)
+        # Used by is_sudoers_installed to verify the NOPASSWD rule works.
+        exit 0
+        ;;
     renice-pid)
         [[ "$2" =~ ^-?[0-9]+$ ]] || exit 1
         [[ "$3" =~ ^[0-9]+$ ]]   || exit 1
@@ -183,14 +187,16 @@ fn detect_amd_x3d() -> Option<CpuTopology> {
         let path = format!("/sys/devices/system/cpu/cpu{cpu}/cache/index3/size");
         if let Ok(raw) = fs::read_to_string(&path) {
             let raw = raw.trim();
-            let kb: u64 = if let Some(s) = raw.strip_suffix('K') {
-                s.parse().ok()?
+            // One unparsable size file must skip that CPU, not abort the whole
+            // detection (a `?` here degraded real X3D machines to Uniform).
+            let kb: Option<u64> = if let Some(s) = raw.strip_suffix('K') {
+                s.parse().ok()
             } else if let Some(s) = raw.strip_suffix('M') {
-                let mb: u64 = s.parse().ok()?;
-                mb * 1024
+                s.parse::<u64>().ok().map(|mb| mb * 1024)
             } else {
-                raw.parse().ok()?
+                raw.parse().ok()
             };
+            let Some(kb) = kb else { continue };
             l3.insert(*cpu, kb);
         }
         // offline CPUs have no sysfs entry — silently skip
@@ -203,8 +209,15 @@ fn detect_amd_x3d() -> Option<CpuTopology> {
     let sizes: HashSet<u64> = l3.values().copied().collect();
     if sizes.len() <= 1 {
         // All readable CPUs have the same L3.
-        // If there are offline CPUs, the other CCD is already parked by Gaming Mode.
-        if !offline.is_empty() {
+        // Only interpret offline CPUs as "the other CCD is parked" when a
+        // previous detection actually saw an X3D topology — otherwise any
+        // machine with a manually offlined core would be misdetected as X3D.
+        let cached_is_x3d = TOPO_CACHE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|t| t.kind == TopologyKind::AmdX3D);
+        if !offline.is_empty() && cached_is_x3d {
             let online_kb = *sizes.iter().next().unwrap();
             let online_set: HashSet<u32> = l3.keys().copied().collect();
             return Some(CpuTopology {
@@ -405,7 +418,7 @@ pub fn is_helper_current() -> bool {
         return false;
     }
     fs::read_to_string(HELPER)
-        .map(|s| s.contains("cpu-governor"))
+        .map(|s| s.contains("cpu-governor") && s.contains("--check-only"))
         .unwrap_or(false)
 }
 
@@ -414,10 +427,13 @@ pub fn is_sudoers_installed() -> bool {
     if !is_helper_installed() {
         return false;
     }
+    // Only exit code 0 counts: the helper's --check-only case exits 0, while
+    // sudo refusing for lack of a NOPASSWD rule exits 1 — treating 1 as
+    // success used to report "installed" on machines with no sudoers rule.
     Command::new("sudo")
         .args(["-n", HELPER, "--check-only"])
         .output()
-        .map(|o| matches!(o.status.code(), Some(0) | Some(1)))
+        .map(|o| o.status.code() == Some(0))
         .unwrap_or(false)
 }
 
@@ -523,19 +539,33 @@ pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) 
     if password.is_empty() {
         return (false, "No root password provided.".into());
     }
+    // The username is interpolated into a root shell command and a sudoers
+    // file — reject anything outside the safe POSIX username charset so a
+    // crafted value can't break out of the quoting or corrupt sudoers.
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        || username.starts_with('-')
+    {
+        return (false, format!("Invalid username: {username:?}"));
+    }
 
     let sudoers_line = format!("{username} ALL=(root) NOPASSWD: {HELPER}");
 
-    // Write helper to /tmp
-    let tmp = "/tmp/pl-sysfs.tmp";
-    if let Err(e) = fs::write(tmp, HELPER_CONTENT) {
-        return (false, format!("Failed to write tmp helper: {e}"));
+    // Stage the helper in the user's private config dir — NOT a fixed
+    // world-writable /tmp path, which another local user could swap between
+    // our write and root's cp (a straight local-root escalation).
+    let stage_dir = crate::config::config_dir();
+    if let Err(e) = fs::create_dir_all(&stage_dir) {
+        return (false, format!("Failed to create staging dir: {e}"));
     }
-    // Set executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(tmp, fs::Permissions::from_mode(0o755));
+    let tmp_path = stage_dir.join("pl-sysfs.staged");
+    let tmp = match tmp_path.to_str() {
+        Some(s) if !s.contains('\'') && !s.contains(char::is_whitespace) => s.to_string(),
+        _ => return (false, "Staging path contains unsafe characters.".into()),
+    };
+    if let Err(e) = fs::write(&tmp_path, HELPER_CONTENT) {
+        return (false, format!("Failed to write staged helper: {e}"));
     }
 
     let cmd = format!(
@@ -561,7 +591,9 @@ pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) 
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = writeln!(stdin, "{password}");
             }
-            match child.wait_with_output() {
+            let result = child.wait_with_output();
+            let _ = fs::remove_file(&tmp_path);
+            match result {
                 Ok(o) => {
                     let out = String::from_utf8_lossy(&o.stdout);
                     let err = String::from_utf8_lossy(&o.stderr);

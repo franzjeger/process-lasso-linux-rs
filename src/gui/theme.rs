@@ -181,41 +181,41 @@ pub fn apply(ctx: &Context, native_ppp: f32) {
 
     // non-interactive (labels, separators)
     vis.widgets.noninteractive.bg_fill = Breeze::WINDOW_BG;
-    vis.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Breeze::BORDER);
-    vis.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Breeze::BORDER);
+    vis.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, Breeze::BORDER);
+    vis.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, Breeze::BORDER);
     vis.widgets.noninteractive.corner_radius = rounding;
 
     // inactive (buttons, checkboxes at rest)
     vis.widgets.inactive.bg_fill = Breeze::BUTTON_BG;
-    vis.widgets.inactive.bg_stroke = Stroke::new(1.0, Breeze::BORDER);
-    vis.widgets.inactive.fg_stroke = Stroke::new(1.0, Breeze::TEXT);
+    vis.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Breeze::BORDER);
+    vis.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, Breeze::TEXT);
     vis.widgets.inactive.corner_radius = rounding;
 
     // hovered
     vis.widgets.hovered.bg_fill = Breeze::BUTTON_HOVER;
-    vis.widgets.hovered.bg_stroke = Stroke::new(1.0, Breeze::HIGHLIGHT);
-    vis.widgets.hovered.fg_stroke = Stroke::new(1.0, Breeze::TEXT);
+    vis.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Breeze::HIGHLIGHT);
+    vis.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, Breeze::TEXT);
     vis.widgets.hovered.corner_radius = rounding;
 
     // active (pressed)
     vis.widgets.active.bg_fill = Breeze::HIGHLIGHT;
-    vis.widgets.active.bg_stroke = Stroke::new(1.0, Breeze::HIGHLIGHT);
-    vis.widgets.active.fg_stroke = Stroke::new(1.5, Breeze::TEXT);
+    vis.widgets.active.bg_stroke = Stroke::new(1.0_f32, Breeze::HIGHLIGHT);
+    vis.widgets.active.fg_stroke = Stroke::new(1.5_f32, Breeze::TEXT);
     vis.widgets.active.corner_radius = rounding;
 
     // open (combo boxes, menus)
     vis.widgets.open.bg_fill = Breeze::ALT_BASE;
-    vis.widgets.open.bg_stroke = Stroke::new(1.0, Breeze::HIGHLIGHT);
-    vis.widgets.open.fg_stroke = Stroke::new(1.0, Breeze::TEXT);
+    vis.widgets.open.bg_stroke = Stroke::new(1.0_f32, Breeze::HIGHLIGHT);
+    vis.widgets.open.fg_stroke = Stroke::new(1.0_f32, Breeze::TEXT);
     vis.widgets.open.corner_radius = rounding;
 
     // ── Selection ────────────────────────────────────────────────────────
     vis.selection.bg_fill = Color32::from_rgba_unmultiplied(0x3d, 0xae, 0xe9, 0x66); // 40% alpha
-    vis.selection.stroke = Stroke::new(1.0, Breeze::HIGHLIGHT);
+    vis.selection.stroke = Stroke::new(1.0_f32, Breeze::HIGHLIGHT);
 
     // ── Misc ─────────────────────────────────────────────────────────────
     vis.hyperlink_color = Breeze::LINK;
-    vis.window_stroke = Stroke::new(1.0, Breeze::BORDER);
+    vis.window_stroke = Stroke::new(1.0_f32, Breeze::BORDER);
     vis.window_shadow = egui::epaint::Shadow::NONE;
     vis.window_corner_radius = CornerRadius::same(4);
 
@@ -283,38 +283,38 @@ pub fn apply_light(ctx: &Context, native_ppp: f32) {
     let rounding = CornerRadius::same(4);
 
     vis.widgets.noninteractive.bg_fill = window_bg;
-    vis.widgets.noninteractive.bg_stroke = Stroke::new(1.0, border);
-    vis.widgets.noninteractive.fg_stroke = Stroke::new(1.0, border);
+    vis.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, border);
+    vis.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, border);
     vis.widgets.noninteractive.corner_radius = rounding;
 
     vis.widgets.inactive.bg_fill = button_bg;
-    vis.widgets.inactive.bg_stroke = Stroke::new(1.0, border);
-    vis.widgets.inactive.fg_stroke = Stroke::new(1.0, text);
+    vis.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, border);
+    vis.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, text);
     vis.widgets.inactive.corner_radius = rounding;
 
     vis.widgets.hovered.bg_fill = button_hov;
-    vis.widgets.hovered.bg_stroke = Stroke::new(1.0, highlight);
-    vis.widgets.hovered.fg_stroke = Stroke::new(1.0, text);
+    vis.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, highlight);
+    vis.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, text);
     vis.widgets.hovered.corner_radius = rounding;
 
     // Active (pressed) — Breeze blue fill, white text
     vis.widgets.active.bg_fill = highlight;
-    vis.widgets.active.bg_stroke = Stroke::new(1.0, highlight);
-    vis.widgets.active.fg_stroke = Stroke::new(1.5, Color32::WHITE);
+    vis.widgets.active.bg_stroke = Stroke::new(1.0_f32, highlight);
+    vis.widgets.active.fg_stroke = Stroke::new(1.5_f32, Color32::WHITE);
     vis.widgets.active.corner_radius = rounding;
 
     // Open (combo / menu dropdown) — slightly darker base
     vis.widgets.open.bg_fill = button_hov;
-    vis.widgets.open.bg_stroke = Stroke::new(1.0, highlight);
-    vis.widgets.open.fg_stroke = Stroke::new(1.0, text);
+    vis.widgets.open.bg_stroke = Stroke::new(1.0_f32, highlight);
+    vis.widgets.open.fg_stroke = Stroke::new(1.0_f32, text);
     vis.widgets.open.corner_radius = rounding;
 
     // Selection — Breeze blue at ~31% alpha (premultiplied: 61,174,233 * 80/255 ≈ 19,55,73)
     vis.selection.bg_fill = Color32::from_rgba_premultiplied(19, 55, 73, 80);
-    vis.selection.stroke = Stroke::new(1.0, highlight);
+    vis.selection.stroke = Stroke::new(1.0_f32, highlight);
 
     vis.hyperlink_color = Color32::from_rgb(0x29, 0x80, 0xb9);
-    vis.window_stroke = Stroke::new(1.0, border);
+    vis.window_stroke = Stroke::new(1.0_f32, border);
     vis.window_shadow = egui::epaint::Shadow::NONE;
     vis.window_corner_radius = CornerRadius::same(4);
 

@@ -185,7 +185,11 @@ fn run_bench(result: Arc<Mutex<MemLatencyResult>>, cancel: Arc<AtomicBool>) {
     let mut r = result.lock().unwrap();
     r.running = false;
     r.complete = !cancel.load(Ordering::Relaxed);
-    r.progress = 1.0;
+    // A cancelled run keeps its partial progress — forcing 1.0 would show a
+    // full bar for an aborted run.
+    if r.complete {
+        r.progress = 1.0;
+    }
     r.current_size = None;
 }
 
@@ -324,6 +328,11 @@ impl MemBandwidthBench {
     }
 
     pub fn start(&self) {
+        // No-op if already running — a second click would spawn a concurrent
+        // thread racing on `result` (and another ≥512 MiB allocation).
+        if self.result.lock().map(|r| r.running).unwrap_or(false) {
+            return;
+        }
         let result = Arc::clone(&self.result);
         let cancel = Arc::clone(&self.cancel);
         cancel.store(false, Ordering::Relaxed);

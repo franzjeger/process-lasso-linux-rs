@@ -236,7 +236,7 @@ impl SettingsTab {
             // Opacity slider — live preview handled in app.rs.
             let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
             egui::Frame::new()
-                .stroke(egui::Stroke::new(1.0, border_color))
+                .stroke(egui::Stroke::new(1.0_f32, border_color))
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -407,7 +407,7 @@ impl SettingsTab {
 fn group_box(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
     let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
     let frame = egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, border_color))
+        .stroke(egui::Stroke::new(1.0_f32, border_color))
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(4));
 

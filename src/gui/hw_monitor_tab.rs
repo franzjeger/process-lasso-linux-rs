@@ -93,7 +93,7 @@ impl HwMonitorTab {
         // Bottom separator doubles as the top border of the content below
         ui.painter().line_segment(
             [hdr_rect.left_bottom(), hdr_rect.right_bottom()],
-            Stroke::new(1.0, border_color),
+            Stroke::new(1.0_f32, border_color),
         );
 
         let hdr_color = ui.visuals().weak_text_color();
@@ -141,7 +141,7 @@ impl HwMonitorTab {
                 egui::pos2(name_edge, hdr_rect.min.y),
                 egui::pos2(name_edge, hdr_rect.max.y),
             ],
-            Stroke::new(1.0, border_color),
+            Stroke::new(1.0_f32, border_color),
         );
 
         // Resize handles between the four fixed columns (value/min/max/avg)
@@ -169,7 +169,7 @@ impl HwMonitorTab {
                     egui::pos2(hx, hdr_rect.min.y),
                     egui::pos2(hx, hdr_rect.max.y),
                 ],
-                Stroke::new(1.0, line_col),
+                Stroke::new(1.0_f32, line_col),
             );
             if resp.dragged() {
                 *delta = resp.drag_delta().x;
@@ -243,7 +243,7 @@ impl HwMonitorTab {
 
                         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
                         egui::Frame::new()
-                            .stroke(Stroke::new(1.0, border_color))
+                            .stroke(Stroke::new(1.0_f32, border_color))
                             .inner_margin(egui::Margin::same(1))
                             .show(ui, |ui| {
                                 // Group name header (no column labels — those are in the global header)
@@ -266,7 +266,7 @@ impl HwMonitorTab {
                                 );
                                 ui.painter().line_segment(
                                     [group_rect.left_bottom(), group_rect.right_bottom()],
-                                    Stroke::new(1.0, border_color),
+                                    Stroke::new(1.0_f32, border_color),
                                 );
 
                                 // Sensor rows
@@ -287,7 +287,7 @@ impl HwMonitorTab {
                                     if row_idx > 0 {
                                         ui.painter().line_segment(
                                             [row_rect.left_top(), row_rect.right_top()],
-                                            Stroke::new(1.0, border_color),
+                                            Stroke::new(1.0_f32, border_color),
                                         );
                                     }
 
@@ -481,6 +481,6 @@ fn draw_sparkline(
         .collect();
 
     for pair in points.windows(2) {
-        painter.line_segment([pair[0], pair[1]], Stroke::new(1.0, line_color));
+        painter.line_segment([pair[0], pair[1]], Stroke::new(1.0_f32, line_color));
     }
 }

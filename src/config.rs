@@ -286,7 +286,14 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
     let path = config_path();
     let tmp = path.with_extension("toml.tmp");
     let text = toml::to_string_pretty(cfg).map_err(|e| std::io::Error::other(e.to_string()))?;
-    fs::write(&tmp, text)?;
+    // fsync before rename — plain write+rename can leave an empty/truncated
+    // config after a crash or power loss on some filesystems.
+    {
+        use std::io::Write;
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+    }
     fs::rename(&tmp, &path)?;
     log::debug!("Config saved to {}", path.display());
     Ok(())

@@ -95,7 +95,22 @@ impl ksni::Tray for ArgusLassoTray {
             ksni::MenuItem::Separator,
             ksni::MenuItem::Standard(ksni::menu::StandardItem {
                 label: "Quit".into(),
-                activate: Box::new(|_| std::process::exit(0)),
+                activate: Box::new(|tray: &mut Self| {
+                    // Undo Gaming Mode side effects before exiting — a plain
+                    // exit(0) would leave CPUs permanently parked (offline)
+                    // and elevated nice values in place.
+                    let gaming_active = tray.state.lock().map(|s| s.gaming_active).unwrap_or(false);
+                    if gaming_active {
+                        let _ = tray.cmd_tx.send(monitor::DaemonCmd::SetGamingMode {
+                            active: false,
+                            elevate_nice: false,
+                            park: true,
+                        });
+                        // Give the daemon a moment to unpark before exiting.
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                    }
+                    std::process::exit(0);
+                }),
                 ..Default::default()
             }),
         ]
@@ -151,6 +166,7 @@ fn acquire_single_instance_lock() -> Option<nix::fcntl::Flock<std::fs::File>> {
         .join("argus-lasso.lock");
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(path)
         .ok()?;

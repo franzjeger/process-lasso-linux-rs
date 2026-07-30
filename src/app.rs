@@ -103,12 +103,11 @@ pub struct ArgusLassoApp {
     settings_tab: SettingsTab,
     log_tab: LogTab,
 
-    // Per-process dialogs (at most one open at a time)
-    affinity_dialog: Option<AffinityDialog>,
-    nice_dialog: Option<NiceDialog>,
-    ionice_dialog: Option<IoNiceDialog>,
-    // Track which PID the active dialog targets
-    dialog_pid: Option<u32>,
+    // Per-process dialogs — each tracks its own target PID so two open
+    // dialogs can never apply one process's settings to another.
+    affinity_dialog: Option<(u32, AffinityDialog)>,
+    nice_dialog: Option<(u32, NiceDialog)>,
+    ionice_dialog: Option<(u32, IoNiceDialog)>,
 
     // Process count for tab title
     proc_count: usize,
@@ -222,7 +221,6 @@ impl ArgusLassoApp {
             affinity_dialog: None,
             nice_dialog: None,
             ionice_dialog: None,
-            dialog_pid: None,
             proc_count: 0,
             throttled_count: 0,
             last_cpu_gen: 0,
@@ -254,11 +252,44 @@ impl ArgusLassoApp {
         }
     }
 
+    /// Send the actual kill signal. The target was SIGSTOPped for the undo
+    /// window, and a stopped process never sees SIGTERM — so always follow up
+    /// with SIGCONT to deliver it (harmless for SIGKILL).
+    fn deliver_kill(pid: u32, force: bool) -> Result<(), nix::Error> {
+        use nix::sys::signal::{self, Signal};
+        use nix::unistd::Pid;
+        let sig = if force {
+            Signal::SIGKILL
+        } else {
+            Signal::SIGTERM
+        };
+        let result = signal::kill(Pid::from_raw(pid as i32), sig);
+        let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGCONT);
+        result
+    }
+
     fn handle_table_action(&mut self, action: TableAction, _ctx: &Context) {
         match action {
             TableAction::Kill { pid, name, force } => {
                 use nix::sys::signal::{self, Signal};
                 use nix::unistd::Pid;
+                // A second kill within the undo window must not drop the first
+                // one on the floor (it would stay SIGSTOPped forever) — the
+                // user asked for it and never undid it, so execute it now.
+                if let Some(old) = self.pending_kill.take() {
+                    let msg = match Self::deliver_kill(old.pid, old.force) {
+                        Ok(_) => format!(
+                            "{}illed {} ({}) — superseded by new kill",
+                            if old.force { "Force k" } else { "K" },
+                            old.name,
+                            old.pid
+                        ),
+                        Err(e) => format!("Kill failed for {} ({}): {e}", old.name, old.pid),
+                    };
+                    if let Ok(mut s) = self.state.lock() {
+                        s.append_log(msg);
+                    }
+                }
                 let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGSTOP);
                 self.pending_kill = Some(crate::gui::process_tab::PendingKill {
                     pid,
@@ -294,16 +325,13 @@ impl ArgusLassoApp {
                 }
             }
             TableAction::SetAffinity { pid, name, current } => {
-                self.affinity_dialog = Some(AffinityDialog::new(&current, &name));
-                self.dialog_pid = Some(pid);
+                self.affinity_dialog = Some((pid, AffinityDialog::new(&current, &name)));
             }
             TableAction::SetNice { pid, name, current } => {
-                self.nice_dialog = Some(NiceDialog::new(current, &name));
-                self.dialog_pid = Some(pid);
+                self.nice_dialog = Some((pid, NiceDialog::new(current, &name)));
             }
             TableAction::SetIonice { pid, name } => {
-                self.ionice_dialog = Some(IoNiceDialog::new(&name));
-                self.dialog_pid = Some(pid);
+                self.ionice_dialog = Some((pid, IoNiceDialog::new(&name)));
             }
             TableAction::AddRule { name } => {
                 let mut rule = crate::rules::Rule::new_empty();
@@ -319,28 +347,26 @@ impl ArgusLassoApp {
 
     fn poll_dialogs(&mut self, ctx: &Context) {
         // Affinity dialog
-        if let Some(ref mut dlg) = self.affinity_dialog {
+        if let Some((pid, ref mut dlg)) = self.affinity_dialog {
             if let Some(result) = dlg.show(ctx, self.opacity) {
-                if let (Some(pid), cpulist) = (self.dialog_pid, result.as_str()) {
-                    if !cpulist.is_empty() && utils::set_affinity(pid, cpulist) {
-                        self.send(DaemonCmd::SetManualOverride {
-                            pid,
-                            duration_secs: 30.0,
-                        });
-                        if let Ok(mut s) = self.state.lock() {
-                            s.append_log(format!("[Manual] affinity={cpulist} → PID {pid}"));
-                        }
+                let cpulist = result.as_str();
+                if !cpulist.is_empty() && utils::set_affinity(pid, cpulist) {
+                    self.send(DaemonCmd::SetManualOverride {
+                        pid,
+                        duration_secs: 30.0,
+                    });
+                    if let Ok(mut s) = self.state.lock() {
+                        s.append_log(format!("[Manual] affinity={cpulist} → PID {pid}"));
                     }
                 }
                 self.affinity_dialog = None;
-                self.dialog_pid = None;
             }
         }
 
         // Nice dialog
-        if let Some(ref mut dlg) = self.nice_dialog {
+        if let Some((pid, ref mut dlg)) = self.nice_dialog {
             if let Some(result) = dlg.show(ctx, self.opacity) {
-                if let (Some(pid), Some(nice)) = (self.dialog_pid, result) {
+                if let Some(nice) = result {
                     if utils::set_nice(pid, nice) {
                         if let Ok(mut s) = self.state.lock() {
                             s.append_log(format!("[Manual] nice={nice} → PID {pid}"));
@@ -348,14 +374,13 @@ impl ArgusLassoApp {
                     }
                 }
                 self.nice_dialog = None;
-                self.dialog_pid = None;
             }
         }
 
         // IoNice dialog
-        if let Some(ref mut dlg) = self.ionice_dialog {
+        if let Some((pid, ref mut dlg)) = self.ionice_dialog {
             if let Some(result) = dlg.show(ctx, self.opacity) {
-                if let (Some(pid), Some((class, level))) = (self.dialog_pid, result) {
+                if let Some((class, level)) = result {
                     if utils::set_ionice(pid, class, Some(level)) {
                         if let Ok(mut s) = self.state.lock() {
                             s.append_log(format!(
@@ -365,7 +390,6 @@ impl ArgusLassoApp {
                     }
                 }
                 self.ionice_dialog = None;
-                self.dialog_pid = None;
             }
         }
     }
@@ -454,12 +478,14 @@ impl eframe::App for ArgusLassoApp {
 
         self.proc_count = snapshot.len();
         self.throttled_count = throttled_pids.len();
-        self.cpu_temp = read_cpu_temp();
 
         // Only push CPU bars + history when the daemon has emitted a new sample.
+        // The hwmon temp scan (a full /sys/class/hwmon walk) also lives here —
+        // it's far too expensive to run on every 60fps repaint.
         if cpu_gen != self.last_cpu_gen && !cpu_pcts.is_empty() {
             self.last_cpu_gen = cpu_gen;
             self.process_tab.update_cpu(cpu_pcts.clone());
+            self.cpu_temp = read_cpu_temp();
         }
 
         // Poll active dialogs
@@ -468,17 +494,10 @@ impl eframe::App for ArgusLassoApp {
         // Check pending kill
         if let Some(ref pk) = self.pending_kill {
             if std::time::Instant::now() >= pk.deadline {
-                use nix::sys::signal::{self, Signal};
-                use nix::unistd::Pid;
-                let sig = if pk.force {
-                    Signal::SIGKILL
-                } else {
-                    Signal::SIGTERM
-                };
                 let name = pk.name.clone();
                 let pid = pk.pid;
                 let force = pk.force;
-                let msg = match signal::kill(Pid::from_raw(pid as i32), sig) {
+                let msg = match Self::deliver_kill(pid, force) {
                     Ok(_) => format!(
                         "{}illed {} ({})",
                         if force { "Force k" } else { "K" },
@@ -791,19 +810,38 @@ impl eframe::App for ArgusLassoApp {
                         }
                     }
                     if save {
-                        if let Some(p) = crate::file_dialog::save("argus-lasso.log", "*.log *.txt")
-                        {
-                            let content = log_lines.iter().cloned().collect::<Vec<_>>().join("\n");
-                            let _ = std::fs::write(&p, content);
-                        }
+                        // Run the picker + write on a background thread — the
+                        // dialog subprocess blocks until closed and would
+                        // freeze the whole UI (same pattern as rules import).
+                        let content = log_lines.iter().cloned().collect::<Vec<_>>().join("\n");
+                        let state = self.state.clone();
+                        std::thread::spawn(move || {
+                            if let Some(p) =
+                                crate::file_dialog::save("argus-lasso.log", "*.log *.txt")
+                            {
+                                let msg = match std::fs::write(&p, content) {
+                                    Ok(_) => format!("Log saved to {}", p.display()),
+                                    Err(e) => format!("Log save FAILED: {e}"),
+                                };
+                                if let Ok(mut s) = state.lock() {
+                                    s.append_log(msg);
+                                }
+                            }
+                        });
                     }
                 }
             }
         });
 
         // Repaint when next display refresh is due — avoids continuous 60fps rendering.
-        ctx.request_repaint_after(std::time::Duration::from_millis(
-            config.monitor.display_refresh_interval_ms,
-        ));
+        // While a kill countdown is pending, repaint fast enough that the
+        // countdown updates and the SIGTERM actually fires near its deadline
+        // (with a long refresh interval it could otherwise fire seconds late).
+        let repaint_ms = if self.pending_kill.is_some() {
+            250
+        } else {
+            config.monitor.display_refresh_interval_ms
+        };
+        ctx.request_repaint_after(std::time::Duration::from_millis(repaint_ms));
     }
 }

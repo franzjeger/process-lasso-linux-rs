@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build & publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build (release)
+        run: cargo build --release --locked
+
+      - name: Package tarball
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          pkg="argus-lasso-${version}-x86_64-linux"
+          mkdir -p "${pkg}"
+          cp target/release/argus-lasso "${pkg}/"
+          cp -r dist LICENSE README.md Makefile assets/icon.png "${pkg}/"
+          tar czf "${pkg}.tar.gz" "${pkg}"
+          sha256sum "${pkg}.tar.gz" > "${pkg}.tar.gz.sha256"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            argus-lasso-*.tar.gz
+            argus-lasso-*.tar.gz.sha256
+          generate_release_notes: true

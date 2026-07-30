@@ -573,12 +573,25 @@ fn rapl_watts(prev_uj: u64, now_uj: u64, max_uj: u64, dt_secs: f64) -> Option<f3
     let delta_uj = if now_uj >= prev_uj {
         now_uj - prev_uj
     } else {
+        // Counter went backwards: either a genuine wrap at max_uj, or a reset
+        // (suspend/resume, driver reload) — a reset with the wrap formula
+        // yields a delta near max_uj and a bogus multi-kilowatt spike that
+        // permanently pollutes the max/avg stats. If max_uj is unknown
+        // (u64::MAX sentinel) we can't distinguish, so drop the sample.
+        if max_uj == u64::MAX {
+            return None;
+        }
         max_uj
             .saturating_sub(prev_uj)
             .saturating_add(now_uj)
             .saturating_add(1)
     };
-    Some((delta_uj as f64 / 1_000_000.0 / dt_secs) as f32)
+    let watts = delta_uj as f64 / 1_000_000.0 / dt_secs;
+    // Sanity cap: no consumer package draws 10 kW — treat as reset, not wrap.
+    if watts > 10_000.0 {
+        return None;
+    }
+    Some(watts as f32)
 }
 
 fn collect_rapl_power() -> Vec<GroupReading> {
@@ -792,14 +805,24 @@ fn read_disk_raw() -> HashMap<String, [u64; 2]> {
             continue;
         }
         let dev = p[2].to_string();
-        // Skip plain partition entries (sdXN, nvmeXnXpX, etc.) — keep whole disks
-        let is_partition = dev
+        // Skip partition entries — keep whole disks. For sdX, any trailing
+        // digit means partition; for nvme/mmcblk, the whole disk itself ends
+        // in a digit (nvme0n1), so partitions are the "p<digits>" suffix
+        // (nvme0n1p1, mmcblk0p2) — without that check every NVMe partition
+        // was double-counted alongside its disk.
+        let ends_in_digit = dev
             .chars()
             .last()
             .map(|c| c.is_ascii_digit())
-            .unwrap_or(false)
-            && !dev.starts_with("nvme")
-            && !dev.starts_with("mmcblk");
+            .unwrap_or(false);
+        let is_partition = if dev.starts_with("nvme") || dev.starts_with("mmcblk") {
+            let trailing_digits = dev.chars().rev().take_while(|c| c.is_ascii_digit()).count();
+            dev.as_bytes()
+                .get(dev.len().saturating_sub(trailing_digits + 1))
+                == Some(&b'p')
+        } else {
+            ends_in_digit
+        };
         if is_partition {
             continue;
         }

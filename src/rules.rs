@@ -118,6 +118,9 @@ impl Rule {
 pub struct RuleEngine {
     rules: Vec<Rule>,
     log_callback: Option<Box<dyn Fn(String) + Send>>,
+    /// (rule_id, pid) pairs whose set_nice already failed — retried/logged once,
+    /// not every enforcement tick (a permission failure never heals by itself).
+    nice_failed: std::collections::HashSet<(String, u32)>,
 }
 
 impl RuleEngine {
@@ -125,6 +128,7 @@ impl RuleEngine {
         Self {
             rules: Vec::new(),
             log_callback: None,
+            nice_failed: std::collections::HashSet::new(),
         }
     }
 
@@ -141,6 +145,7 @@ impl RuleEngine {
 
     pub fn load_rules(&mut self, configs: &[RuleConfig]) {
         self.rules = configs.iter().map(Rule::from_config).collect();
+        self.nice_failed.clear();
     }
 
     pub fn get_rules(&self) -> &[Rule] {
@@ -164,6 +169,8 @@ impl RuleEngine {
     }
 
     pub fn update_rule(&mut self, updated: Rule) {
+        // Editing a rule may change its nice target — give it a fresh attempt.
+        self.nice_failed.retain(|(rid, _)| rid != &updated.rule_id);
         if let Some(r) = self.rules.iter_mut().find(|r| r.rule_id == updated.rule_id) {
             *r = updated;
         }
@@ -173,72 +180,104 @@ impl RuleEngine {
         self.rules.iter().map(|r| r.to_config()).collect()
     }
 
+    /// Returns true if any enabled rule matches this process name — independent
+    /// of whether applying it would change anything right now. Callers deciding
+    /// between "rule-managed" and "apply default affinity" must use this, not
+    /// the action list from apply_to_process (an already-correct process yields
+    /// no actions but is still rule-managed).
+    pub fn matches_any(&self, proc_name: &str) -> bool {
+        self.rules.iter().any(|r| r.matches(proc_name))
+    }
+
     /// Apply all matching rules to a process. Returns list of action descriptions.
     /// All matching rules are applied (not first-match-stop).
-    /// Dirty-checks each attribute before calling the syscall so that periodic
-    /// re-enforcement does not spam the log with no-op "already correct" entries.
-    pub fn apply_to_process(&self, pid: u32, proc_name: &str) -> Vec<String> {
-        let mut actions = Vec::new();
-        for rule in &self.rules {
-            if !rule.matches(proc_name) {
-                continue;
-            }
+    pub fn apply_to_process(&mut self, pid: u32, proc_name: &str) -> Vec<String> {
+        let mut nice_failed = std::mem::take(&mut self.nice_failed);
+        let actions = apply_rules(&self.rules, pid, proc_name, &mut nice_failed, &|m| {
+            self.log(m)
+        });
+        self.nice_failed = nice_failed;
+        actions
+    }
+}
 
-            // ── Affinity ─────────────────────────────────────────────────
-            if let Some(ref aff) = rule.affinity {
-                let target = utils::cpulist_to_set(aff).unwrap_or_default();
-                let current_str = utils::get_affinity_str(pid);
-                let current = utils::cpulist_to_set(&current_str).unwrap_or_default();
-                if current != target && utils::set_affinity(pid, aff) {
+/// Enforce a rule slice against one process. Standalone so the monitor daemon
+/// can clone the rules and run enforcement WITHOUT holding the RuleEngine
+/// mutex across procfs reads and renice/ionice subprocess spawns (the GUI
+/// locks the same engine to edit rules and would freeze otherwise).
+/// Dirty-checks each attribute before calling the syscall so that periodic
+/// re-enforcement does not spam the log with no-op "already correct" entries.
+pub fn apply_rules(
+    rules: &[Rule],
+    pid: u32,
+    proc_name: &str,
+    nice_failed: &mut std::collections::HashSet<(String, u32)>,
+    log: &impl Fn(String),
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    for rule in rules {
+        if !rule.matches(proc_name) {
+            continue;
+        }
+
+        // ── Affinity ─────────────────────────────────────────────────
+        if let Some(ref aff) = rule.affinity {
+            let target = utils::cpulist_to_set(aff).unwrap_or_default();
+            let current_str = utils::get_affinity_str(pid);
+            let current = utils::cpulist_to_set(&current_str).unwrap_or_default();
+            if current != target && utils::set_affinity(pid, aff) {
+                let msg = format!(
+                    "[Rule:{}] Set affinity={} on {}({})",
+                    rule.name, aff, proc_name, pid
+                );
+                log(msg.clone());
+                actions.push(msg);
+            }
+        }
+
+        // ── Nice ─────────────────────────────────────────────────────
+        if let Some(nice) = rule.nice {
+            let fail_key = (rule.rule_id.clone(), pid);
+            let current_nice = utils::get_nice(pid);
+            if current_nice != Some(nice) && !nice_failed.contains(&fail_key) {
+                if utils::set_nice(pid, nice) {
                     let msg = format!(
-                        "[Rule:{}] Set affinity={} on {}({})",
-                        rule.name, aff, proc_name, pid
+                        "[Rule:{}] Set nice={} on {}({})",
+                        rule.name, nice, proc_name, pid
                     );
-                    self.log(msg.clone());
+                    log(msg.clone());
                     actions.push(msg);
-                }
-            }
-
-            // ── Nice ─────────────────────────────────────────────────────
-            if let Some(nice) = rule.nice {
-                let current_nice = utils::get_nice(pid);
-                if current_nice != Some(nice) {
-                    if utils::set_nice(pid, nice) {
-                        let msg = format!(
-                            "[Rule:{}] Set nice={} on {}({})",
-                            rule.name, nice, proc_name, pid
-                        );
-                        self.log(msg.clone());
-                        actions.push(msg);
-                    } else {
-                        let msg = format!(
-                            "[Rule:{}] nice={} FAILED (root needed?) for {}({})",
-                            rule.name, nice, proc_name, pid
-                        );
-                        self.log(msg.clone());
-                        actions.push(msg);
-                    }
-                }
-            }
-
-            // ── Ionice ───────────────────────────────────────────────────
-            if let Some(class) = rule.ionice_class {
-                let target_level = rule.ionice_level.unwrap_or(0);
-                let current = utils::get_ionice_raw(pid);
-                if current != Some((class, target_level))
-                    && utils::set_ionice(pid, class, rule.ionice_level)
-                {
+                } else {
+                    // Don't retry every tick: a permission failure would spawn
+                    // a renice subprocess and a log line every 500 ms forever.
+                    nice_failed.insert(fail_key);
                     let msg = format!(
-                        "[Rule:{}] Set ionice class={} level={:?} on {}({})",
-                        rule.name, class, rule.ionice_level, proc_name, pid
+                        "[Rule:{}] nice={} FAILED (root needed?) for {}({}) — giving up for this process",
+                        rule.name, nice, proc_name, pid
                     );
-                    self.log(msg.clone());
+                    log(msg.clone());
                     actions.push(msg);
                 }
             }
         }
-        actions
+
+        // ── Ionice ───────────────────────────────────────────────────
+        if let Some(class) = rule.ionice_class {
+            let target_level = rule.ionice_level.unwrap_or(0);
+            let current = utils::get_ionice_raw(pid);
+            if current != Some((class, target_level))
+                && utils::set_ionice(pid, class, rule.ionice_level)
+            {
+                let msg = format!(
+                    "[Rule:{}] Set ionice class={} level={:?} on {}({})",
+                    rule.name, class, rule.ionice_level, proc_name, pid
+                );
+                log(msg.clone());
+                actions.push(msg);
+            }
+        }
     }
+    actions
 }
 
 impl Default for RuleEngine {

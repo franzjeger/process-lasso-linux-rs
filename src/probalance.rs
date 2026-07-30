@@ -173,7 +173,32 @@ impl ProBalance {
     }
 
     pub fn update_config(&mut self, cfg: ProBalanceConfig) {
+        // Disabling ProBalance must not strand processes at their penalty
+        // nice — restore everything we throttled before dropping the state.
+        if !cfg.enabled && self.cfg.enabled {
+            self.restore_all("ProBalance disabled");
+        }
         self.cfg = cfg;
+    }
+
+    /// Restore every currently throttled process to its original nice and
+    /// forget all tracked state.
+    fn restore_all(&mut self, reason: &str) {
+        let mut pending_logs: Vec<String> = Vec::new();
+        for (&pid, entry) in self.states.iter() {
+            if entry.state == ProcState::Throttled {
+                let orig = entry.original_nice.unwrap_or(0);
+                if utils::set_nice(pid, orig) {
+                    pending_logs.push(format!(
+                        "[ProBalance] RESTORE ({reason}) PID {pid} nice→{orig}"
+                    ));
+                }
+            }
+        }
+        self.states.clear();
+        for msg in pending_logs {
+            self.log(msg);
+        }
     }
 
     pub fn set_log_callback<F: Fn(String) + Send + 'static>(&mut self, cb: F) {
@@ -207,6 +232,19 @@ impl ProBalance {
 
         for proc in snapshot {
             if self.is_exempt(&proc.name) {
+                // A process exempted *after* being throttled must be restored,
+                // not silently abandoned at its penalty nice.
+                if let Some(entry) = self.states.remove(&proc.pid) {
+                    if entry.state == ProcState::Throttled {
+                        let orig = entry.original_nice.unwrap_or(0);
+                        if utils::set_nice(proc.pid, orig) {
+                            pending_logs.push(format!(
+                                "[ProBalance] RESTORE (exempted) {}({}) nice→{}",
+                                proc.name, proc.pid, orig
+                            ));
+                        }
+                    }
+                }
                 continue;
             }
 
