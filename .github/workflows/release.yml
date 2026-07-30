@@ -21,8 +21,16 @@ permissions:
 
 jobs:
   release:
-    name: build & publish release
-    runs-on: ubuntu-latest
+    name: build & publish (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
     steps:
       - uses: actions/checkout@v5
 
@@ -53,7 +61,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version="${RELEASE_TAG#v}"
-          pkg="argus-lasso-${version}-x86_64-linux"
+          pkg="argus-lasso-${version}-${{ matrix.arch }}-linux"
           mkdir -p "${pkg}"
           cp target/release/argus-lasso "${pkg}/"
           cp -r dist LICENSE README.md Makefile assets/icon.png "${pkg}/"
