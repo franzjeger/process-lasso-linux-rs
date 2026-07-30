@@ -250,8 +250,11 @@ impl OverviewTab {
                     );
                     rx += pid_w;
                     // Name
-                    let name_display = if proc.name.len() > 22 {
-                        format!("{}…", &proc.name[..21])
+                    // Truncate on chars, not bytes — a byte slice can split a
+                    // multibyte UTF-8 name and panic every frame.
+                    let name_display = if proc.name.chars().count() > 22 {
+                        let truncated: String = proc.name.chars().take(21).collect();
+                        format!("{truncated}…")
                     } else {
                         proc.name.clone()
                     };

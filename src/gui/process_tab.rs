@@ -370,7 +370,24 @@ impl ProcessTab {
                 })
                 .then(a.pid.cmp(&b.pid))
             }),
-            SortCol::Status => sorted.sort_by_key(|a| a.pid),
+            SortCol::Status => sorted.sort_by(|a, b| {
+                // Rank: suspended (2) > throttled (1) > running (0)
+                let rank = |p: &crate::monitor::ProcInfo| -> u8 {
+                    if suspended_pids.contains(&p.pid) {
+                        2
+                    } else if throttled_pids.contains(&p.pid) {
+                        1
+                    } else {
+                        0
+                    }
+                };
+                (if asc {
+                    rank(a).cmp(&rank(b))
+                } else {
+                    rank(b).cmp(&rank(a))
+                })
+                .then(a.pid.cmp(&b.pid))
+            }),
         }
 
         // Offline CPUs for affinity display
@@ -390,9 +407,12 @@ impl ProcessTab {
         let mut new_selected = self.selected_pid;
         let mut action = TableAction::None;
 
-        // Delete key — kill the currently selected process
+        // Delete key — kill the currently selected process.
+        // Only when no widget (e.g. the filter text box) has keyboard focus,
+        // otherwise editing text could kill the selected process.
+        let text_has_focus = ui.ctx().memory(|m| m.focused().is_some());
         ui.input(|i| {
-            if i.key_pressed(egui::Key::Delete) {
+            if i.key_pressed(egui::Key::Delete) && !text_has_focus {
                 if let Some(sel_pid) = self.selected_pid {
                     if let Some(proc) = sorted.iter().find(|p| p.pid == sel_pid) {
                         action = TableAction::Kill {

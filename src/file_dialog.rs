@@ -68,11 +68,12 @@ pub fn open(filter: &str) -> Option<PathBuf> {
 pub fn save(default_name: &str, filter: &str) -> Option<PathBuf> {
     let s = match backend()? {
         Backend::Kdialog => run(&["kdialog", "--getsavefilename", default_name, filter]),
+        // No --confirm-overwrite: zenity ≥ 3.91 (GTK4) removed the flag and
+        // exits non-zero when it's passed, silently breaking saving.
         Backend::Zenity => run(&[
             "zenity",
             "--file-selection",
             "--save",
-            "--confirm-overwrite",
             &format!("--filename={default_name}"),
         ]),
         Backend::Qarma => run(&[

@@ -44,6 +44,8 @@ pub struct GamingModeTab {
     // Helper status
     pub helper_status_text: String,
     pub helper_ok: bool,
+    /// Helper installed with a working sudoers rule but content is outdated.
+    pub helper_outdated: bool,
 
     // Nice elevation
     pub elevate_nice: bool,
@@ -107,6 +109,7 @@ impl GamingModeTab {
             smt_siblings,
             helper_status_text: String::new(),
             helper_ok,
+            helper_outdated: false,
             elevate_nice: true,
             cpu_status_text: String::new(),
             cpu_status_color: None,
@@ -140,10 +143,12 @@ impl GamingModeTab {
     }
 
     fn refresh_helper_status(&mut self) {
-        self.helper_ok = is_helper_current() && is_sudoers_installed();
+        let sudoers_ok = is_sudoers_installed();
+        self.helper_ok = is_helper_current() && sudoers_ok;
+        self.helper_outdated = !self.helper_ok && is_helper_installed() && sudoers_ok;
         self.helper_status_text = if self.helper_ok {
             "Helper installed — parking + nice -1 available".into()
-        } else if is_helper_installed() && is_sudoers_installed() {
+        } else if self.helper_outdated {
             "Helper needs update — click 'Install / Update Helper'".into()
         } else {
             "Helper not installed — click 'Install / Update Helper' to enable parking".into()
@@ -403,9 +408,11 @@ impl GamingModeTab {
             }
 
             // Helper status
+            // Use the cached status — probing sudo/sysfs here would fork a
+            // `sudo -n` child process on every repaint of this tab.
             let helper_color = if self.helper_ok {
                 crate::gui::theme::Breeze::POSITIVE
-            } else if is_helper_installed() && is_sudoers_installed() {
+            } else if self.helper_outdated {
                 crate::gui::theme::Breeze::WARNING
             } else {
                 crate::gui::theme::Breeze::NEGATIVE

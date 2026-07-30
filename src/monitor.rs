@@ -1,7 +1,7 @@
 //! Monitor daemon thread: process scanning, rule enforcement, ProBalance.
 //!
 //! Mirrors Python monitor.py MonitorThread:
-//!   - 0.1s base tick
+//!   - 0.5s base tick (bounded by rule_enforce_interval_ms)
 //!   - Every 0.5s (rule_enforce_interval_ms): enforce all rules on running processes
 //!   - Every 1.0s: ProBalance tick
 //!   - Every 2.0s (display_refresh_interval_ms): update AppState snapshot
@@ -212,7 +212,6 @@ fn run_loop(
     // HW alert cooldown: sensor_label → last alert time
     let mut last_alert_times: HashMap<String, Instant> = HashMap::new();
 
-    let tick = Duration::from_millis(500);
     let mut last_enforce = Instant::now();
     let mut last_pb = Instant::now();
     let mut last_snapshot = Instant::now();
@@ -223,6 +222,9 @@ fn run_loop(
     let mut prev_sys_total: u64 = 0;
     // Cached snapshot — rebuilt only on enforce/display cadence
     let mut raw_snapshot: Vec<ProcInfo> = Vec::new();
+    // (rule_id, pid) pairs whose set_nice failed during enforcement — retried
+    // once, not every 500ms tick; pruned when the PID dies.
+    let mut enforce_nice_failed: HashSet<(String, u32)> = HashSet::new();
 
     loop {
         // ── Drain commands from GUI ─────────────────────────────────────────
@@ -318,8 +320,12 @@ fn run_loop(
 
             let current_pids: HashSet<u32> = raw_snapshot.iter().map(|p| p.pid).collect();
 
-            // Prune dead PIDs from original_affinities to avoid unbounded growth
+            // Prune dead PIDs from per-PID maps: avoids unbounded growth, and —
+            // for gaming_niced — stops a reused PID from getting an unrelated
+            // process's nice restored onto it when Gaming Mode is disabled.
             original_affinities.retain(|pid, _| current_pids.contains(pid));
+            gaming_niced.retain(|pid, _| current_pids.contains(pid));
+            enforce_nice_failed.retain(|(_, pid)| current_pids.contains(pid));
 
             // ── New PIDs: apply rules or default affinity ───────────────────
             let new_pids: HashSet<u32> = current_pids.difference(&known_pids).copied().collect();
@@ -351,12 +357,26 @@ fn run_loop(
         if now.duration_since(last_enforce) >= enforce_interval {
             // Expire stale manual overrides
             manual_overrides.retain(|_, exp| *exp > now);
-            if let Ok(re) = rule_engine.lock() {
+            // Clone the rules and enforce WITHOUT holding the engine lock:
+            // enforcement does procfs reads and renice/ionice subprocess spawns
+            // per process, and the GUI thread locks the same engine to edit
+            // rules — holding it here would freeze the UI for the whole pass.
+            let rules: Vec<crate::rules::Rule> = rule_engine
+                .lock()
+                .map(|re| re.get_rules().to_vec())
+                .unwrap_or_default();
+            if !rules.is_empty() {
                 for proc in &raw_snapshot {
                     if manual_overrides.contains_key(&proc.pid) {
                         continue;
                     }
-                    re.apply_to_process(proc.pid, &proc.name);
+                    crate::rules::apply_rules(
+                        &rules,
+                        proc.pid,
+                        &proc.name,
+                        &mut enforce_nice_failed,
+                        &log_cb,
+                    );
                 }
             }
             last_enforce = now;
@@ -474,6 +494,9 @@ fn run_loop(
             last_snapshot = now;
         }
 
+        // Sleep no longer than the enforcement interval so a sub-500ms
+        // rule_enforce_interval_ms is honoured instead of silently ignored.
+        let tick = enforce_interval.clamp(Duration::from_millis(50), Duration::from_millis(500));
         std::thread::sleep(tick);
     }
 }
@@ -492,9 +515,14 @@ fn collect_snapshot(
     let mut new_io: HashMap<u32, (u64, u64)> = HashMap::new();
     let mut snapshot: Vec<ProcInfo> = Vec::new();
 
-    // Read total system CPU jiffies for CPU% calculation
+    // Read total system CPU jiffies for CPU% calculation.
+    // sys_delta is summed across ALL CPUs, so we scale by the online CPU count
+    // to get per-core percentages (100% = one core fully busy, like top).
+    // Without this, a busy-loop on a 16-core machine reads ~6% and ProBalance
+    // thresholds (default 85%) can never trigger.
     let sys_total = read_sys_cpu_total();
     let sys_delta = sys_total.saturating_sub(prev_sys_total) as f32;
+    let n_cpus = utils::get_online_cpus().len().max(1) as f32;
 
     let procs = match all_processes() {
         Ok(p) => p,
@@ -524,7 +552,9 @@ fn collect_snapshot(
         let prev_ticks = prev_times.get(&pid).copied().unwrap_or(proc_ticks);
         let delta_ticks = proc_ticks.saturating_sub(prev_ticks) as f32;
         let cpu_percent = if sys_delta > 0.0 {
-            (delta_ticks / sys_delta * 100.0).min(100.0)
+            // Multithreaded processes can legitimately exceed 100% (one core);
+            // cap at the machine total.
+            (delta_ticks / sys_delta * n_cpus * 100.0).min(n_cpus * 100.0)
         } else {
             0.0
         };
@@ -600,24 +630,25 @@ fn read_sys_cpu_total() -> u64 {
 }
 
 fn collect_cpu_percents() -> Vec<f32> {
-    // Read per-CPU utilisation from procfs
-    // We use a static to store previous values
+    // Read per-CPU utilisation from procfs.
+    // Samples are keyed by CPU number (parsed from the "cpuN" label), NOT by
+    // line position: after a park/unpark the set of online CPUs changes, and
+    // diffing consecutive samples by index would attribute one CPU's jiffies
+    // to another for the first sample after every topology change.
     use std::sync::Mutex as StdMutex;
 
-    static PREV: StdMutex<Option<(Vec<[u64; 10]>, std::time::Instant)>> = StdMutex::new(None);
+    static PREV: StdMutex<Option<HashMap<u32, [u64; 10]>>> = StdMutex::new(None);
 
     let total_cpus = utils::get_cpu_count() as usize;
-    let online = utils::get_online_cpus();
-
     let new_stats = read_percpu_stats();
     let mut result = vec![0.0f32; total_cpus];
 
-    let mut online_sorted: Vec<u32> = online.iter().copied().collect();
-    online_sorted.sort_unstable();
-
     let mut prev_guard = PREV.lock().unwrap();
-    if let Some((ref prev_stats, _)) = *prev_guard {
-        for (cpu_idx, (prev, new)) in prev_stats.iter().zip(new_stats.iter()).enumerate() {
+    if let Some(prev_map) = prev_guard.as_ref() {
+        for (cpu_num, new) in &new_stats {
+            let Some(prev) = prev_map.get(cpu_num) else {
+                continue; // CPU just came online — no baseline yet
+            };
             // Fields: user nice system idle iowait irq softirq steal guest guest_nice
             let prev_total: u64 = prev.iter().sum();
             let new_total: u64 = new.iter().sum();
@@ -628,29 +659,32 @@ fn collect_cpu_percents() -> Vec<f32> {
             } else {
                 0.0
             };
-            if let Some(&cpu_num) = online_sorted.get(cpu_idx) {
-                if (cpu_num as usize) < total_cpus {
-                    result[cpu_num as usize] = pct;
-                }
+            if (*cpu_num as usize) < total_cpus {
+                result[*cpu_num as usize] = pct;
             }
         }
     }
-    *prev_guard = Some((new_stats, std::time::Instant::now()));
+    *prev_guard = Some(new_stats.into_iter().collect());
     result
 }
 
-fn read_percpu_stats() -> Vec<[u64; 10]> {
+fn read_percpu_stats() -> Vec<(u32, [u64; 10])> {
     let mut result = Vec::new();
     if let Ok(text) = std::fs::read_to_string("/proc/stat") {
         for line in text.lines() {
             if line.starts_with("cpu") && line.len() > 3 && line.as_bytes()[3].is_ascii_digit() {
+                let mut toks = line.split_whitespace();
+                let label = toks.next().unwrap_or("");
+                let Ok(cpu_num) = label[3..].parse::<u32>() else {
+                    continue;
+                };
                 let mut fields = [0u64; 10];
-                for (i, tok) in line.split_whitespace().skip(1).enumerate() {
+                for (i, tok) in toks.enumerate() {
                     if i < 10 {
                         fields[i] = tok.parse().unwrap_or(0);
                     }
                 }
-                result.push(fields);
+                result.push((cpu_num, fields));
             }
         }
     }
@@ -692,13 +726,19 @@ fn apply_new_pid(
     let pid = proc.pid;
     capture_original(pid, original_affinities);
 
-    let actions = if let Ok(re) = rule_engine.lock() {
-        re.apply_to_process(pid, &proc.name)
+    // "Matched" must come from the rule patterns, NOT from whether applying
+    // produced actions: a matching rule whose settings are already correct
+    // returns no actions, and treating that as "unmatched" would clobber the
+    // rule's affinity with the default affinity below.
+    let matched = if let Ok(mut re) = rule_engine.lock() {
+        let m = re.matches_any(&proc.name);
+        re.apply_to_process(pid, &proc.name);
+        m
     } else {
-        Vec::new()
+        false
     };
 
-    if !actions.is_empty() {
+    if matched {
         // Rule matched — if gaming mode + elevate_nice, apply nice -1 and pin to preferred cores
         if gaming_mode && gaming_elevate_nice && !gaming_niced.contains_key(&pid) {
             let orig_nice = proc.nice;
@@ -807,12 +847,14 @@ fn reapply_defaults(
             .collect();
         let name = utils::resolve_name(comm, &cmdline_raw);
 
-        let actions = if let Ok(re) = rule_engine.lock() {
-            re.apply_to_process(pid, &name)
+        let matched = if let Ok(mut re) = rule_engine.lock() {
+            let m = re.matches_any(&name);
+            re.apply_to_process(pid, &name);
+            m
         } else {
-            Vec::new()
+            false
         };
-        if actions.is_empty() && utils::set_affinity(pid, &default_aff) {
+        if !matched && utils::set_affinity(pid, &default_aff) {
             log_cb(format!("[Default] affinity={default_aff} → {name}({pid})"));
         }
     }
@@ -841,11 +883,12 @@ fn check_hw_alerts(
             }
             if sensor.value >= threshold {
                 let key = format!("{}/{}", group.name, sensor.label);
-                let last = last_alert
+                // No subtraction from Instant::now() — that can underflow and
+                // panic early after boot. Absent entry = alert is due.
+                let due = last_alert
                     .get(&key)
-                    .copied()
-                    .unwrap_or(Instant::now() - cooldown - Duration::from_secs(1));
-                if now.duration_since(last) >= cooldown {
+                    .is_none_or(|t| now.duration_since(*t) >= cooldown);
+                if due {
                     last_alert.insert(key.clone(), now);
                     let msg = format!(
                         "[HW Alert] {} — {} {:.0}{}  (threshold: {:.0}°C)",
