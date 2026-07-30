@@ -75,4 +75,20 @@ jobs:
           files: |
             argus-lasso-*.tar.gz
             argus-lasso-*.tar.gz.sha256
-          generate_release_notes: true
+          # Notes are written by the release-notes job below — generating them
+          # here would append one copy per matrix job / re-run.
+          generate_release_notes: false
+
+  release-notes:
+    name: regenerate release notes
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Overwrite notes with freshly generated ones (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$tag" --jq .body > notes.md
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
