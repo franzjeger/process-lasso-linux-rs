@@ -273,6 +273,14 @@ impl SettingsTab {
             );
             ui.add_space(tokens::SPACE_S);
 
+            form_row(ui, "Rule enforce interval", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.config.monitor.rule_enforce_interval_ms)
+                        .range(100..=10000)
+                        .suffix(" ms"),
+                );
+            });
+
             form_row(ui, "Display refresh", |ui| {
                 const PICKS: [u64; 4] = [500, 1000, 2000, 5000];
                 let sel = PICKS
@@ -286,14 +294,6 @@ impl SettingsTab {
                 ui.add(
                     egui::DragValue::new(&mut self.config.monitor.display_refresh_interval_ms)
                         .range(500..=10000)
-                        .suffix(" ms"),
-                );
-            });
-
-            form_row(ui, "Rule enforce interval", |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut self.config.monitor.rule_enforce_interval_ms)
-                        .range(100..=10000)
                         .suffix(" ms"),
                 );
             });
