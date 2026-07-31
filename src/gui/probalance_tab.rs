@@ -353,10 +353,10 @@ fn restore_progress(ui: &mut Ui, elapsed_low: f32, hysteresis: f32, color: egui:
     });
 }
 
-/// A filled chip with a ✕ affordance. Returns true when the user removes it.
+/// A filled chip with a × affordance. Returns true when the user removes it.
 fn removable_chip(ui: &mut Ui, label: &str) -> bool {
     use crate::gui::theme::{self as th, tokens};
-    let text = format!("{label}  ✕");
+    let text = format!("{label}  ×");
     let btn = egui::Button::new(
         RichText::new(text)
             .size(tokens::FONT_LABEL)

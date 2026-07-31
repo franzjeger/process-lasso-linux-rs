@@ -526,7 +526,11 @@ impl GamingModeTab {
                     ui.add_space(tokens::SPACE_M);
                     legend_swatch(ui, s.accent, "kept online");
                     legend_swatch(ui, ui.visuals().weak_text_color(), "parked by you");
-                    legend_swatch(ui, s.manual, &nonpref_label);
+                    // Uniform-topology machines have no non-preferred group, so
+                    // the third swatch would render with an empty caption.
+                    if !nonpref_label.is_empty() {
+                        legend_swatch(ui, s.manual, &nonpref_label);
+                    }
                 });
                 ui.add_space(tokens::SPACE_XS);
                 ui.label(
@@ -735,7 +739,7 @@ impl GamingModeTab {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let reset = egui::Button::new(RichText::new("↩  Reset all").color(s.negative))
+                    let reset = egui::Button::new(RichText::new("Reset all").color(s.negative))
                         .stroke(egui::Stroke::new(1.0_f32, s.negative));
                     if ui
                         .add(reset)
