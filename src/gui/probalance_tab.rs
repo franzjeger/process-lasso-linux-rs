@@ -280,24 +280,9 @@ impl ProBalanceTab {
     }
 }
 
-/// Render a QGroupBox-style bordered section with a top-left title (matching Qt QGroupBox).
+/// Thin wrapper over the shared card container (single source of truth).
 fn group_box(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
-    let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-    let frame = egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0_f32, border_color))
-        .inner_margin(egui::Margin::same(8))
-        .corner_radius(egui::CornerRadius::same(4));
-
-    frame.show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        ui.label(
-            egui::RichText::new(title)
-                .strong()
-                .color(ui.visuals().strong_text_color()),
-        );
-        ui.add_space(4.0);
-        add_contents(ui);
-    });
+    crate::gui::theme::card(ui, title, add_contents);
 }
 
 /// Render a right-aligned label in a fixed-width grid cell.

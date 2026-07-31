@@ -376,28 +376,103 @@ impl GamingModeTab {
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            // ── Topology info ─────────────────────────────────────────────
-            ui.label(RichText::new("CPU Topology").strong());
-            ui.label(&self.topo_description);
-            ui.add_space(8.0);
-            ui.separator();
-
-            // ── Gaming Mode / CPU Parking ─────────────────────────────────
-            ui.label(RichText::new("Gaming Mode — CPU Parking").strong());
-            if let Some(ref topo) = self.topo {
-                if topo.has_asymmetry() {
-                    ui.label(format!(
-                        "Parks {} so the game initialises its thread pool on {} only.",
-                        topo.non_preferred_label, topo.preferred_label));
-                } else {
-                    ui.label("Parks non-preferred CPUs so the game initialises its thread pool correctly.");
-                }
-            } else {
-                ui.label("Parks non-preferred CPUs so the game initialises its thread pool correctly.");
-            }
-            ui.add_space(4.0);
+            use crate::gui::theme::tokens;
 
             let has_asym = self.topo.as_ref().map(|t| t.has_asymmetry()).unwrap_or(false);
+
+            // ── Helper banner: the blocking prerequisite gets one clear action
+            if !self.helper_ok {
+                let color = if self.helper_outdated {
+                    crate::gui::theme::Breeze::WARNING
+                } else {
+                    crate::gui::theme::Breeze::NEGATIVE
+                };
+                if crate::gui::theme::banner(
+                    ui,
+                    color,
+                    &self.helper_status_text,
+                    Some("Install / Update…"),
+                ) {
+                    self.show_install_dialog = true;
+                }
+                ui.add_space(tokens::SPACE_S);
+            }
+
+            // ── Status card: the one thing users come here for ────────────
+            crate::gui::theme::card(ui, "Gaming Mode", |ui| {
+                ui.label(RichText::new(&self.topo_description).weak());
+                ui.add_space(tokens::SPACE_XS);
+
+                let btn_text = if self.parked {
+                    "Disable Gaming Mode (Unpark CPUs)"
+                } else {
+                    "Enable Gaming Mode (Park non-preferred CPUs)"
+                };
+                let btn_color = if self.parked {
+                    egui::Color32::from_rgb(30, 74, 42)
+                } else {
+                    egui::Color32::from_rgb(76, 29, 149)
+                };
+                let enabled = has_asym && self.helper_ok && !self.parking_in_progress;
+                ui.add_enabled_ui(enabled, |ui| {
+                    let btn =
+                        egui::Button::new(RichText::new(btn_text).strong().color(Color32::WHITE))
+                            .min_size(egui::vec2(ui.available_width(), 40.0))
+                            .fill(btn_color);
+                    if ui.add(btn).clicked() {
+                        if self.parked {
+                            self.disable_gaming_mode();
+                        } else {
+                            self.enable_gaming_mode();
+                        }
+                    }
+                });
+                let status_color = self
+                    .cpu_status_color
+                    .unwrap_or_else(|| ui.visuals().text_color());
+                ui.colored_label(status_color, &self.cpu_status_text);
+                ui.add_space(tokens::SPACE_XS);
+
+                ui.checkbox(
+                    &mut self.elevate_nice,
+                    "Elevate game priority (nice -1) — higher scheduling priority for game processes",
+                );
+                let mut auto_changed = false;
+                auto_changed |= ui
+                    .checkbox(
+                        &mut self.config.gaming_mode.auto_detect,
+                        "Auto-enable when a game is detected (Steam/Proton)",
+                    )
+                    .changed();
+                if self.config.gaming_mode.auto_detect {
+                    auto_changed |= ui
+                        .checkbox(
+                            &mut self.config.gaming_mode.auto_park,
+                            "Also park non-preferred CPUs when auto-enabling",
+                        )
+                        .changed();
+                }
+                if auto_changed {
+                    self.events
+                        .push(GamingEvent::ConfigChanged(Box::new(self.config.clone())));
+                }
+            });
+            ui.add_space(tokens::SPACE_S);
+
+            // ── Advanced: topology & per-core selection ───────────────────
+            egui::CollapsingHeader::new("CPU topology & core selection")
+                .default_open(false)
+                .show(ui, |ui| {
+                    if let Some(ref topo) = self.topo {
+                        if topo.has_asymmetry() {
+                            ui.label(format!(
+                                "Parks {} so the game initialises its thread pool on {} only.",
+                                topo.non_preferred_label, topo.preferred_label
+                            ));
+                        } else {
+                            ui.label("No CPU asymmetry detected — parking is unavailable.");
+                        }
+                    }
 
             // Preferred CCD checkboxes
             if has_asym {
@@ -443,76 +518,31 @@ impl GamingModeTab {
                 });
                 ui.add_space(4.0);
             }
+                });
+            ui.add_space(tokens::SPACE_S);
 
-            // Helper status
-            // Use the cached status — probing sudo/sysfs here would fork a
-            // `sudo -n` child process on every repaint of this tab.
-            let helper_color = if self.helper_ok {
-                crate::gui::theme::Breeze::POSITIVE
-            } else if self.helper_outdated {
-                crate::gui::theme::Breeze::WARNING
-            } else {
-                crate::gui::theme::Breeze::NEGATIVE
-            };
-            ui.horizontal(|ui| {
-                ui.colored_label(helper_color, &self.helper_status_text);
-                if ui.button("Install / Update Helper (root)").clicked() {
-                    self.show_install_dialog = true;
-                }
-            });
-
-            ui.checkbox(&mut self.elevate_nice, "Elevate game priority (nice -1) — gives game processes higher scheduling priority");
-
-            // Auto-detection (daemon-side Steam/Proton heuristics)
-            let mut auto_changed = false;
-            auto_changed |= ui
-                .checkbox(
-                    &mut self.config.gaming_mode.auto_detect,
-                    "Auto-enable when a game is detected (Steam/Proton)",
-                )
-                .changed();
-            if self.config.gaming_mode.auto_detect {
-                auto_changed |= ui
-                    .checkbox(
-                        &mut self.config.gaming_mode.auto_park,
-                        "Also park non-preferred CPUs when auto-enabling",
-                    )
-                    .changed();
+            // Helper status when installed OK (errors surface in the banner)
+            if self.helper_ok {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        crate::gui::theme::Breeze::POSITIVE,
+                        &self.helper_status_text,
+                    );
+                    if ui
+                        .button("Reinstall helper…")
+                        .on_hover_text("Reinstall or update the privileged sysfs helper")
+                        .clicked()
+                    {
+                        self.show_install_dialog = true;
+                    }
+                });
+                ui.add_space(tokens::SPACE_XS);
             }
-            if auto_changed {
-                self.events
-                    .push(GamingEvent::ConfigChanged(Box::new(self.config.clone())));
-            }
-            ui.add_space(4.0);
-
-            // Enable/disable button
-            let btn_text = if self.parked {
-                "Disable Gaming Mode (Unpark CPUs)"
-            } else {
-                "Enable Gaming Mode (Park non-preferred CPUs)"
-            };
-            let btn_color = if self.parked {
-                egui::Color32::from_rgb(30, 74, 42)
-            } else {
-                egui::Color32::from_rgb(76, 29, 149)
-            };
-            let enabled = has_asym && self.helper_ok && !self.parking_in_progress;
-            ui.add_enabled_ui(enabled, |ui| {
-                let btn = egui::Button::new(RichText::new(btn_text).strong().color(Color32::WHITE))
-                    .min_size(egui::vec2(ui.available_width(), 40.0))
-                    .fill(btn_color);
-                if ui.add(btn).clicked() {
-                    if self.parked { self.disable_gaming_mode(); } else { self.enable_gaming_mode(); }
-                }
-            });
-
-            let status_color = self.cpu_status_color.unwrap_or_else(|| ui.visuals().text_color());
-            ui.colored_label(status_color, &self.cpu_status_text);
 
             // ── Power profile (governor + EPP via helper) ─────────────────
-            ui.add_space(8.0);
-            ui.separator();
-            ui.label(RichText::new("Power Profile").strong());
+            egui::CollapsingHeader::new("Power profile")
+                .default_open(false)
+                .show(ui, |ui| {
             ui.label("Sets the CPU frequency governor and energy-performance preference on all cores.");
             ui.horizontal(|ui| {
                 use cpu_park::PowerProfile;
@@ -537,13 +567,12 @@ impl GamingModeTab {
                     egui::RichText::new("Requires the privileged helper (install above).").weak(),
                 );
             }
-
-            ui.add_space(8.0);
-            ui.separator();
+                });
+            ui.add_space(tokens::SPACE_S);
 
             // ── Reset All ─────────────────────────────────────────────────
             ui.label(RichText::new("Reset All Changes").strong());
-            ui.label("Restores all per-process CPU affinities and unparks any parked CPUs.");
+            ui.label(RichText::new("Restores all per-process CPU affinities and unparks any parked CPUs.").weak());
             if ui.button("↩  Reset All Changes").clicked() {
                 if self.parked {
                     self.events.push(GamingEvent::GamingModeChanged { active: false, elevate_nice: false });
@@ -564,11 +593,12 @@ impl GamingModeTab {
                 self.events.push(GamingEvent::ResetAll);
             }
 
-            ui.add_space(8.0);
-            ui.separator();
+            ui.add_space(tokens::SPACE_S);
 
             // ── Game Launcher ─────────────────────────────────────────────
-            ui.label(RichText::new("Game Launcher").strong());
+            egui::CollapsingHeader::new("Game launcher & profiles")
+                .default_open(false)
+                .show(ui, |ui| {
 
             // Profile combo
             ui.horizontal(|ui| {
@@ -648,15 +678,25 @@ impl GamingModeTab {
                 }
             });
 
-            ui.add_space(8.0);
-            ui.separator();
+                });
+            ui.add_space(tokens::SPACE_S);
 
             // ── Log ───────────────────────────────────────────────────────
-            egui::ScrollArea::vertical().max_height(120.0).stick_to_bottom(true).show(ui, |ui| {
-                for line in &self.log_lines {
-                    ui.label(line);
-                }
-            });
+            egui::CollapsingHeader::new("Activity log")
+                .default_open(true)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(120.0)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &self.log_lines {
+                                ui.label(
+                                    RichText::new(line)
+                                        .size(crate::gui::theme::tokens::FONT_SMALL),
+                                );
+                            }
+                        });
+                });
         });
 
         // ── Install helper dialog ─────────────────────────────────────────

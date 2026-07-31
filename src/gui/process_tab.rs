@@ -817,7 +817,9 @@ impl ProcessTab {
 
                             // Paint cell text directly
                             if ui.is_rect_visible(row_rect) {
-                                let font = egui::FontId::proportional(13.5);
+                                let font = egui::FontId::proportional(
+                                    crate::gui::theme::tokens::FONT_BODY,
+                                );
                                 let painter = ui.painter();
                                 let mut x = row_rect.min.x;
                                 for &ci in &visible {

@@ -118,6 +118,9 @@ pub struct AppState {
     pub suspended_pids: std::collections::HashSet<u32>,
     /// Set by the daemon once a Shutdown command has finished restoring state
     pub shutdown_complete: bool,
+    /// Notable events (throttles, alerts, gaming mode, kills) for the
+    /// status-bar notification center — small ring buffer, newest last.
+    pub notable_events: std::collections::VecDeque<String>,
 }
 
 pub fn read_cpu_model() -> String {
@@ -137,6 +140,24 @@ impl AppState {
         let ts = chrono_ts();
         let line = format!("[{ts}] {msg}");
         crate::logfile::append(&line);
+        // Feed the status-bar notification center with the events a user
+        // actually wants surfaced (not routine rule/default churn).
+        const NOTABLE: &[&str] = &[
+            "[ProBalance] THROTTLE",
+            "[ProBalance] RESTORE",
+            "[HW Alert]",
+            "[Gaming Mode]",
+            "[Shutdown]",
+            "illed ", // "Killed" / "Force killed"
+            "[Park]",
+            "[Power]",
+        ];
+        if NOTABLE.iter().any(|m| msg.contains(m)) {
+            self.notable_events.push_back(line.clone());
+            while self.notable_events.len() > 50 {
+                self.notable_events.pop_front();
+            }
+        }
         self.log_lines.push_back(line);
         while self.log_lines.len() > 2000 {
             self.log_lines.pop_front();

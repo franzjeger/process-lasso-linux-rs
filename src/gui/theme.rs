@@ -106,6 +106,77 @@ impl Breeze {
     pub const NEGATIVE: Color32 = Color32::from_rgb(0xda, 0x44, 0x53); // #da4453  red
 }
 
+// ── Design tokens ─────────────────────────────────────────────────────────────
+// One source of truth for type scale and spacing, so tabs stop inventing
+// their own magic numbers. Use these for all new UI.
+
+pub mod tokens {
+    /// Fine print: table meta, thread lists, sublabels
+    pub const FONT_SMALL: f32 = 11.0;
+    /// Default body/table text
+    pub const FONT_BODY: f32 = 13.5;
+    /// Section headings inside cards
+    pub const FONT_HEADING: f32 = 15.0;
+
+    /// Tight spacing inside a group
+    pub const SPACE_XS: f32 = 4.0;
+    /// Between related elements
+    pub const SPACE_S: f32 = 8.0;
+    /// Between sections/cards
+    pub const SPACE_M: f32 = 12.0;
+}
+
+/// QGroupBox-style bordered card with a top-left title — THE section container
+/// for every tab (single definition; per-tab copies are deprecated).
+pub fn card(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0_f32, border_color))
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(egui::CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(
+                egui::RichText::new(title)
+                    .strong()
+                    .size(tokens::FONT_HEADING)
+                    .color(ui.visuals().strong_text_color()),
+            );
+            ui.add_space(tokens::SPACE_XS);
+            add_contents(ui);
+        });
+}
+
+/// Full-width alert/notice banner with semantic colour and an optional action
+/// button. Returns true if the action button was clicked.
+pub fn banner(ui: &mut egui::Ui, color: Color32, text: &str, action: Option<&str>) -> bool {
+    let mut clicked = false;
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            26,
+        ))
+        .stroke(egui::Stroke::new(1.0_f32, color))
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(egui::CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.colored_label(color, text);
+                if let Some(label) = action {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(label).clicked() {
+                            clicked = true;
+                        }
+                    });
+                }
+            });
+        });
+    clicked
+}
+
 // ── CPU load colour ramp (Breeze semantic colours) ────────────────────────────
 
 /// Returns a colour along the green→orange→red Breeze ramp for `pct` ∈ [0,100].

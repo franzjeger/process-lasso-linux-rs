@@ -168,6 +168,8 @@ pub struct ArgusLassoApp {
     detail_pid: Option<u32>,
     detail_info: Option<utils::ProcDetails>,
     detail_last_gen: u64,
+    // How many notable events the user has seen (bell badge = len - seen)
+    events_seen: usize,
     // CPU model string for status bar
     cpu_model: String,
 }
@@ -270,6 +272,7 @@ impl ArgusLassoApp {
             detail_pid: None,
             detail_info: None,
             detail_last_gen: 0,
+            events_seen: 0,
             cpu_model,
         }
     }
@@ -749,6 +752,7 @@ impl eframe::App for ArgusLassoApp {
             cpu_history,
             disk_io_history,
             net_io_history,
+            notable_events,
             cpu_avg,
         ) = {
             if let Ok(s) = self.state.lock() {
@@ -795,6 +799,7 @@ impl eframe::App for ArgusLassoApp {
                     } else {
                         Default::default()
                     },
+                    s.notable_events.clone(),
                     s.cpu_avg,
                 )
             } else {
@@ -883,18 +888,69 @@ impl eframe::App for ArgusLassoApp {
                 if gaming_active {
                     ui.colored_label(crate::gui::theme::Breeze::POSITIVE, "⚡ Gaming Mode ACTIVE");
                 }
-                if let Some((_, ref kill_name, remaining)) = pending_kill_info {
-                    ui.separator();
-                    ui.colored_label(
-                        egui::Color32::from_rgb(240, 120, 60),
-                        format!("Killing '{}' in {}s", kill_name, remaining + 1),
-                    );
-                    if ui.button("Undo").clicked() {
-                        undo_requested = true;
+
+                // ── Notification center (right-aligned bell with unseen badge)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let unseen = notable_events.len().saturating_sub(self.events_seen);
+                    let bell_label = if unseen > 0 {
+                        format!("🔔 {unseen}")
+                    } else {
+                        "🔔".to_string()
+                    };
+                    let bell = if unseen > 0 {
+                        RichText::new(bell_label)
+                            .color(crate::gui::theme::Breeze::WARNING)
+                            .strong()
+                    } else {
+                        RichText::new(bell_label).weak()
+                    };
+                    let resp = ui
+                        .add(egui::Label::new(bell).sense(egui::Sense::click()))
+                        .on_hover_text("Recent events (throttles, alerts, gaming mode)");
+                    if resp.clicked() {
+                        self.events_seen = notable_events.len();
                     }
-                }
+                    egui::Popup::from_toggle_button_response(&resp)
+                        .align(egui::RectAlign::TOP_END)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            ui.set_min_width(420.0);
+                            ui.label(RichText::new("Recent events").strong());
+                            ui.separator();
+                            if notable_events.is_empty() {
+                                ui.label(RichText::new("Nothing yet.").weak());
+                            }
+                            for line in notable_events.iter().rev().take(12) {
+                                ui.label(
+                                    RichText::new(line)
+                                        .size(crate::gui::theme::tokens::FONT_SMALL)
+                                        .monospace(),
+                                );
+                            }
+                        });
+                });
             });
         });
+
+        // ── Kill-undo toast (bottom-right, above the rule-offer slot) ──────
+        if let Some((_, ref kill_name, remaining)) = pending_kill_info {
+            egui::Window::new("kill_toast")
+                .id(egui::Id::new("kill_toast_window"))
+                .title_bar(false)
+                .resizable(false)
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -140.0))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(
+                            crate::gui::theme::Breeze::WARNING,
+                            format!("Killing '{}' in {}s", kill_name, remaining + 1),
+                        );
+                        if ui.button("Undo").clicked() {
+                            undo_requested = true;
+                        }
+                    });
+                });
+        }
 
         if undo_requested {
             if let Some(ref pk) = self.pending_kill {
@@ -911,7 +967,8 @@ impl eframe::App for ArgusLassoApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Tab bar
+            // Tab bar: primary workflow tabs on the left, tools/meta on the
+            // right — nine equal flat tabs buried the ones people live in.
             ui.horizontal(|ui| {
                 let proc_label = format!("Processes ({})", self.proc_count);
                 let pb_label = if self.throttled_count > 0 {
@@ -920,29 +977,42 @@ impl eframe::App for ArgusLassoApp {
                     "ProBalance".into()
                 };
 
+                let mut tab_button = |ui: &mut egui::Ui, label: &str, tab: Tab, weak: bool| {
+                    let selected = self.active_tab == tab;
+                    let text = if selected {
+                        RichText::new(label)
+                            .color(crate::gui::theme::Breeze::HIGHLIGHT)
+                            .strong()
+                    } else if weak {
+                        RichText::new(label).weak()
+                    } else {
+                        RichText::new(label) // inherits theme text color
+                    };
+                    if ui.selectable_label(selected, text).clicked() {
+                        self.active_tab = tab;
+                    }
+                };
+
                 for (label, tab) in [
                     ("Overview", Tab::Overview),
                     (proc_label.as_str(), Tab::Processes),
                     ("Rules", Tab::Rules),
                     (pb_label.as_str(), Tab::ProBalance),
                     ("Gaming Mode", Tab::GamingMode),
-                    ("HW Monitor", Tab::HwMonitor),
-                    ("Benchmark", Tab::Benchmark),
-                    ("Settings", Tab::Settings),
-                    ("Log", Tab::Log),
                 ] {
-                    let selected = self.active_tab == tab;
-                    let text = if selected {
-                        RichText::new(label)
-                            .color(crate::gui::theme::Breeze::HIGHLIGHT)
-                            .strong()
-                    } else {
-                        RichText::new(label) // inherits theme text color — readable on both dark and light
-                    };
-                    if ui.selectable_label(selected, text).clicked() {
-                        self.active_tab = tab;
-                    }
+                    tab_button(ui, label, tab, false);
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Reverse order: right_to_left lays out from the right edge
+                    for (label, tab) in [
+                        ("⚙ Settings", Tab::Settings),
+                        ("Log", Tab::Log),
+                        ("Benchmark", Tab::Benchmark),
+                        ("HW Monitor", Tab::HwMonitor),
+                    ] {
+                        tab_button(ui, label, tab, true);
+                    }
+                });
             });
             ui.separator();
 
