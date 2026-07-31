@@ -1087,7 +1087,7 @@ impl RulePresetsDialog {
                         ui.add_space(4.0);
                         // Header row
                         let hdr_bg = ui.visuals().widgets.noninteractive.bg_fill;
-                        let hdr_col = ui.visuals().strong_text_color();
+                        let hdr_col = crate::gui::theme::strong_color(ui);
                         egui::Frame::new().fill(hdr_bg).show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             egui::Grid::new("preset_hdr")

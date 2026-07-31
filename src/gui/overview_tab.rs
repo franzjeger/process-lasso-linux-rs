@@ -112,6 +112,7 @@ impl OverviewTab {
         // ── CPU history, full width ──────────────────────────────────────────
         {
             egui::Frame::new()
+                .fill(th::card_fill(ui))
                 .stroke(egui::Stroke::new(1.0_f32, border_color))
                 .inner_margin(egui::Margin::same(8))
                 .corner_radius(egui::CornerRadius::same(4))
@@ -128,8 +129,9 @@ impl OverviewTab {
                         });
                     });
                     let rect = plot_rect(ui, head.response.rect.bottom() + 4.0, 90.0);
+                    let th_plot_fill = th::plot_fill(ui);
                     let painter = ui.painter();
-                    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+                    painter.rect_filled(rect, 2.0, th_plot_fill);
 
                     // Gridlines at 25 / 50 / 75 % plus 0/100 axis labels
                     let grid_col = th::tint(ui.visuals().weak_text_color(), 60);
@@ -200,7 +202,7 @@ impl OverviewTab {
                         egui::Align2::RIGHT_TOP,
                         format!("{cpu_avg:.0}%"),
                         egui::FontId::proportional(12.0),
-                        ui.visuals().strong_text_color(),
+                        crate::gui::theme::strong_color(ui),
                     );
                 });
         }
@@ -417,6 +419,7 @@ fn dual_io_graph(
     border_color: Color32,
 ) {
     egui::Frame::new()
+        .fill(crate::gui::theme::card_fill(ui))
         .stroke(egui::Stroke::new(1.0_f32, border_color))
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
@@ -444,8 +447,9 @@ fn dual_io_graph(
             });
 
             let rect = plot_rect(ui, head.response.rect.bottom() + 4.0, 60.0);
+            let th_plot_fill = crate::gui::theme::plot_fill(ui);
             let painter = ui.painter();
-            painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+            painter.rect_filled(rect, 2.0, th_plot_fill);
 
             if history.len() >= 2 {
                 // Shared autoscale so the two lines are comparable.

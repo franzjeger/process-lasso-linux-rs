@@ -532,7 +532,7 @@ fn show_results(
         RichText::new("Details")
             .strong()
             .size(tokens::FONT_HEADING)
-            .color(ui.visuals().strong_text_color()),
+            .color(crate::gui::theme::strong_color(ui)),
     );
     ui.add_space(tokens::SPACE_XS);
 
@@ -648,7 +648,7 @@ fn bench_card(
                     RichText::new(title)
                         .strong()
                         .size(tokens::FONT_HEADING)
-                        .color(ui.visuals().strong_text_color()),
+                        .color(crate::gui::theme::strong_color(ui)),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let s = theme::sem(ui);

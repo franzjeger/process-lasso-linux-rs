@@ -191,7 +191,7 @@ impl CpuHistoryWidget {
         let (resp, painter) = ui.allocate_painter(Vec2::new(avail_w, h), egui::Sense::hover());
         let rect = resp.rect;
 
-        painter.rect_filled(rect, CornerRadius::ZERO, ui.visuals().extreme_bg_color);
+        painter.rect_filled(rect, CornerRadius::ZERO, crate::gui::theme::plot_fill(ui));
 
         let n = self.history.len();
         let slot_w = avail_w / self.max_samples as f32;

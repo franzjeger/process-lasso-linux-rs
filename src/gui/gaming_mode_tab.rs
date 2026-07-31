@@ -442,7 +442,7 @@ impl GamingModeTab {
                                 "Gaming Mode is off"
                             })
                             .font(th::bold_font(tokens::FONT_HERO))
-                            .color(ui.visuals().strong_text_color()),
+                            .color(crate::gui::theme::strong_color(ui)),
                         );
                         ui.label(
                             RichText::new(format!(
@@ -1124,6 +1124,7 @@ fn proc_name_matches(game_name: &str, pid: u32) -> bool {
 fn card_untitled(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     let border = ui.visuals().widgets.noninteractive.bg_stroke.color;
     egui::Frame::new()
+        .fill(crate::gui::theme::card_fill(ui))
         .stroke(egui::Stroke::new(1.0_f32, border))
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(4))

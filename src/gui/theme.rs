@@ -154,11 +154,51 @@ pub fn bold_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name(BOLD.into()))
 }
 
+/// The highest-contrast text colour for the active theme.
+///
+/// Not `Visuals::strong_text_color()`: egui derives that from
+/// `widgets.active.fg_stroke`, which the light theme sets to white so pressed
+/// widgets read against the blue active fill. Anything calling it for emphasis
+/// text therefore renders white-on-light and disappears.
+pub fn strong_color(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::WHITE
+    } else {
+        Color32::from_rgb(0x1b, 0x1e, 0x21)
+    }
+}
+
+/// Surface colour for cards.
+///
+/// Mockup 3a puts white cards on the light grey page, which is what separates
+/// them; in the dark mockups the card and the page share a fill and the border
+/// alone does the work, so dark keeps its transparent surface.
+pub fn card_fill(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::TRANSPARENT
+    } else {
+        Color32::WHITE
+    }
+}
+
+/// Surface colour for a plot area inside a card.
+///
+/// In dark the plot sits darker than its card; in light the card is already
+/// white, so `extreme_bg_color` (also white) would erase the plot's edge —
+/// mockup 3a uses a faint grey there instead.
+pub fn plot_fill(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        ui.visuals().extreme_bg_color
+    } else {
+        ui.visuals().faint_bg_color
+    }
+}
+
 /// Bold rich text at the given size, in the theme's strongest text colour.
 pub fn bold(ui: &egui::Ui, text: impl Into<String>, size: f32) -> egui::RichText {
     egui::RichText::new(text.into())
         .font(bold_font(size))
-        .color(ui.visuals().strong_text_color())
+        .color(strong_color(ui))
 }
 
 // ── Breeze Dark palette ───────────────────────────────────────────────────────
@@ -436,6 +476,7 @@ pub fn kpi_card(
     stripe: Color32,
 ) {
     let resp = egui::Frame::new()
+        .fill(card_fill(ui))
         .stroke(Stroke::new(
             1.0_f32,
             ui.visuals().widgets.noninteractive.bg_stroke.color,
@@ -518,7 +559,7 @@ pub fn header_text(ui: &egui::Ui, label: &str, active: bool) -> egui::RichText {
     if active {
         egui::RichText::new(label)
             .font(bold_font(tokens::FONT_LABEL))
-            .color(ui.visuals().strong_text_color())
+            .color(strong_color(ui))
     } else {
         egui::RichText::new(label)
             .size(tokens::FONT_LABEL)
@@ -547,6 +588,7 @@ pub fn card_hinted(
 ) {
     let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
     egui::Frame::new()
+        .fill(card_fill(ui))
         .stroke(egui::Stroke::new(1.0_f32, border_color))
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(4))
