@@ -632,6 +632,13 @@ impl ProcessTab {
                                         self.hidden_cols.remove(c.label());
                                     } else {
                                         self.hidden_cols.insert(c.label().to_string());
+                                        // Hiding the active sort column would
+                                        // strand an invisible sort with no way
+                                        // to change direction — fall back.
+                                        if *c == new_sort_col {
+                                            new_sort_col = SortCol::Cpu;
+                                            new_sort_asc = false;
+                                        }
                                     }
                                     self.hidden_dirty = true;
                                 }
@@ -641,7 +648,11 @@ impl ProcessTab {
                     }
                     // Drag-to-resize handles — one between each visible column pair
                     x = header_rect.min.x;
-                    for &i in visible.iter().take(visible.len().saturating_sub(1)) {
+                    for (vi, &i) in visible
+                        .iter()
+                        .enumerate()
+                        .take(visible.len().saturating_sub(1))
+                    {
                         x += col_widths[i];
                         let handle_rect = egui::Rect::from_min_size(
                             egui::pos2(x - 3.0, header_rect.min.y),
@@ -666,7 +677,16 @@ impl ProcessTab {
                             egui::Stroke::new(1.0_f32, sep_color),
                         );
                         if resp.dragged() {
-                            col_width_deltas[i] += resp.drag_delta().x;
+                            if i == 1 {
+                                // Name auto-fills, so its delta is discarded —
+                                // move this boundary by resizing the column on
+                                // the RIGHT inversely instead (dragging right
+                                // grows Name = shrinks the right neighbor).
+                                let right = visible[vi + 1];
+                                col_width_deltas[right] -= resp.drag_delta().x;
+                            } else {
+                                col_width_deltas[i] += resp.drag_delta().x;
+                            }
                         }
                     }
                 }

@@ -728,7 +728,11 @@ impl eframe::App for ArgusLassoApp {
         let on_log_tab = self.active_tab == Tab::Log;
         let on_hw_tab = self.active_tab == Tab::HwMonitor;
         let on_pb_tab = self.active_tab == Tab::ProBalance;
-        let on_proc_tab = self.active_tab == Tab::Processes || self.active_tab == Tab::Overview;
+        // The details window (any tab) also needs the per-PID CPU history —
+        // otherwise its sparkline vanishes when switching away from Processes.
+        let on_proc_tab = self.active_tab == Tab::Processes
+            || self.active_tab == Tab::Overview
+            || self.detail_pid.is_some();
         let on_overview_tab = self.active_tab == Tab::Overview;
         let (
             snapshot,

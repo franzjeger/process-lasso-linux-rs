@@ -50,7 +50,8 @@ fn systemctl_user(args: &[&str]) -> Option<std::process::Output> {
 
 /// Read the unit's current CPUWeight. None = not set (kernel default 100).
 pub fn read_unit_cpu_weight(unit: &str) -> Option<u64> {
-    let out = systemctl_user(&["show", "-p", "CPUWeight", "--value", unit])?;
+    // "--" so a unit name starting with '-' can't be parsed as a flag
+    let out = systemctl_user(&["show", "-p", "CPUWeight", "--value", "--", unit])?;
     if !out.status.success() {
         return None;
     }
@@ -61,7 +62,13 @@ pub fn read_unit_cpu_weight(unit: &str) -> Option<u64> {
 /// `--runtime` scopes the change to this boot — exactly the lifetime we want.
 pub fn throttle_unit(unit: &str, weight: u32, quota_percent: u32) -> bool {
     let weight_prop = format!("CPUWeight={weight}");
-    let mut args = vec!["set-property", "--runtime", unit, weight_prop.as_str()];
+    let mut args = vec![
+        "set-property",
+        "--runtime",
+        "--",
+        unit,
+        weight_prop.as_str(),
+    ];
     let quota_prop;
     if quota_percent > 0 {
         quota_prop = format!("CPUQuota={quota_percent}%");
@@ -83,6 +90,7 @@ pub fn restore_unit(unit: &str, original_weight: Option<u64>) -> bool {
     systemctl_user(&[
         "set-property",
         "--runtime",
+        "--",
         unit,
         weight_prop.as_str(),
         "CPUQuota=",

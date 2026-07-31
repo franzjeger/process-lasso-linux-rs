@@ -276,6 +276,10 @@ fn run_loop(
                 } => {
                     gaming_mode = active;
                     gaming_elevate_nice = elevate_nice;
+                    // A manual toggle takes ownership: the auto-detector must
+                    // not later auto-disable a manually (re-)enabled mode.
+                    auto_gaming = false;
+                    game_absent_snapshots = 0;
                     if !active && !gaming_niced.is_empty() {
                         restore_gaming_nices(&mut gaming_niced, &log_cb);
                     }
@@ -333,6 +337,12 @@ fn run_loop(
                     if let Ok(mut s) = state.lock() {
                         s.shutdown_complete = true;
                     }
+                    // Stop the loop entirely: if it kept running, the very
+                    // next ProBalance/auto-gaming tick could re-throttle or
+                    // re-park in the window before process exit — and a
+                    // cgroup re-throttle would outlive us until logout,
+                    // since nothing would ever restore it.
+                    return;
                 }
             }
         }
