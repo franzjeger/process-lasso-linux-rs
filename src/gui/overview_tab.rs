@@ -215,8 +215,8 @@ impl OverviewTab {
                 ui,
                 "Disk I/O",
                 disk_io_history,
-                ("▼ Read", s.ok),
-                ("▲ Write", s.warning),
+                ("Read", s.ok),
+                ("Write", s.warning),
                 half_w,
                 border_color,
             );
@@ -225,8 +225,8 @@ impl OverviewTab {
                 ui,
                 "Network I/O",
                 net_io_history,
-                ("▼ Recv", s.accent),
-                ("▲ Send", s.manual),
+                ("Recv", s.accent),
+                ("Send", s.manual),
                 half_w,
                 border_color,
             );
@@ -429,8 +429,13 @@ fn dual_io_graph(
             ui.horizontal(|ui| {
                 ui.label(RichText::new(title).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Right-to-left: the label is added before its swatch so the
+                    // swatch ends up on the left of the text.
                     ui.colored_label(color_b, format!("{label_b} {cur_b:.1} MB/s"));
+                    legend_dot(ui, color_b);
+                    ui.add_space(crate::gui::theme::tokens::SPACE_S);
                     ui.colored_label(color_a, format!("{label_a} {cur_a:.1} MB/s"));
+                    legend_dot(ui, color_a);
                 });
             });
             ui.add_space(4.0);
@@ -471,12 +476,20 @@ fn dual_io_graph(
                 }
                 // Peak label top-right
                 painter.text(
-                    rect.right_top() + Vec2::new(-4.0, 2.0),
-                    egui::Align2::RIGHT_TOP,
+                    rect.right_bottom() + Vec2::new(-4.0, -2.0),
+                    egui::Align2::RIGHT_BOTTOM,
                     format!("peak {peak:.1} MB/s"),
                     egui::FontId::proportional(10.0),
                     ui.visuals().weak_text_color(),
                 );
             }
         });
+}
+
+/// Small colour swatch used in graph legends (the ▲/▼ glyphs are not present
+/// in egui's bundled fonts and render as tofu boxes).
+fn legend_dot(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(2), color);
 }

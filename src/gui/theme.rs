@@ -153,14 +153,14 @@ pub fn chip(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
 
 /// Pill-shaped filter chip in an explicit colour (log/HW categories carry
 /// their own semantic colour). Returns true when clicked; the active state
-/// gets a filled tint and a trailing ✕ hinting that clicking clears it.
+/// gets a filled tint and a trailing × hinting that clicking clears it.
 pub fn chip_colored(ui: &mut egui::Ui, label: &str, active: bool, color: Color32) -> bool {
     let s = Sem {
         accent: color,
         ..sem(ui)
     };
     let text = if active {
-        format!("{label} ✕")
+        format!("{label} ×")
     } else {
         label.to_string()
     };
@@ -359,7 +359,7 @@ pub fn kpi_card(
     detail: &str,
     stripe: Color32,
 ) {
-    egui::Frame::new()
+    let resp = egui::Frame::new()
         .stroke(Stroke::new(
             1.0_f32,
             ui.visuals().widgets.noninteractive.bg_stroke.color,
@@ -373,7 +373,6 @@ pub fn kpi_card(
         .corner_radius(CornerRadius::same(4))
         .show(ui, |ui| {
             ui.set_width(width);
-            let top = ui.min_rect().min;
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(label.to_uppercase())
@@ -392,14 +391,21 @@ pub fn kpi_card(
                         .color(ui.visuals().weak_text_color()),
                 );
             });
-            // Left accent stripe
-            let h = ui.min_rect().height();
-            let stripe_rect = egui::Rect::from_min_size(
-                egui::pos2(top.x - 12.0, top.y - 10.0),
-                egui::vec2(3.0, h + 20.0),
-            );
-            ui.painter().rect_filled(stripe_rect, 0.0, stripe);
         });
+    // Left accent stripe, painted on the card's own rect so it lands inside
+    // the border rather than in the gap before the next card.
+    let card = resp.response.rect;
+    let stripe_rect = egui::Rect::from_min_size(card.min, egui::vec2(3.0, card.height()));
+    ui.painter().rect_filled(
+        stripe_rect,
+        CornerRadius {
+            nw: 4,
+            sw: 4,
+            ne: 0,
+            se: 0,
+        },
+        stripe,
+    );
 }
 
 /// Bottom action bar for settings-style tabs: dirty indicator on the left,
