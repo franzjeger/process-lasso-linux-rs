@@ -1,6 +1,7 @@
 //! Argus-Lasso Linux — Rust edition entry point.
 
 mod app;
+mod cgroup;
 mod config;
 mod cpu_park;
 mod file_dialog;

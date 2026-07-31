@@ -45,7 +45,7 @@ impl ProBalanceTab {
                 .num_columns(5)
                 .spacing([12.0, 2.0])
                 .show(ui, |ui| {
-                    for h in ["PID", "NAME", "CPU%", "NICE", "RESTORE IN"] {
+                    for h in ["PID", "NAME", "CPU%", "THROTTLE", "RESTORE IN"] {
                         ui.label(RichText::new(h).strong().color(header_col));
                     }
                     ui.end_row();
@@ -77,10 +77,17 @@ impl ProBalanceTab {
                                         .color(crate::gui::theme::Breeze::WARNING),
                                 );
                                 ui.label(format!("{cpu:.1}%"));
-                                ui.label(format!(
-                                    "{} → {}",
-                                    info.original_nice, info.throttle_nice
-                                ));
+                                match &info.unit {
+                                    Some(unit) => {
+                                        ui.label(format!("unit {unit}"));
+                                    }
+                                    None => {
+                                        ui.label(format!(
+                                            "{} → {}",
+                                            info.original_nice, info.throttle_nice
+                                        ));
+                                    }
+                                }
                                 ui.label(restore_str);
                                 ui.end_row();
                             }
@@ -108,6 +115,41 @@ impl ProBalanceTab {
                 .num_columns(2)
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
+                    right_label(ui, LABEL_W, "Throttle method:");
+                    egui::ComboBox::from_id_salt("pb_method")
+                        .selected_text(match self.cfg.method.as_str() {
+                            "cgroup" => "cgroup (per-app CPUWeight)",
+                            "auto" => "auto (cgroup, nice fallback)",
+                            _ => "nice (process priority)",
+                        })
+                        .show_ui(ui, |ui| {
+                            for (val, label) in [
+                                ("nice", "nice (process priority)"),
+                                ("cgroup", "cgroup (per-app CPUWeight)"),
+                                ("auto", "auto (cgroup, nice fallback)"),
+                            ] {
+                                ui.selectable_value(&mut self.cfg.method, val.to_string(), label);
+                            }
+                        });
+                    ui.end_row();
+
+                    if self.cfg.method != "nice" {
+                        right_label(ui, LABEL_W, "Throttled CPUWeight (default 100):");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.cgroup_throttle_weight)
+                                .range(1..=100),
+                        );
+                        ui.end_row();
+
+                        right_label(ui, LABEL_W, "Hard CPU quota (0 = none):");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.cgroup_quota_percent)
+                                .range(0..=800)
+                                .suffix("%"),
+                        );
+                        ui.end_row();
+                    }
+
                     right_label(ui, LABEL_W, "CPU threshold:");
                     ui.add(
                         egui::DragValue::new(&mut self.cfg.cpu_threshold_percent)

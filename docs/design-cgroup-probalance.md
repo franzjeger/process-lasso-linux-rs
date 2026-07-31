@@ -1,6 +1,9 @@
 # Design: cgroup v2 backend for ProBalance
 
-Status: **proposed** — needs validation on real desktop hardware before implementation is merged.
+Status: **rollout steps 1+2 implemented** (config keys + cgroup method behind
+`method = "cgroup"`/`"auto"`; default remains `"nice"`). Step 3 — flipping the
+default to `auto` — is blocked on the validation checklist below, which needs
+real desktop hardware.
 
 ## Problem
 

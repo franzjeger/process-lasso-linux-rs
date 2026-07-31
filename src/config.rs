@@ -30,6 +30,15 @@ pub struct ProBalanceConfig {
     pub restore_threshold_percent: f32,
     pub restore_hysteresis_seconds: f32,
     pub exempt_patterns: Vec<String>,
+    /// Throttle mechanism: "nice" (default), "cgroup" (per-unit CPUWeight via
+    /// systemd), or "auto" (cgroup with per-process nice fallback).
+    /// See docs/design-cgroup-probalance.md.
+    pub method: String,
+    /// cpu.weight applied to a throttled unit (kernel default is 100;
+    /// 25 ⇒ ~4× smaller CPU share under contention).
+    pub cgroup_throttle_weight: u32,
+    /// Optional hard cap: CPUQuota percent per core scale (0 = no cap).
+    pub cgroup_quota_percent: u32,
 }
 
 impl Default for ProBalanceConfig {
@@ -50,6 +59,11 @@ impl Default for ProBalanceConfig {
                 "Xorg".into(),
                 "xwayland".into(),
             ],
+            // Stays "nice" until the cgroup path is validated on real
+            // hardware (rollout step 3 flips this to "auto").
+            method: "nice".into(),
+            cgroup_throttle_weight: 25,
+            cgroup_quota_percent: 0,
         }
     }
 }
