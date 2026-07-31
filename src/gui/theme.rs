@@ -288,23 +288,6 @@ pub fn chip_colored(ui: &mut egui::Ui, label: &str, active: bool, color: Color32
     resp.clicked()
 }
 
-/// Small status badge (filled tint + coloured text), e.g. "Throttled".
-pub fn badge(ui: &mut egui::Ui, label: &str, color: Color32) {
-    let galley = ui.painter().layout_no_wrap(
-        label.to_string(),
-        egui::FontId::proportional(tokens::FONT_LABEL),
-        color,
-    );
-    let pad = egui::vec2(7.0, 1.0);
-    let size = galley.size() + pad * 2.0;
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    if ui.is_rect_visible(rect) {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(3), tint(color, 46));
-        ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
-    }
-}
-
 /// Paint a badge into an explicit rect (for painter-driven tables).
 pub fn badge_at(painter: &egui::Painter, pos: egui::Pos2, label: &str, color: Color32) {
     let galley = painter.layout_no_wrap(
@@ -324,6 +307,13 @@ pub fn badge_at(painter: &egui::Painter, pos: egui::Pos2, label: &str, color: Co
 /// Neutral outlined badge (match types, kinds).
 pub fn badge_outline(ui: &mut egui::Ui, label: &str) {
     let col = ui.visuals().weak_text_color();
+    badge_outline_colored(ui, label, col)
+}
+
+/// Outlined badge in an explicit colour — the mockups use this for live
+/// counters ("1 throttled now"), where a filled badge would compete with the
+/// status text beside it.
+pub fn badge_outline_colored(ui: &mut egui::Ui, label: &str, col: Color32) {
     let galley = ui.painter().layout_no_wrap(
         label.to_string(),
         egui::FontId::proportional(tokens::FONT_LABEL),
@@ -336,7 +326,7 @@ pub fn badge_outline(ui: &mut egui::Ui, label: &str) {
         ui.painter().rect_stroke(
             rect,
             CornerRadius::same(3),
-            Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            Stroke::new(1.0_f32, col),
             egui::StrokeKind::Inside,
         );
         ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
