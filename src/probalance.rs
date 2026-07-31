@@ -229,7 +229,8 @@ impl ProBalance {
                 self.undo_applied(pid, entry.applied.as_ref(), orig, reason, &mut pending_logs);
             }
         }
-        self.unit_refs.clear();
+        // Successfully restored units were removed by release_unit; entries
+        // that failed to restore stay (count 0) for the per-tick retry.
         for msg in pending_logs {
             self.log(msg);
         }
@@ -261,7 +262,11 @@ impl ProBalance {
     }
 
     /// Drop one reference on a unit throttle; restore the unit when the last
-    /// reference goes away.
+    /// reference goes away. On restore failure the entry is KEPT (count 0) so
+    /// the recorded original weight isn't lost — a later throttle would
+    /// otherwise read the throttled weight and record it as "original",
+    /// polluting every future restore. Zero-count entries are retried each
+    /// tick.
     fn release_unit(&mut self, unit: &str, reason: &str, logs: &mut Vec<String>) {
         let Some(t) = self.unit_refs.get_mut(unit) else {
             return;
@@ -269,16 +274,33 @@ impl ProBalance {
         t.count = t.count.saturating_sub(1);
         if t.count == 0 {
             let original = t.original_weight;
-            self.unit_refs.remove(unit);
             if crate::cgroup::restore_unit(unit, original) {
+                self.unit_refs.remove(unit);
                 logs.push(format!(
                     "[ProBalance] RESTORE ({reason}) unit {unit} CPUWeight→{}",
                     original.map_or("default".to_string(), |w| w.to_string())
                 ));
             } else {
                 logs.push(format!(
-                    "[ProBalance] RESTORE ({reason}) unit {unit} FAILED — check `systemctl --user`"
+                    "[ProBalance] RESTORE ({reason}) unit {unit} FAILED — will retry"
                 ));
+            }
+        }
+    }
+
+    /// Retry unit restores that failed earlier (zero-reference entries).
+    fn retry_pending_unit_restores(&mut self, logs: &mut Vec<String>) {
+        let pending: Vec<String> = self
+            .unit_refs
+            .iter()
+            .filter(|(_, t)| t.count == 0)
+            .map(|(u, _)| u.clone())
+            .collect();
+        for unit in pending {
+            let original = self.unit_refs.get(&unit).and_then(|t| t.original_weight);
+            if crate::cgroup::restore_unit(&unit, original) {
+                self.unit_refs.remove(&unit);
+                logs.push(format!("[ProBalance] RESTORE (retry) unit {unit}"));
             }
         }
     }
@@ -384,6 +406,15 @@ impl ProBalance {
     /// Called every ~1s with the current process snapshot.
     /// tick_seconds is the elapsed time since the last tick.
     pub fn tick(&mut self, snapshot: &[ProcSnapshot], tick_seconds: f32) {
+        // Failed unit restores are retried even while disabled — a unit left
+        // at the throttle weight must not depend on ProBalance staying on.
+        if !self.unit_refs.is_empty() {
+            let mut retry_logs = Vec::new();
+            self.retry_pending_unit_restores(&mut retry_logs);
+            for msg in retry_logs {
+                self.log(msg);
+            }
+        }
         if !self.cfg.enabled {
             return;
         }
