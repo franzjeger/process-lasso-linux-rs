@@ -739,7 +739,7 @@ impl GamingModeTab {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let reset = egui::Button::new(RichText::new("Reset all").color(s.negative))
+                    let reset = egui::Button::new(RichText::new("↩  Reset all").color(s.negative))
                         .stroke(egui::Stroke::new(1.0_f32, s.negative));
                     if ui
                         .add(reset)

@@ -330,7 +330,7 @@ impl ProcessTab {
                     .hint_text("name / PID / cmdline — press /")
                     .desired_width(240.0),
             );
-            if !self.filter.is_empty() && ui.small_button("×").clicked() {
+            if !self.filter.is_empty() && ui.small_button("✕").clicked() {
                 self.filter.clear();
             }
             ui.checkbox(&mut self.filter_is_regex, ".*")
@@ -382,7 +382,7 @@ impl ProcessTab {
             // Right side: view toggles + the column picker, which used to be
             // discoverable only via a header right-click.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.menu_button("Columns", |ui| {
+                ui.menu_button("Columns ▾", |ui| {
                     for (ci, c) in COLS.iter().enumerate() {
                         if ci == 1 {
                             continue; // Name is always shown
@@ -664,7 +664,7 @@ impl ProcessTab {
                         );
                         let is_active = *col == sort_col_cur && !self.tree_view;
                         let label_str = if is_active {
-                            format!("{} {}", col.label(), if sort_asc_cur { "^" } else { "v" })
+                            format!("{} {}", col.label(), if sort_asc_cur { "▲" } else { "▼" })
                         } else {
                             col.label().to_string()
                         };
@@ -694,7 +694,7 @@ impl ProcessTab {
                         }
                         // Right-click any header → column chooser
                         resp.context_menu(|ui| {
-                            ui.label(RichText::new("Columns").strong());
+                            ui.label(RichText::new("Columns ▾").strong());
                             for (ci, c) in COLS.iter().enumerate() {
                                 if ci == 1 {
                                     continue; // Name is always shown

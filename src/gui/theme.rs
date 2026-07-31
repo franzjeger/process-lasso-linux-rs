@@ -70,10 +70,95 @@ pub fn pop_viewport_opacity(ctx: &Context, saved: (Color32, Color32)) {
 
 /// Apply the selected theme.
 pub fn apply_theme(ctx: &Context, native_ppp: f32, theme: &AppTheme) {
+    install_fonts(ctx);
     match theme {
         AppTheme::BreezeDark => apply(ctx, native_ppp),
         AppTheme::BreezeLight => apply_light(ctx, native_ppp),
     }
+}
+
+// ── Fonts ─────────────────────────────────────────────────────────────────────
+
+/// Font family name for bold text. egui's built-in fonts ship a single weight,
+/// so `RichText::strong()` only brightens the colour — the design's headings,
+/// KPI values and active column headers all need a real 700 weight.
+pub const BOLD: &str = "bold";
+
+/// Register the bundled DejaVu faces.
+///
+/// Two problems this solves at once:
+///  * no bold face — every heading in the design is 700 weight, and without a
+///    bold font the whole typographic hierarchy collapses to one weight;
+///  * missing glyphs — the design uses ▲ ▼ ▾ ✕ ↑ ↓, none of which exist in
+///    egui's bundled fonts, so they rendered as tofu boxes.
+///
+/// Idempotent: the fonts are only installed once per context.
+fn install_fonts(ctx: &Context) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, bytes) in [
+        (
+            "dejavu",
+            &include_bytes!("../../assets/fonts/DejaVuSans.ttf")[..],
+        ),
+        (
+            "dejavu_bold",
+            &include_bytes!("../../assets/fonts/DejaVuSans-Bold.ttf")[..],
+        ),
+        (
+            "dejavu_mono",
+            &include_bytes!("../../assets/fonts/DejaVuSansMono.ttf")[..],
+        ),
+    ] {
+        fonts.font_data.insert(
+            name.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
+    }
+
+    // Proportional and monospace lead with DejaVu; the built-in faces stay on
+    // as fallbacks so emoji still resolve.
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "dejavu".to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, "dejavu_mono".to_owned());
+
+    // Bold is its own family — egui has no weight axis, so `FontId` with this
+    // family is how a widget asks for 700.
+    fonts.families.insert(
+        egui::FontFamily::Name(BOLD.into()),
+        vec![
+            "dejavu_bold".to_owned(),
+            "dejavu".to_owned(),
+            "dejavu_mono".to_owned(),
+        ],
+    );
+
+    ctx.set_fonts(fonts);
+}
+
+/// A bold `FontId` at the given size — use instead of `RichText::strong()`
+/// wherever the design calls for a real 700 weight.
+pub fn bold_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(BOLD.into()))
+}
+
+/// Bold rich text at the given size, in the theme's strongest text colour.
+pub fn bold(ui: &egui::Ui, text: impl Into<String>, size: f32) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .font(bold_font(size))
+        .color(ui.visuals().strong_text_color())
 }
 
 // ── Breeze Dark palette ───────────────────────────────────────────────────────
@@ -160,7 +245,7 @@ pub fn chip_colored(ui: &mut egui::Ui, label: &str, active: bool, color: Color32
         ..sem(ui)
     };
     let text = if active {
-        format!("{label} ×")
+        format!("{label} ✕")
     } else {
         label.to_string()
     };
@@ -379,12 +464,7 @@ pub fn kpi_card(
                         .size(tokens::FONT_SMALL)
                         .color(ui.visuals().weak_text_color()),
                 );
-                ui.label(
-                    egui::RichText::new(value)
-                        .size(tokens::FONT_KPI)
-                        .strong()
-                        .color(ui.visuals().strong_text_color()),
-                );
+                ui.label(bold(ui, value, tokens::FONT_KPI));
                 ui.label(
                     egui::RichText::new(detail)
                         .size(tokens::FONT_HELP)
@@ -444,11 +524,14 @@ pub fn apply_bar(ui: &mut egui::Ui, dirty: bool) -> (bool, bool) {
 /// Column-header label: weak, small — never accent blue, which reads as
 /// "interactive/selected". Only the active sort column gets strong text.
 pub fn header_text(ui: &egui::Ui, label: &str, active: bool) -> egui::RichText {
-    let t = egui::RichText::new(label).size(tokens::FONT_LABEL);
     if active {
-        t.strong().color(ui.visuals().strong_text_color())
+        egui::RichText::new(label)
+            .font(bold_font(tokens::FONT_LABEL))
+            .color(ui.visuals().strong_text_color())
     } else {
-        t.color(ui.visuals().weak_text_color())
+        egui::RichText::new(label)
+            .size(tokens::FONT_LABEL)
+            .color(ui.visuals().weak_text_color())
     }
 }
 
@@ -467,12 +550,7 @@ pub fn card(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui:
         .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(
-                egui::RichText::new(title)
-                    .strong()
-                    .size(tokens::FONT_HEADING)
-                    .color(ui.visuals().strong_text_color()),
-            );
+            ui.label(bold(ui, title, tokens::FONT_HEADING));
             ui.add_space(tokens::SPACE_XS);
             add_contents(ui);
         });

@@ -135,7 +135,7 @@ impl LogTab {
                     .hint_text("Search log…")
                     .desired_width(200.0),
             );
-            if !self.search.is_empty() && ui.small_button("×").clicked() {
+            if !self.search.is_empty() && ui.small_button("✕").clicked() {
                 self.search.clear();
             }
             ui.add_space(tokens::SPACE_S);
@@ -260,7 +260,7 @@ impl LogTab {
 fn cat_chip(ui: &mut egui::Ui, label: &str, active: bool, color: egui::Color32) -> bool {
     let galley = ui.painter().layout_no_wrap(
         if active {
-            format!("{label} ×")
+            format!("{label} ✕")
         } else {
             label.to_string()
         },

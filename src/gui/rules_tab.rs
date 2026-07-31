@@ -145,7 +145,7 @@ impl RulesTab {
                     if ui.add(btn).clicked() {
                         self.open_add_dialog(None);
                     }
-                    if ui.button("Templates").clicked() {
+                    if ui.button("Templates ▾").clicked() {
                         self.presets_dialog = Some(RulePresetsDialog::new());
                     }
                 });
@@ -495,7 +495,7 @@ impl RulesTab {
                     if ui.add(new_btn).clicked() {
                         self.open_add_dialog(None);
                     }
-                    if ui.button("Templates").clicked() {
+                    if ui.button("Templates ▾").clicked() {
                         self.presets_dialog = Some(RulePresetsDialog::new());
                     }
 

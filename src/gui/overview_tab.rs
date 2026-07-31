@@ -116,14 +116,9 @@ impl OverviewTab {
                 .inner_margin(egui::Margin::same(8))
                 .corner_radius(egui::CornerRadius::same(4))
                 .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("CPU history")
-                                .strong()
-                                .size(tokens::FONT_HEADING)
-                                .color(ui.visuals().strong_text_color()),
-                        );
+                    ui.set_min_width(ui.available_width() - 24.0);
+                    let head = ui.horizontal(|ui| {
+                        ui.label(th::bold(ui, "CPU history", tokens::FONT_HEADING));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new("120 s")
@@ -132,13 +127,7 @@ impl OverviewTab {
                             );
                         });
                     });
-                    ui.add_space(4.0);
-
-                    let graph_h = 90.0;
-                    let (rect, _) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), graph_h),
-                        egui::Sense::hover(),
-                    );
+                    let rect = plot_rect(ui, head.response.rect.bottom() + 4.0, 90.0);
                     let painter = ui.painter();
                     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
 
@@ -219,14 +208,16 @@ impl OverviewTab {
         ui.add_space(spacing);
 
         // ── Disk + Network I/O graphs ────────────────────────────────────────
-        ui.horizontal(|ui| {
-            let half_w = (ui.available_width() - spacing) / 2.0;
+        ui.horizontal_top(|ui| {
+            // -8: the frame margins are outside the width we hand each card,
+            // so without it the pair overflows the panel and clips on the right.
+            let half_w = (ui.available_width() - spacing) / 2.0 - 8.0;
             dual_io_graph(
                 ui,
                 "Disk I/O",
                 disk_io_history,
-                ("Read", s.ok),
-                ("Write", s.warning),
+                ("▲", s.ok),
+                ("▼", s.warning),
                 half_w,
                 border_color,
             );
@@ -235,8 +226,8 @@ impl OverviewTab {
                 ui,
                 "Network I/O",
                 net_io_history,
-                ("Recv", s.accent),
-                ("Send", s.manual),
+                ("▼", s.accent),
+                ("▲", s.manual),
                 half_w,
                 border_color,
             );
@@ -250,11 +241,7 @@ impl OverviewTab {
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.label(
-                    RichText::new("Top processes (CPU%)")
-                        .strong()
-                        .size(tokens::FONT_HEADING),
-                );
+                ui.label(th::bold(ui, "Top processes (CPU%)", tokens::FONT_HEADING));
                 ui.add_space(4.0);
 
                 let mut top: Vec<&ProcInfo> = snapshot.iter().collect();
@@ -424,8 +411,8 @@ fn dual_io_graph(
     ui: &mut egui::Ui,
     title: &str,
     history: &VecDeque<(f32, f32)>,
-    (_label_a, color_a): (&str, Color32),
-    (_label_b, color_b): (&str, Color32),
+    (label_a, color_a): (&str, Color32),
+    (label_b, color_b): (&str, Color32),
     width: f32,
     border_color: Color32,
 ) {
@@ -436,8 +423,12 @@ fn dual_io_graph(
             ui.set_min_width(width - 16.0);
             ui.set_max_width(width - 16.0);
             let (cur_a, cur_b) = history.back().copied().unwrap_or((0.0, 0.0));
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(title).strong());
+            let head = ui.horizontal(|ui| {
+                ui.label(crate::gui::theme::bold(
+                    ui,
+                    title,
+                    crate::gui::theme::tokens::FONT_HEADING,
+                ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Right-to-left: the label is added before its swatch so the
                     // swatch ends up on the left of the text.
@@ -446,20 +437,13 @@ fn dual_io_graph(
                             .size(crate::gui::theme::tokens::FONT_HELP)
                             .color(ui.visuals().weak_text_color()),
                     );
-                    ui.colored_label(color_b, format!("{cur_b:.1}"));
-                    legend_dot(ui, color_b);
+                    ui.colored_label(color_b, format!("{label_b} {cur_b:.1}"));
                     ui.add_space(crate::gui::theme::tokens::SPACE_S);
-                    ui.colored_label(color_a, format!("{cur_a:.1}"));
-                    legend_dot(ui, color_a);
+                    ui.colored_label(color_a, format!("{label_a} {cur_a:.1}"));
                 });
             });
-            ui.add_space(4.0);
 
-            let graph_h = 60.0;
-            let (rect, _) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width(), graph_h),
-                egui::Sense::hover(),
-            );
+            let rect = plot_rect(ui, head.response.rect.bottom() + 4.0, 60.0);
             let painter = ui.painter();
             painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
 
@@ -493,10 +477,18 @@ fn dual_io_graph(
         });
 }
 
-/// Small colour swatch used in graph legends (the ▲/▼ glyphs are not present
-/// in egui's bundled fonts and render as tofu boxes).
-fn legend_dot(ui: &mut egui::Ui, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(2), color);
+/// Allocate a full-width plot area pinned to the card's left edge.
+///
+/// `allocate_exact_size` places the rect at the *cursor*, and a preceding
+/// `horizontal` row that ends in a right-to-left layout leaves the cursor at
+/// the right edge with no width left — which collapsed these plots to a
+/// zero-width strip drawn as a vertical bar.
+fn plot_rect(ui: &mut egui::Ui, top: f32, height: f32) -> egui::Rect {
+    let inner = ui.max_rect();
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(inner.left(), top),
+        Vec2::new(inner.width(), height),
+    );
+    ui.allocate_rect(rect, egui::Sense::hover());
+    rect
 }

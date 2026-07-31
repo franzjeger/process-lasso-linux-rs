@@ -73,7 +73,7 @@ impl HwMonitorTab {
                     .desired_width(w)
                     .hint_text("Search sensors…"),
             );
-            if !self.filter.is_empty() && ui.small_button("×").clicked() {
+            if !self.filter.is_empty() && ui.small_button("✕").clicked() {
                 self.filter.clear();
             }
 

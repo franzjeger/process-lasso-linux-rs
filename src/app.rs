@@ -968,7 +968,7 @@ impl eframe::App for ArgusLassoApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // Tab bar: five primary workflow tabs on the left; the occasional
-            // tools live behind a "Tools" menu and Settings behind the gear,
+            // tools live behind a "Tools ▾" menu and Settings behind the gear,
             // so nine equal flat tabs no longer bury the ones people live in.
             ui.horizontal(|ui| {
                 use crate::gui::theme as th;
@@ -1101,9 +1101,9 @@ impl eframe::App for ArgusLassoApp {
                     let tools_active =
                         matches!(active_now, Tab::HwMonitor | Tab::Benchmark | Tab::Log);
                     let tools_label = if tools_active {
-                        RichText::new("Tools").color(s.accent).strong()
+                        RichText::new("Tools ▾").color(s.accent).strong()
                     } else {
-                        RichText::new("Tools")
+                        RichText::new("Tools ▾")
                     };
                     ui.menu_button(tools_label, |ui| {
                         for (label, tab) in [
