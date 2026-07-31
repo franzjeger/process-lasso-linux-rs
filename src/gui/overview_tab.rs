@@ -117,11 +117,21 @@ impl OverviewTab {
                 .corner_radius(egui::CornerRadius::same(4))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    ui.label(
-                        RichText::new("CPU history · 120 s")
-                            .strong()
-                            .size(tokens::FONT_HEADING),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("CPU history")
+                                .strong()
+                                .size(tokens::FONT_HEADING)
+                                .color(ui.visuals().strong_text_color()),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new("120 s")
+                                    .size(tokens::FONT_HELP)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        });
+                    });
                     ui.add_space(4.0);
 
                     let graph_h = 90.0;
@@ -414,8 +424,8 @@ fn dual_io_graph(
     ui: &mut egui::Ui,
     title: &str,
     history: &VecDeque<(f32, f32)>,
-    (label_a, color_a): (&str, Color32),
-    (label_b, color_b): (&str, Color32),
+    (_label_a, color_a): (&str, Color32),
+    (_label_b, color_b): (&str, Color32),
     width: f32,
     border_color: Color32,
 ) {
@@ -431,10 +441,15 @@ fn dual_io_graph(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Right-to-left: the label is added before its swatch so the
                     // swatch ends up on the left of the text.
-                    ui.colored_label(color_b, format!("{label_b} {cur_b:.1} MB/s"));
+                    ui.label(
+                        RichText::new("MB/s")
+                            .size(crate::gui::theme::tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.colored_label(color_b, format!("{cur_b:.1}"));
                     legend_dot(ui, color_b);
                     ui.add_space(crate::gui::theme::tokens::SPACE_S);
-                    ui.colored_label(color_a, format!("{label_a} {cur_a:.1} MB/s"));
+                    ui.colored_label(color_a, format!("{cur_a:.1}"));
                     legend_dot(ui, color_a);
                 });
             });
@@ -474,14 +489,6 @@ fn dual_io_graph(
                         painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, color));
                     }
                 }
-                // Peak label top-right
-                painter.text(
-                    rect.right_bottom() + Vec2::new(-4.0, -2.0),
-                    egui::Align2::RIGHT_BOTTOM,
-                    format!("peak {peak:.1} MB/s"),
-                    egui::FontId::proportional(10.0),
-                    ui.visuals().weak_text_color(),
-                );
             }
         });
 }

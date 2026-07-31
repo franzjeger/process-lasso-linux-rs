@@ -383,7 +383,7 @@ pub fn kpi_card(
                     egui::RichText::new(value)
                         .size(tokens::FONT_KPI)
                         .strong()
-                        .monospace(),
+                        .color(ui.visuals().strong_text_color()),
                 );
                 ui.label(
                     egui::RichText::new(detail)
