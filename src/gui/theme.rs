@@ -188,7 +188,8 @@ impl Breeze {
     // Semantic colours — used for CPU load, status indicators, log lines
     pub const POSITIVE: Color32 = Color32::from_rgb(0x27, 0xae, 0x60); // #27ae60  green
     pub const WARNING: Color32 = Color32::from_rgb(0xf6, 0x74, 0x00); // #f67400  orange
-    pub const NEGATIVE: Color32 = Color32::from_rgb(0xda, 0x44, 0x53); // #da4453  red
+                                                                      // NEGATIVE lives in `sem()`/`sem_for()` — widgets take the theme-aware
+                                                                      // value from there rather than the dark-theme constant.
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -717,39 +718,6 @@ pub fn cpu_load_color(pct: f32) -> Color32 {
 }
 
 // ── Row highlight colours for the process table ───────────────────────────────
-
-/// Text colour for a process row given its CPU load and throttle state.
-/// `text_color` should be `ui.visuals().text_color()` so it adapts to Breeze Dark/Light.
-pub fn row_color(cpu_pct: f32, throttled: bool, text_color: Color32, dark_mode: bool) -> Color32 {
-    // The dark-theme accents (Breeze yellow/green/orange) have poor contrast
-    // as TEXT on a light background — use darkened variants there.
-    let (warn, hot, warm, calm) = if dark_mode {
-        (
-            Breeze::WARNING,
-            Breeze::NEGATIVE,
-            Color32::from_rgb(0xfd, 0xbc, 0x4b), // Breeze yellow
-            Breeze::POSITIVE,
-        )
-    } else {
-        (
-            Color32::from_rgb(0xa7, 0x4f, 0x00), // dark amber
-            Color32::from_rgb(0xb2, 0x27, 0x36), // dark red
-            Color32::from_rgb(0x8a, 0x66, 0x00), // dark yellow-brown
-            Color32::from_rgb(0x1d, 0x7d, 0x46), // dark green
-        )
-    };
-    if throttled {
-        warn
-    } else if cpu_pct >= 80.0 {
-        hot
-    } else if cpu_pct >= 40.0 {
-        warm
-    } else if cpu_pct >= 10.0 {
-        calm
-    } else {
-        text_color
-    }
-}
 
 // ── Theme application ─────────────────────────────────────────────────────────
 

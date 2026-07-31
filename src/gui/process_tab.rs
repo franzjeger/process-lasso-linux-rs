@@ -291,13 +291,19 @@ impl ProcessTab {
         // cost ~90px of vertical space that the table wants.
         ui.horizontal_top(|ui| {
             let total = ui.available_width();
-            let hist_w = (total * 0.52).clamp(280.0, 760.0);
+            // The grid is sized to its content — two columns of cells — so it
+            // stays a compact block instead of stretching across half the row.
+            let cores = crate::utils::get_cpu_count().max(1);
+            let grid_cols = if cores <= 4 { 2 } else { 4 };
+            let grid_w = (grid_cols as f32 * 66.0).min(total * 0.30);
+            let hist_w = (total - grid_w - theme::tokens::SPACE_S).max(240.0);
             ui.allocate_ui(egui::vec2(hist_w, 74.0), |ui| {
                 ui.set_width(hist_w);
                 self.history.show(ui);
             });
             ui.add_space(theme::tokens::SPACE_S);
-            ui.allocate_ui(egui::vec2(ui.available_width(), 74.0), |ui| {
+            ui.allocate_ui(egui::vec2(grid_w, 74.0), |ui| {
+                ui.set_width(grid_w);
                 self.bars.show(ui);
             });
         });
@@ -333,8 +339,9 @@ impl ProcessTab {
             if !self.filter.is_empty() && ui.small_button("✕").clicked() {
                 self.filter.clear();
             }
-            ui.checkbox(&mut self.filter_is_regex, ".*")
-                .on_hover_text("Interpret the filter as a regular expression");
+            if theme::chip(ui, ".*", self.filter_is_regex) {
+                self.filter_is_regex = !self.filter_is_regex;
+            }
             if self.filter_is_regex && !self.filter.is_empty() {
                 // (Re)compile only when the pattern changed
                 let stale = self
@@ -402,12 +409,20 @@ impl ProcessTab {
                         }
                     }
                 });
-                ui.checkbox(&mut self.tree_view, "Tree view");
+                let tree_btn = egui::Button::new("Tree view").selected(self.tree_view);
+                if ui.add(tree_btn).clicked() {
+                    self.tree_view = !self.tree_view;
+                }
                 if gaming_active {
-                    ui.checkbox(
-                        &mut self.hide_parked_in_proc_view,
-                        "Group affinity / hide parked",
-                    );
+                    let parked_btn =
+                        egui::Button::new("Hide parked").selected(self.hide_parked_in_proc_view);
+                    if ui
+                        .add(parked_btn)
+                        .on_hover_text("Group affinity / hide parked cores")
+                        .clicked()
+                    {
+                        self.hide_parked_in_proc_view = !self.hide_parked_in_proc_view;
+                    }
                 }
             });
         });
@@ -829,12 +844,16 @@ impl ProcessTab {
                             let is_sel = new_selected == Some(pid);
                             let throttled = throttled_pids.contains(&pid);
                             let cpu = proc.cpu_percent;
-                            let row_col = theme::row_color(
-                                cpu,
-                                throttled,
-                                ui.visuals().text_color(),
-                                ui.visuals().dark_mode,
-                            );
+                            // Mockup 1d keeps PID/NAME in the plain text colour —
+                            // load is carried by the CPU% value and its sparkline.
+                            // Throttled rows still get a warning tint as the badge
+                            // alone is easy to miss when scanning.
+                            let row_col = if throttled {
+                                theme::sem(ui).warning
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            let _ = &cpu;
                             let aff_full = format_affinity_display(
                                 &proc.affinity,
                                 &offline,
