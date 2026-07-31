@@ -113,10 +113,18 @@ impl Breeze {
 pub mod tokens {
     /// Fine print: table meta, thread lists, sublabels
     pub const FONT_SMALL: f32 = 11.0;
+    /// Column headers, chip labels, badges
+    pub const FONT_LABEL: f32 = 11.5;
+    /// Help text under group titles
+    pub const FONT_HELP: f32 = 12.5;
     /// Default body/table text
     pub const FONT_BODY: f32 = 13.5;
     /// Section headings inside cards
     pub const FONT_HEADING: f32 = 15.0;
+    /// Hero status headline (Gaming Mode / ProBalance status cards)
+    pub const FONT_HERO: f32 = 17.0;
+    /// KPI card value
+    pub const FONT_KPI: f32 = 26.0;
 
     /// Tight spacing inside a group
     pub const SPACE_XS: f32 = 4.0;
@@ -124,6 +132,323 @@ pub mod tokens {
     pub const SPACE_S: f32 = 8.0;
     /// Between sections/cards
     pub const SPACE_M: f32 = 12.0;
+
+    /// Standard data row height
+    pub const ROW_H: f32 = 26.0;
+    /// Dense data row height (HW Monitor sensors)
+    pub const ROW_H_DENSE: f32 = 22.0;
+    /// Left label column width in settings forms
+    pub const FORM_LABEL_W: f32 = 220.0;
+}
+
+// ── Component primitives ──────────────────────────────────────────────────────
+//
+// Shared widgets so every tab renders chips/badges/toggles identically.
+
+/// Pill-shaped filter chip in the accent colour.
+pub fn chip(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
+    let accent = sem(ui).accent;
+    chip_colored(ui, label, active, accent)
+}
+
+/// Pill-shaped filter chip in an explicit colour (log/HW categories carry
+/// their own semantic colour). Returns true when clicked; the active state
+/// gets a filled tint and a trailing ✕ hinting that clicking clears it.
+pub fn chip_colored(ui: &mut egui::Ui, label: &str, active: bool, color: Color32) -> bool {
+    let s = Sem {
+        accent: color,
+        ..sem(ui)
+    };
+    let text = if active {
+        format!("{label} ✕")
+    } else {
+        label.to_string()
+    };
+    let galley = ui.painter().layout_no_wrap(
+        text.clone(),
+        egui::FontId::proportional(tokens::FONT_LABEL),
+        if active {
+            s.accent
+        } else {
+            ui.visuals().weak_text_color()
+        },
+    );
+    let pad = egui::vec2(9.0, 4.0);
+    let size = galley.size() + pad * 2.0;
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = resp.hovered();
+        let fill = if active {
+            tint(s.accent, 46)
+        } else if hovered {
+            ui.visuals().widgets.hovered.bg_fill
+        } else {
+            Color32::TRANSPARENT
+        };
+        let stroke = if active {
+            Stroke::new(1.0_f32, s.accent)
+        } else {
+            Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color)
+        };
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(12),
+            fill,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
+    }
+    resp.clicked()
+}
+
+/// Small status badge (filled tint + coloured text), e.g. "Throttled".
+pub fn badge(ui: &mut egui::Ui, label: &str, color: Color32) {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(tokens::FONT_LABEL),
+        color,
+    );
+    let pad = egui::vec2(7.0, 1.0);
+    let size = galley.size() + pad * 2.0;
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(3), tint(color, 46));
+        ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
+    }
+}
+
+/// Paint a badge into an explicit rect (for painter-driven tables).
+pub fn badge_at(painter: &egui::Painter, pos: egui::Pos2, label: &str, color: Color32) {
+    let galley = painter.layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(tokens::FONT_LABEL),
+        color,
+    );
+    let pad = egui::vec2(7.0, 1.0);
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(pos.x, pos.y - galley.size().y * 0.5 - pad.y),
+        galley.size() + pad * 2.0,
+    );
+    painter.rect_filled(rect, CornerRadius::same(3), tint(color, 46));
+    painter.galley(rect.min + pad, galley, Color32::WHITE);
+}
+
+/// Neutral outlined badge (match types, kinds).
+pub fn badge_outline(ui: &mut egui::Ui, label: &str) {
+    let col = ui.visuals().weak_text_color();
+    let galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(tokens::FONT_LABEL),
+        col,
+    );
+    let pad = egui::vec2(7.0, 1.0);
+    let size = galley.size() + pad * 2.0;
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(3),
+            Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
+    }
+}
+
+/// iOS-style toggle switch (26×14 pill). Returns true when toggled.
+pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> bool {
+    let s = sem(ui);
+    let size = egui::vec2(26.0, 14.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+    }
+    if ui.is_rect_visible(rect) {
+        let fill = if *on {
+            s.accent
+        } else {
+            ui.visuals().widgets.inactive.bg_fill
+        };
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(7),
+            fill,
+            Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            egui::StrokeKind::Inside,
+        );
+        let cx = if *on {
+            rect.right() - 7.0
+        } else {
+            rect.left() + 7.0
+        };
+        ui.painter().circle_filled(
+            egui::pos2(cx, rect.center().y),
+            5.0,
+            if *on {
+                s.on_accent
+            } else {
+                ui.visuals().text_color()
+            },
+        );
+    }
+    resp.clicked()
+}
+
+/// Segmented button group. Returns the index clicked, if any.
+pub fn segmented(ui: &mut egui::Ui, options: &[&str], selected: usize) -> Option<usize> {
+    let s = sem(ui);
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (i, opt) in options.iter().enumerate() {
+            let is_sel = i == selected;
+            let galley = ui.painter().layout_no_wrap(
+                opt.to_string(),
+                egui::FontId::proportional(tokens::FONT_BODY),
+                if is_sel {
+                    s.on_accent
+                } else {
+                    ui.visuals().text_color()
+                },
+            );
+            let pad = egui::vec2(10.0, 4.0);
+            let size = galley.size() + pad * 2.0;
+            let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+            if ui.is_rect_visible(rect) {
+                // Round only the outer corners of the group
+                let r = 3;
+                let radius = CornerRadius {
+                    nw: if i == 0 { r } else { 0 },
+                    sw: if i == 0 { r } else { 0 },
+                    ne: if i == options.len() - 1 { r } else { 0 },
+                    se: if i == options.len() - 1 { r } else { 0 },
+                };
+                let fill = if is_sel {
+                    s.accent
+                } else if resp.hovered() {
+                    ui.visuals().widgets.hovered.bg_fill
+                } else {
+                    ui.visuals().widgets.inactive.bg_fill
+                };
+                ui.painter().rect(
+                    rect,
+                    radius,
+                    fill,
+                    Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
+            }
+            if resp.clicked() {
+                clicked = Some(i);
+            }
+        }
+    });
+    clicked
+}
+
+/// KPI card: uppercase label, big tabular value, weak detail line, and a
+/// 3px accent stripe down the left edge in `stripe`.
+pub fn kpi_card(
+    ui: &mut egui::Ui,
+    width: f32,
+    label: &str,
+    value: &str,
+    detail: &str,
+    stripe: Color32,
+) {
+    egui::Frame::new()
+        .stroke(Stroke::new(
+            1.0_f32,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 12,
+            top: 10,
+            bottom: 10,
+        })
+        .corner_radius(CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_width(width);
+            let top = ui.min_rect().min;
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(label.to_uppercase())
+                        .size(tokens::FONT_SMALL)
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.label(
+                    egui::RichText::new(value)
+                        .size(tokens::FONT_KPI)
+                        .strong()
+                        .monospace(),
+                );
+                ui.label(
+                    egui::RichText::new(detail)
+                        .size(tokens::FONT_HELP)
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
+            // Left accent stripe
+            let h = ui.min_rect().height();
+            let stripe_rect = egui::Rect::from_min_size(
+                egui::pos2(top.x - 12.0, top.y - 10.0),
+                egui::vec2(3.0, h + 20.0),
+            );
+            ui.painter().rect_filled(stripe_rect, 0.0, stripe);
+        });
+}
+
+/// Bottom action bar for settings-style tabs: dirty indicator on the left,
+/// Discard + Apply on the right. Returns (discard_clicked, apply_clicked).
+pub fn apply_bar(ui: &mut egui::Ui, dirty: bool) -> (bool, bool) {
+    let s = sem(ui);
+    let mut discard = false;
+    let mut apply = false;
+    ui.add_space(tokens::SPACE_S);
+    ui.separator();
+    ui.horizontal(|ui| {
+        if dirty {
+            ui.colored_label(s.warning, "● Unsaved changes");
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let apply_btn = egui::Button::new(
+                egui::RichText::new("Apply changes")
+                    .color(s.on_accent)
+                    .strong(),
+            )
+            .fill(s.accent);
+            if ui.add_enabled(dirty, apply_btn).clicked() {
+                apply = true;
+            }
+            if ui
+                .add_enabled(dirty, egui::Button::new("Discard"))
+                .clicked()
+            {
+                discard = true;
+            }
+        });
+    });
+    (discard, apply)
+}
+
+/// Column-header label: weak, small — never accent blue, which reads as
+/// "interactive/selected". Only the active sort column gets strong text.
+pub fn header_text(ui: &egui::Ui, label: &str, active: bool) -> egui::RichText {
+    let t = egui::RichText::new(label).size(tokens::FONT_LABEL);
+    if active {
+        t.strong().color(ui.visuals().strong_text_color())
+    } else {
+        t.color(ui.visuals().weak_text_color())
+    }
+}
+
+/// Monospace font for numeric cells — prevents jitter on live refresh.
+pub fn num_font(size: f32) -> egui::FontId {
+    egui::FontId::monospace(size)
 }
 
 /// QGroupBox-style bordered card with a top-left title — THE section container
@@ -177,9 +502,108 @@ pub fn banner(ui: &mut egui::Ui, color: Color32, text: &str, action: Option<&str
     clicked
 }
 
+// ── Semantic colour system ────────────────────────────────────────────────────
+//
+// ONE source of truth for every semantic colour in the app. Tabs must never
+// hardcode rgb literals — call `sem(ui)` (or the ramp below) so Breeze Light
+// automatically gets its darker, AA-contrast variants.
+
+/// Semantic palette resolved for the active theme.
+#[derive(Debug, Clone, Copy)]
+pub struct Sem {
+    /// Healthy / low load / success
+    pub ok: Color32,
+    /// Mid load (≥50%)
+    pub mid: Color32,
+    /// Elevated / attention (≥70%)
+    pub warning: Color32,
+    /// Critical / destructive (≥85%)
+    pub negative: Color32,
+    /// Accent + selection (also "rules"/"network" info blue)
+    pub accent: Color32,
+    /// Readable text colour on top of an accent-filled surface
+    pub on_accent: Color32,
+    /// Manual/user actions (log category, network TX)
+    pub manual: Color32,
+}
+
+/// Semantic palette for the active theme (dark vs. Breeze Light).
+pub fn sem(ui: &egui::Ui) -> Sem {
+    sem_for(ui.visuals().dark_mode)
+}
+
+/// Semantic palette for an explicit theme mode.
+pub fn sem_for(dark_mode: bool) -> Sem {
+    if dark_mode {
+        Sem {
+            ok: Color32::from_rgb(0x27, 0xae, 0x60),
+            mid: Color32::from_rgb(0x8b, 0xc3, 0x4a),
+            warning: Color32::from_rgb(0xf6, 0x74, 0x00),
+            negative: Color32::from_rgb(0xda, 0x44, 0x53),
+            accent: Color32::from_rgb(0x3d, 0xae, 0xe9),
+            on_accent: Color32::from_rgb(0x0d, 0x14, 0x18),
+            manual: Color32::from_rgb(0x9b, 0x59, 0xb6),
+        }
+    } else {
+        // Breeze Light: accent darkens (#3daee9 has too little contrast on
+        // white) and the semantic ramp darkens for AA contrast on light fills.
+        Sem {
+            ok: Color32::from_rgb(0x1e, 0x84, 0x49),
+            mid: Color32::from_rgb(0x68, 0x9f, 0x38),
+            warning: Color32::from_rgb(0xc0, 0x50, 0x00),
+            negative: Color32::from_rgb(0xc0, 0x39, 0x2b),
+            accent: Color32::from_rgb(0x29, 0x80, 0xb9),
+            on_accent: Color32::WHITE,
+            manual: Color32::from_rgb(0x7d, 0x3c, 0x98),
+        }
+    }
+}
+
+/// Same colour at a given alpha — for chip fills, heat strips, badges.
+pub fn tint(c: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
+}
+
 // ── CPU load colour ramp (Breeze semantic colours) ────────────────────────────
 
-/// Returns a colour along the green→orange→red Breeze ramp for `pct` ∈ [0,100].
+/// Load colour for `pct` ∈ [0,100] in the ACTIVE theme. Use this for bars,
+/// table values, sparklines and graphs so one ramp drives everything.
+pub fn load_color(ui: &egui::Ui, pct: f32) -> Color32 {
+    load_color_for(ui.visuals().dark_mode, pct)
+}
+
+/// Load colour for an explicit theme mode.
+pub fn load_color_for(dark_mode: bool, pct: f32) -> Color32 {
+    let s = sem_for(dark_mode);
+    let stops = [
+        (0.0, s.ok),
+        (50.0, s.mid),
+        (70.0, s.warning),
+        (85.0, s.negative),
+        (100.0, s.negative),
+    ];
+    let pct = pct.clamp(0.0, 100.0);
+    for i in 0..stops.len() - 1 {
+        let (p0, c0) = stops[i];
+        let (p1, c1) = stops[i + 1];
+        if pct <= p1 {
+            let t = if (p1 - p0).abs() > f32::EPSILON {
+                (pct - p0) / (p1 - p0)
+            } else {
+                0.0
+            };
+            let lerp = |a: u8, b: u8| (a as f32 + t * (b as f32 - a as f32)).round() as u8;
+            return Color32::from_rgb(
+                lerp(c0.r(), c1.r()),
+                lerp(c0.g(), c1.g()),
+                lerp(c0.b(), c1.b()),
+            );
+        }
+    }
+    s.negative
+}
+
+/// Dark-theme ramp kept for painters that have no `Ui` at hand.
 pub fn cpu_load_color(pct: f32) -> Color32 {
     const RAMP: &[(f32, u8, u8, u8)] = &[
         (0.0, 0x27, 0xae, 0x60),   // Breeze green  (#27ae60)

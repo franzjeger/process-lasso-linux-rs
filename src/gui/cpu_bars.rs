@@ -43,110 +43,117 @@ impl CpuBarsWidget {
             return;
         }
 
+        // Compact single-line core cells: index left (weak), % right, and the
+        // load shown as a background strip rather than a separate bar — this
+        // fits the grid beside the history graph instead of under it.
         let avail_w = ui.available_width();
-        let bar_h = 36.0;
-        let gap = 4.0;
-        let label_w = 30.0;
+        let cell_h = 20.0;
+        let gap = 3.0;
+        let cell_min_w = 62.0;
 
-        // Choose column count to fill width with minimal wasted slots
-        let bar_min_w = 110.0;
-        let max_cols = ((avail_w / bar_min_w) as usize).max(1).min(n);
+        let max_cols = ((avail_w / cell_min_w) as usize).max(1).min(n);
         let cols = (1..=max_cols)
             .rev()
             .find(|&c| n.is_multiple_of(c))
             .unwrap_or(max_cols);
         let rows = n.div_ceil(cols);
-        let bar_w = ((avail_w - gap * (cols as f32 + 1.0)) / cols as f32).max(60.0);
+        let cell_w = ((avail_w - gap * (cols as f32 - 1.0)) / cols as f32).max(46.0);
 
-        let total_h = rows as f32 * (bar_h + gap) + gap;
+        let total_h = rows as f32 * (cell_h + gap);
         let (resp, painter) =
             ui.allocate_painter(Vec2::new(avail_w, total_h), egui::Sense::hover());
         let base = resp.rect.min;
 
         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
         let text_color = ui.visuals().text_color();
-        let offline_text = ui.visuals().weak_text_color();
-        let bar_bg = ui.visuals().extreme_bg_color;
+        let weak = ui.visuals().weak_text_color();
+        let cell_bg = ui.visuals().extreme_bg_color;
         let offline_bg = ui.visuals().faint_bg_color;
+        let dark = ui.visuals().dark_mode;
+        let font = egui::FontId::monospace(11.0);
+        let hover_pos = resp.hover_pos();
+        let mut hovered_cpu: Option<usize> = None;
 
         for i in 0..n {
             let col = (i % cols) as f32;
             let row = (i / cols) as f32;
-            let x = base.x + gap + col * (bar_w + gap);
-            let y = base.y + gap + row * (bar_h + gap);
-            let rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(bar_w, bar_h));
+            let x = base.x + col * (cell_w + gap);
+            let y = base.y + row * (cell_h + gap);
+            let rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, cell_h));
 
             let pct = self.cpu_pcts[i];
             let is_offline = self.offline.contains(&(i as u32));
 
-            // Background: dimmer for offline bars
-            let bg_color = if is_offline { offline_bg } else { bar_bg };
-            painter.rect_filled(rect, CornerRadius::same(4), bg_color);
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(3),
+                if is_offline { offline_bg } else { cell_bg },
+            );
 
-            // Filled portion
+            // Load as a background strip at ~33% alpha of the ramp colour
             if !is_offline && pct > 0.0 {
-                let fill_w = ((bar_w - label_w - 2.0) * pct / 100.0).max(0.0);
-                let fill_rect = Rect::from_min_size(
-                    Pos2::new(x + label_w + 1.0, y + 2.0),
-                    Vec2::new(fill_w, bar_h - 4.0),
+                let fill_w = (cell_w * pct / 100.0).clamp(0.0, cell_w);
+                let fill_rect = Rect::from_min_size(rect.min, Vec2::new(fill_w, cell_h));
+                painter.rect_filled(
+                    fill_rect,
+                    CornerRadius::same(3),
+                    theme::tint(theme::load_color_for(dark, pct), 84),
                 );
-                painter.rect_filled(fill_rect, CornerRadius::same(2), theme::cpu_load_color(pct));
             }
 
-            // Border
             painter.rect_stroke(
                 rect,
-                CornerRadius::same(4),
+                CornerRadius::same(3),
                 Stroke::new(1.0_f32, border_color),
                 egui::StrokeKind::Middle,
             );
 
-            // CPU index label
-            let idx_color = if is_offline { offline_text } else { text_color };
+            // Index left (weak), value right
             painter.text(
-                Pos2::new(x + label_w - 3.0, y + bar_h / 2.0 - 6.0),
-                egui::Align2::RIGHT_CENTER,
+                Pos2::new(x + 5.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
                 i.to_string(),
-                egui::FontId::monospace(12.0),
-                idx_color,
+                font.clone(),
+                weak,
             );
-
-            // Percentage / "off" text
-            let pct_text = if is_offline {
-                "off".to_string()
-            } else {
-                format!("{pct:.0}%")
-            };
-            let pct_color = if is_offline { offline_text } else { text_color };
             painter.text(
-                Pos2::new(x + bar_w - 3.0, y + bar_h / 2.0 - 6.0),
+                Pos2::new(x + cell_w - 5.0, rect.center().y),
                 egui::Align2::RIGHT_CENTER,
-                pct_text,
-                egui::FontId::monospace(12.0),
-                pct_color,
+                if is_offline {
+                    "off".to_string()
+                } else {
+                    format!("{pct:.0}%")
+                },
+                font.clone(),
+                if is_offline { weak } else { text_color },
             );
 
-            // Frequency line (second row inside bar)
-            if !is_offline {
-                let freq_text = if let Some(khz) = self.cpu_freqs.get(i).copied().flatten() {
-                    if khz >= 1_000_000 {
-                        format!("{:.1}G", khz as f64 / 1_000_000.0)
-                    } else {
-                        format!("{}M", khz / 1_000)
-                    }
-                } else {
-                    String::new()
-                };
-                if !freq_text.is_empty() {
-                    painter.text(
-                        Pos2::new(x + bar_w - 3.0, y + bar_h / 2.0 + 8.0),
-                        egui::Align2::RIGHT_CENTER,
-                        freq_text,
-                        egui::FontId::monospace(11.0),
-                        offline_text,
-                    );
-                }
+            if hover_pos.is_some_and(|p| rect.contains(p)) {
+                hovered_cpu = Some(i);
             }
+        }
+
+        // Frequency readout moves to a hover tooltip so the cells stay compact.
+        if let Some(i) = hovered_cpu {
+            let freq = self
+                .cpu_freqs
+                .get(i)
+                .copied()
+                .flatten()
+                .map(|khz| {
+                    if khz >= 1_000_000 {
+                        format!("{:.2} GHz", khz as f64 / 1_000_000.0)
+                    } else {
+                        format!("{} MHz", khz / 1_000)
+                    }
+                })
+                .unwrap_or_else(|| "frequency unavailable".to_string());
+            let state = if self.offline.contains(&(i as u32)) {
+                "parked (offline)".to_string()
+            } else {
+                format!("{:.0}% load", self.cpu_pcts[i])
+            };
+            resp.on_hover_text(format!("CPU {i} — {state}\n{freq}"));
         }
     }
 }

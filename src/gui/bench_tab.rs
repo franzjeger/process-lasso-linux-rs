@@ -3,8 +3,9 @@
 //! Results appear in a dedicated OS-level window (egui viewport) so they can
 //! be moved and resized independently of the main application window.
 
-use egui::{Color32, Pos2, Rect, RichText, Stroke, Vec2};
+use egui::{Color32, CornerRadius, Margin, Pos2, Rect, RichText, Stroke, Vec2};
 
+use crate::gui::theme::{self, tokens};
 use crate::mem_bench::{
     BandwidthResult, CacheSizes, MemBandwidthBench, MemLatencyBench, MemLatencyResult, TEST_SIZES,
 };
@@ -74,6 +75,7 @@ impl BenchTab {
             egui::Frame::new()
                 .stroke(Stroke::new(1.0_f32, border_color))
                 .inner_margin(egui::Margin::same(12))
+                .corner_radius(CornerRadius::same(4))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -81,9 +83,19 @@ impl BenchTab {
                         }
                         let pct = self.last.progress * 100.0;
                         let size_str = self.last.current_size.map(fmt_size).unwrap_or_default();
-                        ui.label(format!("Running… {pct:.0}%  —  current: {size_str}"));
+                        ui.label(RichText::new("Running…").size(tokens::FONT_BODY));
+                        ui.label(
+                            RichText::new(format!("{pct:.0}%"))
+                                .font(theme::num_font(tokens::FONT_BODY))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!("current: {size_str}"))
+                                .size(tokens::FONT_HELP)
+                                .color(ui.visuals().weak_text_color()),
+                        );
                     });
-                    ui.add_space(6.0);
+                    ui.add_space(tokens::SPACE_S);
                     ui.add(
                         egui::ProgressBar::new(self.last.progress)
                             .animate(true)
@@ -98,89 +110,89 @@ impl BenchTab {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                // ── Memory Latency Benchmark ─────────────────────────────────────────
-                bench_group(ui, border_color, "Memory Latency Benchmark", |ui| {
-                    ui.label(
-                "Measures RAM latency using random pointer-chasing (one cache-line per hop).\n\
-                 Identical method to AIDA64 Cache & Memory Benchmark — the CPU prefetcher\n\
-                 cannot predict the next address, so the result reflects true hardware latency.",
-            );
-                    ui.add_space(10.0);
-
-                    ui.label(RichText::new("Detected cache topology").strong());
-                    ui.add_space(4.0);
-                    egui::Grid::new("cache_grid")
-                        .num_columns(2)
-                        .spacing([20.0, 4.0])
-                        .show(ui, |ui| {
-                            let c = &self.cache;
-                            ui.label(RichText::new("L1 Data:").color(L1_COLOR).strong());
-                            ui.label(fmt_size(c.l1d));
-                            ui.end_row();
-                            ui.label(RichText::new("L2:").color(L2_COLOR).strong());
-                            ui.label(fmt_size(c.l2));
-                            ui.end_row();
-                            ui.label(RichText::new("L3:").color(L3_COLOR).strong());
-                            ui.label(fmt_size(c.l3));
-                            ui.end_row();
-                            ui.label(RichText::new("DRAM:").color(DRAM_COLOR).strong());
-                            ui.label(format!("> {}", fmt_size(c.l3)));
-                            ui.end_row();
-                        });
-
-                    ui.add_space(10.0);
+                // ── Memory Latency Benchmark ──────────────────────────────────
+                let lat_buttons: &[(&str, bool)] = if self.last.complete {
+                    &[("Run again", false), ("Show results", false)]
+                } else {
+                    &[("Run test", true)]
+                };
+                let clicked = bench_card(ui, "Memory Latency Benchmark", lat_buttons, |ui| {
                     ui.label(
                         RichText::new(
-                            "Note: Test takes ~15-60 seconds and fully loads one CPU core.",
+                            "Random pointer-chasing, one cache-line per hop — identical method to \
+                             AIDA64 Cache & Memory Benchmark, so the prefetcher cannot hide true \
+                             hardware latency.",
                         )
-                        .color(Color32::from_rgb(240, 200, 70))
-                        .size(11.5),
+                        .size(tokens::FONT_HELP)
+                        .color(ui.visuals().weak_text_color()),
                     );
-                    ui.add_space(8.0);
+                    ui.add_space(tokens::SPACE_S);
 
+                    // Cache topology + latest latency, merged into four level cards.
+                    let stats = region_latencies(&self.last.points, &self.cache);
+                    let cols = level_colors(ui);
+                    let sizes = [
+                        fmt_size(self.cache.l1d),
+                        fmt_size(self.cache.l2),
+                        fmt_size(self.cache.l3),
+                        format!("> {}", fmt_size(self.cache.l3)),
+                    ];
+                    let labels = ["L1", "L2", "L3", "DRAM"];
+                    let outer = card_width(ui, 4);
                     ui.horizontal(|ui| {
-                        if ui
-                            .button(RichText::new("Run latency test").size(13.0))
-                            .clicked()
-                        {
-                            self.bench.start();
-                        }
-                        if self.last.complete {
-                            ui.separator();
-                            if ui.button("Show results").clicked() {
-                                self.results_open = true;
-                            }
-                            if ui.button("Run again").clicked() {
-                                self.bench.start();
-                            }
+                        ui.spacing_mut().item_spacing.x = tokens::SPACE_S;
+                        for i in 0..4 {
+                            level_card(ui, outer, labels[i], &sizes[i], stats[i], cols[i]);
                         }
                     });
-                });
 
-                ui.add_space(8.0);
-
-                // ── Memory Bandwidth Benchmark ───────────────────────────────────────
-                bench_group(ui, border_color, "Memory Bandwidth Benchmark", |ui| {
+                    ui.add_space(tokens::SPACE_S);
                     ui.label(
-                "Sequential read, write, and copy throughput — 256 MiB buffer, DRAM pressure.\n\
-                 Results reported in GB/s.",
-            );
-                    ui.add_space(8.0);
+                        RichText::new("Takes ~15–60 s and fully loads one CPU core.")
+                            .size(tokens::FONT_HELP)
+                            .color(theme::sem(ui).warning),
+                    );
+                });
+                match clicked {
+                    Some(0) => self.bench.start(),
+                    Some(1) => self.results_open = true,
+                    _ => {}
+                }
 
-                    // Bandwidth progress/results
-                    let bw = self.bw_bench.snapshot();
-                    let was_running = self.last_bw.running;
-                    if bw.running || bw.complete {
-                        self.last_bw = bw.clone();
-                    }
-                    // Push to history when a run just completed
-                    if was_running && self.last_bw.complete {
-                        self.bw_history.push(self.last_bw.clone());
-                    }
+                ui.add_space(tokens::SPACE_M);
+
+                // ── Memory Bandwidth Benchmark ────────────────────────────────
+                let bw = self.bw_bench.snapshot();
+                let was_running = self.last_bw.running;
+                if bw.running || bw.complete {
+                    self.last_bw = bw.clone();
+                }
+                // Push to history when a run just completed
+                if was_running && self.last_bw.complete {
+                    self.bw_history.push(self.last_bw.clone());
+                }
+
+                let bw_buttons: &[(&str, bool)] = if self.last_bw.running {
+                    &[]
+                } else if self.last_bw.complete {
+                    &[("Run again", false)]
+                } else {
+                    &[("Run test", false)]
+                };
+                let clicked = bench_card(ui, "Memory Bandwidth Benchmark", bw_buttons, |ui| {
+                    ui.label(
+                        RichText::new(
+                            "Sequential read, write and copy throughput over a 256 MiB buffer \
+                             (DRAM pressure), reported in GB/s.",
+                        )
+                        .size(tokens::FONT_HELP)
+                        .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(tokens::SPACE_S);
 
                     if self.last_bw.running {
                         ui.horizontal(|ui| {
-                            if ui.button("Cancel bandwidth").clicked() {
+                            if ui.button("Cancel").clicked() {
                                 self.bw_bench.cancel();
                             }
                             let stage = match (self.last_bw.progress * 3.0) as u32 {
@@ -188,8 +200,13 @@ impl BenchTab {
                                 1 => "Write…",
                                 _ => "Copy…",
                             };
-                            ui.label(format!("Running {stage}"));
+                            ui.label(
+                                RichText::new(format!("Running {stage}"))
+                                    .size(tokens::FONT_HELP)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
                         });
+                        ui.add_space(tokens::SPACE_XS);
                         ui.add(
                             egui::ProgressBar::new(self.last_bw.progress)
                                 .animate(true)
@@ -197,95 +214,46 @@ impl BenchTab {
                         );
                         ui.ctx().request_repaint();
                     } else if self.last_bw.complete {
-                        let highlight = Color32::from_rgb(140, 200, 100);
                         let prev = if self.bw_history.len() >= 2 {
                             Some(&self.bw_history[self.bw_history.len() - 2])
                         } else {
                             None
                         };
-                        egui::Grid::new("bw_results")
-                            .num_columns(if prev.is_some() { 3 } else { 2 })
-                            .spacing([20.0, 4.0])
-                            .show(ui, |ui| {
-                                let bw = &self.last_bw;
-                                if prev.is_some() {
-                                    ui.label(RichText::new("").strong());
-                                    ui.label(RichText::new("Current").strong());
-                                    ui.label(RichText::new("vs Prev").strong());
-                                    ui.end_row();
-                                }
-                                let delta_label = |cur: f64, prev: f64| -> RichText {
-                                    let d = cur - prev;
-                                    let s = format!("{:+.2} GB/s", d);
-                                    if d > 0.05f64 {
-                                        RichText::new(s).color(Color32::from_rgb(100, 200, 100))
-                                    } else if d < -0.05f64 {
-                                        RichText::new(s).color(Color32::from_rgb(220, 80, 60))
-                                    } else {
-                                        RichText::new(s).color(Color32::GRAY)
-                                    }
-                                };
-                                ui.label(RichText::new("Read:").strong());
-                                ui.label(
-                                    RichText::new(format!("{:.2} GB/s", bw.read_gb_s))
-                                        .color(highlight)
-                                        .strong(),
-                                );
-                                if let Some(p) = prev {
-                                    ui.label(delta_label(bw.read_gb_s, p.read_gb_s));
-                                }
-                                ui.end_row();
-                                ui.label(RichText::new("Write:").strong());
-                                ui.label(
-                                    RichText::new(format!("{:.2} GB/s", bw.write_gb_s))
-                                        .color(highlight)
-                                        .strong(),
-                                );
-                                if let Some(p) = prev {
-                                    ui.label(delta_label(bw.write_gb_s, p.write_gb_s));
-                                }
-                                ui.end_row();
-                                ui.label(RichText::new("Copy:").strong());
-                                ui.label(
-                                    RichText::new(format!("{:.2} GB/s", bw.copy_gb_s))
-                                        .color(highlight)
-                                        .strong(),
-                                );
-                                if let Some(p) = prev {
-                                    ui.label(delta_label(bw.copy_gb_s, p.copy_gb_s));
-                                }
-                                ui.end_row();
-                            });
-                        ui.add_space(4.0);
+                        let cur = &self.last_bw;
+                        let rows = [
+                            ("READ", cur.read_gb_s, prev.map(|p| p.read_gb_s)),
+                            ("WRITE", cur.write_gb_s, prev.map(|p| p.write_gb_s)),
+                            ("COPY", cur.copy_gb_s, prev.map(|p| p.copy_gb_s)),
+                        ];
+                        let outer = card_width(ui, 3);
                         ui.horizontal(|ui| {
-                            if ui.button("Run bandwidth again").clicked() {
-                                self.bw_bench.start();
-                            }
-                            if self.bw_history.len() > 1 {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} runs recorded",
-                                        self.bw_history.len()
-                                    ))
-                                    .weak()
-                                    .size(11.5),
-                                );
+                            ui.spacing_mut().item_spacing.x = tokens::SPACE_S;
+                            for (label, value, previous) in rows {
+                                bandwidth_card(ui, outer, label, value, previous);
                             }
                         });
-                    } else {
-                        if ui
-                            .button(RichText::new("Run bandwidth test").size(13.0))
-                            .clicked()
-                        {
-                            self.bw_bench.start();
+                        if self.bw_history.len() > 1 {
+                            ui.add_space(tokens::SPACE_XS);
+                            ui.label(
+                                RichText::new(format!("{} runs recorded", self.bw_history.len()))
+                                    .size(tokens::FONT_SMALL)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
                         }
                     }
 
                     if !self.csv_status.is_empty() {
-                        ui.add_space(4.0);
-                        ui.label(&self.csv_status);
+                        ui.add_space(tokens::SPACE_XS);
+                        ui.label(
+                            RichText::new(&self.csv_status)
+                                .size(tokens::FONT_HELP)
+                                .color(ui.visuals().weak_text_color()),
+                        );
                     }
                 });
+                if clicked.is_some() {
+                    self.bw_bench.start();
+                }
             }); // end ScrollArea
 
         // ── Separate OS window for results ────────────────────────────────────
@@ -339,68 +307,37 @@ fn show_results(
     csv_tx: std::sync::mpsc::Sender<String>,
 ) -> Option<usize> {
     let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let weak = ui.visuals().weak_text_color();
+    let sem = theme::sem(ui);
+    let dark = ui.visuals().dark_mode;
+    let cols = level_colors(ui);
     let max_ns = points.iter().map(|p| p.latency_ns).fold(0.0_f64, f64::max);
 
     // ── Latency summary cards ─────────────────────────────────────────────────
-    let avg_for = |lo: usize, hi: usize| -> Option<f64> {
-        let v: Vec<f64> = points
-            .iter()
-            .filter(|p| p.size_bytes > lo && p.size_bytes <= hi)
-            .map(|p| p.latency_ns)
-            .collect();
-        if v.is_empty() {
-            None
-        } else {
-            Some(v.iter().sum::<f64>() / v.len() as f64)
+    let stats = region_latencies(points, cache);
+    let sizes = [
+        fmt_size(cache.l1d),
+        fmt_size(cache.l2),
+        fmt_size(cache.l3),
+        format!("> {}", fmt_size(cache.l3)),
+    ];
+    let labels = ["L1", "L2", "L3", "DRAM"];
+    let outer = card_width(ui, 4);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = tokens::SPACE_S;
+        for i in 0..4 {
+            level_card(ui, outer, labels[i], &sizes[i], stats[i], cols[i]);
         }
-    };
-    let dram_ns: Option<f64> = {
-        let v: Vec<f64> = points
-            .iter()
-            .filter(|p| p.size_bytes > cache.l3)
-            .map(|p| p.latency_ns)
-            .collect();
-        if v.is_empty() {
-            None
-        } else {
-            let s = v.len() / 2;
-            Some(v[s..].iter().sum::<f64>() / (v.len() - s) as f64)
-        }
-    };
+    });
 
-    egui::Frame::new()
-        .stroke(Stroke::new(1.0_f32, border_color))
-        .inner_margin(egui::Margin::same(10))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                latency_card(ui, "L1", avg_for(0, cache.l1d), L1_COLOR, border_color);
-                latency_card(
-                    ui,
-                    "L2",
-                    avg_for(cache.l1d, cache.l2),
-                    L2_COLOR,
-                    border_color,
-                );
-                latency_card(
-                    ui,
-                    "L3",
-                    avg_for(cache.l2, cache.l3),
-                    L3_COLOR,
-                    border_color,
-                );
-                latency_card(ui, "DRAM", dram_ns, DRAM_COLOR, border_color);
-            });
-        });
-
-    ui.add_space(4.0);
+    ui.add_space(tokens::SPACE_S);
 
     ui.horizontal(|ui| {
-        // Run again button triggers a new bench — we can't access BenchTab here,
-        // so we use a note label. The tab itself has the Run again button.
+        // Run again lives on the Benchmark tab — this window only reports.
         ui.label(
             RichText::new("Close this window to run again from the Benchmark tab.")
-                .color(Color32::GRAY)
-                .size(11.0),
+                .color(weak)
+                .size(tokens::FONT_SMALL),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Save CSV").clicked() {
@@ -450,38 +387,14 @@ fn show_results(
 
     let painter = ui.painter_at(outer_rect);
 
-    // Cache region bands
-    let regions: &[(usize, usize, Color32, &str, Color32)] = &[
-        (
-            0,
-            cache.l1d,
-            Color32::from_rgba_premultiplied(30, 140, 55, 40),
-            "L1",
-            L1_COLOR,
-        ),
-        (
-            cache.l1d,
-            cache.l2,
-            Color32::from_rgba_premultiplied(90, 150, 30, 35),
-            "L2",
-            L2_COLOR,
-        ),
-        (
-            cache.l2,
-            cache.l3,
-            Color32::from_rgba_premultiplied(170, 130, 15, 30),
-            "L3",
-            L3_COLOR,
-        ),
-        (
-            cache.l3,
-            *TEST_SIZES.last().unwrap() + 1,
-            Color32::from_rgba_premultiplied(170, 40, 40, 30),
-            "DRAM",
-            DRAM_COLOR,
-        ),
+    // Cache region bands — same semantic ramp as the level cards
+    let regions: [(usize, usize, &str, Color32); 4] = [
+        (0, cache.l1d, "L1", cols[0]),
+        (cache.l1d, cache.l2, "L2", cols[1]),
+        (cache.l2, cache.l3, "L3", cols[2]),
+        (cache.l3, *TEST_SIZES.last().unwrap() + 1, "DRAM", cols[3]),
     ];
-    for &(from, to, bg, label, tcol) in regions {
+    for (from, to, label, tcol) in regions {
         let rx1 = to_x(from.max(*TEST_SIZES.first().unwrap()));
         let rx2 = to_x(to.min(*TEST_SIZES.last().unwrap()));
         if rx2 <= rx1 {
@@ -491,21 +404,21 @@ fn show_results(
             Pos2::new(rx1, graph_rect.top()),
             Pos2::new(rx2, graph_rect.bottom()),
         );
-        painter.rect_filled(band, 0.0, bg);
+        painter.rect_filled(band, 0.0, theme::tint(tcol, 30));
         painter.text(
             Pos2::new((rx1 + rx2) / 2.0, graph_rect.top() + 5.0),
             egui::Align2::CENTER_TOP,
             label,
-            egui::FontId::proportional(11.0),
+            egui::FontId::proportional(tokens::FONT_SMALL),
             tcol,
         );
     }
 
-    painter.rect_filled(graph_rect, 2.0, Color32::from_black_alpha(50));
+    painter.rect_filled(graph_rect, 2.0, ui.visuals().extreme_bg_color);
     painter.rect_stroke(
         graph_rect,
         2.0,
-        Stroke::new(1.0_f32, Color32::from_gray(70)),
+        Stroke::new(1.0_f32, border_color),
         egui::StrokeKind::Outside,
     );
 
@@ -520,14 +433,14 @@ fn show_results(
                 Pos2::new(graph_rect.left(), y),
                 Pos2::new(graph_rect.right(), y),
             ],
-            Stroke::new(1.0_f32, Color32::from_gray(45)),
+            Stroke::new(1.0_f32, theme::tint(weak, 45)),
         );
         painter.text(
             Pos2::new(graph_rect.left() - 5.0, y),
             egui::Align2::RIGHT_CENTER,
             format!("{ns:.0} ns"),
-            egui::FontId::proportional(10.0),
-            Color32::GRAY,
+            theme::num_font(10.0),
+            weak,
         );
     }
 
@@ -539,14 +452,14 @@ fn show_results(
                 Pos2::new(x, graph_rect.top()),
                 Pos2::new(x, graph_rect.bottom()),
             ],
-            Stroke::new(1.0_f32, Color32::from_gray(40)),
+            Stroke::new(1.0_f32, theme::tint(weak, 35)),
         );
         painter.text(
             Pos2::new(x, graph_rect.bottom() + 5.0),
             egui::Align2::CENTER_TOP,
             fmt_size_short(size),
-            egui::FontId::proportional(9.5),
-            Color32::GRAY,
+            theme::num_font(9.5),
+            weak,
         );
     }
 
@@ -564,15 +477,12 @@ fn show_results(
         fill.push(Pos2::new(pts[0].x, graph_rect.bottom()));
         painter.add(egui::Shape::convex_polygon(
             fill,
-            Color32::from_rgba_premultiplied(60, 150, 255, 22),
+            theme::tint(sem.accent, 22),
             Stroke::NONE,
         ));
 
         for seg in pts.windows(2) {
-            painter.line_segment(
-                [seg[0], seg[1]],
-                Stroke::new(2.0_f32, Color32::from_rgb(80, 165, 255)),
-            );
+            painter.line_segment([seg[0], seg[1]], Stroke::new(2.0_f32, sem.accent));
         }
 
         // Hover detection
@@ -591,9 +501,9 @@ fn show_results(
         for (i, (p, pt)) in points.iter().zip(pts.iter()).enumerate() {
             let hover = hover_in == Some(i) || hover_out == Some(i);
             let r = if hover { 6.0 } else { 4.0 };
-            let col = latency_color(p.latency_ns, max_ns);
+            let col = latency_color(dark, p.latency_ns, max_ns);
             painter.circle_filled(*pt, r, col);
-            painter.circle_stroke(*pt, r, Stroke::new(1.0_f32, Color32::WHITE));
+            painter.circle_stroke(*pt, r, Stroke::new(1.0_f32, ui.visuals().extreme_bg_color));
 
             if hover {
                 let tip = format!("{}  →  {:.1} ns", fmt_size(p.size_bytes), p.latency_ns);
@@ -607,19 +517,24 @@ fn show_results(
                     tpos,
                     egui::Align2::LEFT_TOP,
                     tip,
-                    egui::FontId::proportional(11.5),
+                    theme::num_font(tokens::FONT_LABEL),
                     Color32::WHITE,
                 );
             }
         }
     }
 
-    ui.add_space(6.0);
+    ui.add_space(tokens::SPACE_XS);
     ui.separator();
 
     // ── Detail table ──────────────────────────────────────────────────────────
-    ui.label(RichText::new("Details").strong());
-    ui.add_space(4.0);
+    ui.label(
+        RichText::new("Details")
+            .strong()
+            .size(tokens::FONT_HEADING)
+            .color(ui.visuals().strong_text_color()),
+    );
+    ui.add_space(tokens::SPACE_XS);
 
     egui::Frame::new()
         .stroke(Stroke::new(1.0_f32, border_color))
@@ -629,7 +544,7 @@ fn show_results(
             let (hr, _) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::hover());
             ui.painter().rect_filled(hr, 0.0, hdr_bg);
-            let fh = egui::FontId::proportional(11.0);
+            let fh = egui::FontId::proportional(tokens::FONT_SMALL);
             for (lbl, off) in [
                 ("Working Set", 10.0_f32),
                 ("Latency", 130.0),
@@ -640,7 +555,7 @@ fn show_results(
                     egui::Align2::LEFT_CENTER,
                     lbl,
                     fh.clone(),
-                    Color32::GRAY,
+                    weak,
                 );
             }
             ui.painter().line_segment(
@@ -670,43 +585,36 @@ fn show_results(
                                 Stroke::new(1.0_f32, border_color),
                             );
                         }
-                        let region = if p.size_bytes <= cache.l1d {
-                            "L1"
+                        let (region, rcol) = if p.size_bytes <= cache.l1d {
+                            ("L1", cols[0])
                         } else if p.size_bytes <= cache.l2 {
-                            "L2"
+                            ("L2", cols[1])
                         } else if p.size_bytes <= cache.l3 {
-                            "L3"
+                            ("L3", cols[2])
                         } else {
-                            "DRAM"
+                            ("DRAM", cols[3])
                         };
-                        let rcol = match region {
-                            "L1" => L1_COLOR,
-                            "L2" => L2_COLOR,
-                            "L3" => L3_COLOR,
-                            _ => DRAM_COLOR,
-                        };
-                        let font = egui::FontId::proportional(12.0);
                         let cy = rr.center().y;
                         let rx = rr.min.x;
                         ui.painter().text(
                             Pos2::new(rx + 10.0, cy),
                             egui::Align2::LEFT_CENTER,
                             fmt_size(p.size_bytes),
-                            font.clone(),
+                            theme::num_font(tokens::FONT_HELP),
                             ui.visuals().text_color(),
                         );
                         ui.painter().text(
                             Pos2::new(rx + 130.0, cy),
                             egui::Align2::LEFT_CENTER,
                             format!("{:.2} ns", p.latency_ns),
-                            font.clone(),
-                            latency_color(p.latency_ns, max_ns),
+                            theme::num_font(tokens::FONT_HELP),
+                            latency_color(dark, p.latency_ns, max_ns),
                         );
                         ui.painter().text(
                             Pos2::new(rx + 230.0, cy),
                             egui::Align2::LEFT_CENTER,
                             region,
-                            font.clone(),
+                            egui::FontId::proportional(tokens::FONT_HELP),
                             rcol,
                         );
                     }
@@ -716,24 +624,150 @@ fn show_results(
     hover_out
 }
 
-// ── Latency card ──────────────────────────────────────────────────────────────
+// ── Cards ─────────────────────────────────────────────────────────────────────
 
-fn latency_card(ui: &mut egui::Ui, label: &str, ns: Option<f64>, color: Color32, border: Color32) {
+/// Bench section card: 15px bold title on the left, run buttons top-right.
+/// `buttons` is `(label, primary)`; the first entry renders rightmost.
+/// Returns the index of the clicked button, if any.
+fn bench_card(
+    ui: &mut egui::Ui,
+    title: &str,
+    buttons: &[(&str, bool)],
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> Option<usize> {
+    let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let mut clicked = None;
     egui::Frame::new()
-        .stroke(Stroke::new(1.0_f32, border))
-        .inner_margin(egui::Margin::symmetric(14, 8))
+        .stroke(Stroke::new(1.0_f32, border_color))
+        .inner_margin(Margin::same(12))
+        .corner_radius(CornerRadius::same(4))
         .show(ui, |ui| {
-            ui.set_min_width(110.0);
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(label).color(color).strong().size(12.0));
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(title)
+                        .strong()
+                        .size(tokens::FONT_HEADING)
+                        .color(ui.visuals().strong_text_color()),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let s = theme::sem(ui);
+                    for (i, (label, primary)) in buttons.iter().enumerate() {
+                        let btn = if *primary {
+                            egui::Button::new(RichText::new(*label).color(s.on_accent).strong())
+                                .fill(s.accent)
+                        } else {
+                            egui::Button::new(RichText::new(*label))
+                        };
+                        if ui.add(btn).clicked() {
+                            clicked = Some(i);
+                        }
+                    }
+                });
+            });
+            ui.add_space(tokens::SPACE_S);
+            add_contents(ui);
+        });
+    clicked
+}
+
+/// Outer width for `n` equally sized cards laid out across the current row.
+fn card_width(ui: &egui::Ui, n: usize) -> f32 {
+    let gaps = tokens::SPACE_S * (n.saturating_sub(1)) as f32;
+    ((ui.available_width() - gaps) / n as f32).max(80.0)
+}
+
+/// Cache-level card: coloured left border, weak "L2 · 16 MiB" label, big
+/// monospace latency.
+fn level_card(
+    ui: &mut egui::Ui,
+    outer_w: f32,
+    label: &str,
+    size: &str,
+    ns: Option<f64>,
+    color: Color32,
+) {
+    let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    egui::Frame::new()
+        .stroke(Stroke::new(1.0_f32, border_color))
+        .inner_margin(Margin {
+            left: 12,
+            right: 10,
+            top: 8,
+            bottom: 8,
+        })
+        .corner_radius(CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_width((outer_w - 24.0).max(56.0));
+            let top = ui.min_rect().min;
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(format!("{label} · {size}"))
+                        .size(tokens::FONT_SMALL)
+                        .color(ui.visuals().weak_text_color()),
+                );
                 ui.label(
                     RichText::new(match ns {
                         Some(v) => format!("{v:.1} ns"),
                         None => "—".into(),
                     })
-                    .color(color)
-                    .size(20.0)
-                    .strong(),
+                    .font(theme::num_font(19.0))
+                    .strong()
+                    .color(color),
+                );
+            });
+            // Left border in the ramp colour
+            let h = ui.min_rect().height();
+            let stripe = Rect::from_min_size(
+                Pos2::new(top.x - 12.0, top.y - 8.0),
+                Vec2::new(3.0, h + 16.0),
+            );
+            ui.painter().rect_filled(stripe, 0.0, color);
+        });
+}
+
+/// Bandwidth card: READ/WRITE/COPY label, big monospace GB/s, delta line.
+fn bandwidth_card(ui: &mut egui::Ui, outer_w: f32, label: &str, value: f64, prev: Option<f64>) {
+    let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let s = theme::sem(ui);
+    egui::Frame::new()
+        .stroke(Stroke::new(1.0_f32, border_color))
+        .inner_margin(Margin::symmetric(12, 8))
+        .corner_radius(CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_width((outer_w - 26.0).max(56.0));
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(label)
+                        .size(tokens::FONT_SMALL)
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.label(
+                    RichText::new(format!("{value:.2} GB/s"))
+                        .font(theme::num_font(19.0))
+                        .strong(),
+                );
+                let (text, color) = match prev {
+                    Some(p) => {
+                        let d = value - p;
+                        let t = format!("{d:+.2} vs. previous");
+                        if d > 0.05 {
+                            (t, s.ok)
+                        } else if d < -0.05 {
+                            (t, s.negative)
+                        } else {
+                            (t, ui.visuals().weak_text_color())
+                        }
+                    }
+                    None => (
+                        "no previous run".to_string(),
+                        ui.visuals().weak_text_color(),
+                    ),
+                };
+                ui.label(
+                    RichText::new(text)
+                        .font(theme::num_font(tokens::FONT_HELP))
+                        .color(color),
                 );
             });
         });
@@ -741,12 +775,52 @@ fn latency_card(ui: &mut egui::Ui, label: &str, ns: Option<f64>, color: Color32,
 
 // ── Colours ───────────────────────────────────────────────────────────────────
 
-const L1_COLOR: Color32 = Color32::from_rgb(80, 220, 120);
-const L2_COLOR: Color32 = Color32::from_rgb(160, 220, 80);
-const L3_COLOR: Color32 = Color32::from_rgb(240, 200, 60);
-const DRAM_COLOR: Color32 = Color32::from_rgb(240, 90, 60);
+/// L1 → DRAM ramp taken straight from the semantic palette.
+fn level_colors(ui: &egui::Ui) -> [Color32; 4] {
+    let s = theme::sem(ui);
+    [s.ok, s.mid, s.warning, s.negative]
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Average latency per cache level: [L1, L2, L3, DRAM].
+/// DRAM uses the upper half of the out-of-L3 samples (steady state).
+fn region_latencies(
+    points: &[crate::mem_bench::LatencyPoint],
+    cache: &CacheSizes,
+) -> [Option<f64>; 4] {
+    let avg_for = |lo: usize, hi: usize| -> Option<f64> {
+        let v: Vec<f64> = points
+            .iter()
+            .filter(|p| p.size_bytes > lo && p.size_bytes <= hi)
+            .map(|p| p.latency_ns)
+            .collect();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.iter().sum::<f64>() / v.len() as f64)
+        }
+    };
+    let dram_ns: Option<f64> = {
+        let v: Vec<f64> = points
+            .iter()
+            .filter(|p| p.size_bytes > cache.l3)
+            .map(|p| p.latency_ns)
+            .collect();
+        if v.is_empty() {
+            None
+        } else {
+            let s = v.len() / 2;
+            Some(v[s..].iter().sum::<f64>() / (v.len() - s) as f64)
+        }
+    };
+    [
+        avg_for(0, cache.l1d),
+        avg_for(cache.l1d, cache.l2),
+        avg_for(cache.l2, cache.l3),
+        dram_ns,
+    ]
+}
 
 fn build_csv(points: &[crate::mem_bench::LatencyPoint]) -> String {
     let mut s = String::from("size_bytes,size_label,latency_ns\n");
@@ -794,15 +868,10 @@ fn fmt_size_short(bytes: usize) -> &'static str {
     }
 }
 
-fn latency_color(ns: f64, max_ns: f64) -> Color32 {
-    let t = (ns / max_ns.max(1.0)).clamp(0.0, 1.0) as f32;
-    if t < 0.5 {
-        let u = t * 2.0;
-        Color32::from_rgb((80.0 + u * 160.0) as u8, 220, (120.0 - u * 60.0) as u8)
-    } else {
-        let u = (t - 0.5) * 2.0;
-        Color32::from_rgb(240, (200.0 - u * 110.0) as u8, (60.0 - u * 30.0) as u8)
-    }
+/// Latency → semantic ramp position (fast = ok, slow = negative).
+fn latency_color(dark_mode: bool, ns: f64, max_ns: f64) -> Color32 {
+    let pct = (ns / max_ns.max(1.0)).clamp(0.0, 1.0) as f32 * 100.0;
+    theme::load_color_for(dark_mode, pct)
 }
 
 fn nice_ceil(v: f64) -> f64 {
@@ -831,28 +900,4 @@ fn nice_y_steps(max: f64, n: usize) -> Vec<f64> {
         cur += step;
     }
     v
-}
-
-/// Render a titled bordered group box (matches the style used in settings_tab and other tabs).
-fn bench_group(
-    ui: &mut egui::Ui,
-    border_color: egui::Color32,
-    title: &str,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
-    egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0_f32, border_color))
-        .inner_margin(egui::Margin::same(12))
-        .corner_radius(egui::CornerRadius::same(4))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.label(
-                egui::RichText::new(title)
-                    .size(14.0)
-                    .strong()
-                    .color(ui.visuals().strong_text_color()),
-            );
-            ui.add_space(6.0);
-            add_contents(ui);
-        });
 }

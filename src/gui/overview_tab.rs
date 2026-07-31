@@ -12,6 +12,7 @@ impl OverviewTab {
         Self
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -20,29 +21,140 @@ impl OverviewTab {
         snapshot: &[ProcInfo],
         disk_io_history: &VecDeque<(f32, f32)>,
         net_io_history: &VecDeque<(f32, f32)>,
+        cpu_temp: Option<f32>,
+        throttled_count: usize,
     ) {
+        use crate::gui::theme::{self as th, tokens};
         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-        let spacing = crate::gui::theme::tokens::SPACE_M;
+        let spacing = tokens::SPACE_M;
+        let s = th::sem(ui);
 
-        // ── Row 1: CPU graph + RAM + Load ────────────────────────────────────
+        // ── KPI row: the four numbers people open this tab for ───────────────
         ui.horizontal(|ui| {
-            // CPU History Graph
-            let graph_w = (ui.available_width() * 0.55).max(200.0);
+            let card_w = (ui.available_width() - spacing * 3.0) / 4.0 - 26.0;
+
+            // CPU
+            let cpu_detail = match cpu_temp {
+                Some(t) => format!("{t:.0} °C · {} cores", crate::utils::get_cpu_count()),
+                None => format!("{} cores", crate::utils::get_cpu_count()),
+            };
+            th::kpi_card(
+                ui,
+                card_w,
+                "CPU",
+                &format!("{cpu_avg:.0}%"),
+                &cpu_detail,
+                th::load_color(ui, cpu_avg),
+            );
+            ui.add_space(spacing);
+
+            // Memory
+            let (mem_value, mem_detail, mem_pct) = match read_ram_mb() {
+                Some((used, total)) => {
+                    let pct = used as f32 / total as f32 * 100.0;
+                    (
+                        format!("{pct:.0}%"),
+                        format!(
+                            "{:.1} of {:.1} GB",
+                            used as f32 / 1024.0,
+                            total as f32 / 1024.0
+                        ),
+                        pct,
+                    )
+                }
+                None => ("—".to_string(), String::new(), 0.0),
+            };
+            th::kpi_card(
+                ui,
+                card_w,
+                "Memory",
+                &mem_value,
+                &mem_detail,
+                th::load_color(ui, mem_pct),
+            );
+            ui.add_space(spacing);
+
+            // Load average — scale against core count for the stripe colour
+            let (load_value, load_detail, load_pct) = match read_load_avg() {
+                Some((l1, l5, l15)) => {
+                    let cores = crate::utils::get_cpu_count().max(1) as f32;
+                    (
+                        format!("{l1:.2}"),
+                        format!("{l5:.2} / {l15:.2} (5 / 15 min)"),
+                        (l1 / cores * 100.0).min(100.0),
+                    )
+                }
+                None => ("—".to_string(), String::new(), 0.0),
+            };
+            th::kpi_card(
+                ui,
+                card_w,
+                "Load",
+                &load_value,
+                &load_detail,
+                th::load_color(ui, load_pct),
+            );
+            ui.add_space(spacing);
+
+            // ProBalance
+            th::kpi_card(
+                ui,
+                card_w,
+                "ProBalance",
+                &throttled_count.to_string(),
+                "throttled processes",
+                if throttled_count > 0 { s.warning } else { s.ok },
+            );
+        });
+
+        ui.add_space(spacing);
+
+        // ── CPU history, full width ──────────────────────────────────────────
+        {
             egui::Frame::new()
                 .stroke(egui::Stroke::new(1.0_f32, border_color))
                 .inner_margin(egui::Margin::same(8))
+                .corner_radius(egui::CornerRadius::same(4))
                 .show(ui, |ui| {
-                    ui.set_min_width(graph_w - 16.0);
-                    ui.label(RichText::new("CPU Usage History").strong());
+                    ui.set_min_width(ui.available_width());
+                    ui.label(
+                        RichText::new("CPU history · 120 s")
+                            .strong()
+                            .size(tokens::FONT_HEADING),
+                    );
                     ui.add_space(4.0);
 
-                    let graph_h = 100.0;
+                    let graph_h = 90.0;
                     let (rect, _) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), graph_h),
                         egui::Sense::hover(),
                     );
                     let painter = ui.painter();
                     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+
+                    // Gridlines at 25 / 50 / 75 % plus 0/100 axis labels
+                    let grid_col = th::tint(ui.visuals().weak_text_color(), 60);
+                    for frac in [0.25_f32, 0.5, 0.75] {
+                        let y = rect.bottom() - frac * rect.height();
+                        painter.line_segment(
+                            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                            egui::Stroke::new(1.0_f32, grid_col),
+                        );
+                    }
+                    painter.text(
+                        rect.left_top() + Vec2::new(4.0, 2.0),
+                        egui::Align2::LEFT_TOP,
+                        "100%",
+                        egui::FontId::proportional(tokens::FONT_SMALL),
+                        ui.visuals().weak_text_color(),
+                    );
+                    painter.text(
+                        rect.left_bottom() + Vec2::new(4.0, -2.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        "0%",
+                        egui::FontId::proportional(tokens::FONT_SMALL),
+                        ui.visuals().weak_text_color(),
+                    );
 
                     if cpu_history.len() >= 2 {
                         let n = cpu_history.len();
@@ -59,13 +171,7 @@ impl OverviewTab {
                         // Fill under curve — one trapezoid per segment; the
                         // curve is not convex, so a single convex_polygon
                         // renders with self-overlap artifacts.
-                        let fill_color = if cpu_avg > 80.0 {
-                            Color32::from_rgba_unmultiplied(220, 60, 60, 60)
-                        } else if cpu_avg > 50.0 {
-                            Color32::from_rgba_unmultiplied(220, 160, 40, 60)
-                        } else {
-                            Color32::from_rgba_unmultiplied(60, 160, 80, 60)
-                        };
+                        let fill_color = th::tint(th::load_color(ui, cpu_avg), 60);
                         for pair in pts.windows(2) {
                             painter.add(egui::Shape::convex_polygon(
                                 vec![
@@ -80,13 +186,7 @@ impl OverviewTab {
                         }
 
                         // Line
-                        let line_color = if cpu_avg > 80.0 {
-                            Color32::from_rgb(220, 80, 60)
-                        } else if cpu_avg > 50.0 {
-                            Color32::from_rgb(220, 180, 60)
-                        } else {
-                            Color32::from_rgb(80, 180, 100)
-                        };
+                        let line_color = th::load_color(ui, cpu_avg);
                         for pair in pts.windows(2) {
                             painter.line_segment(
                                 [pair[0], pair[1]],
@@ -104,88 +204,19 @@ impl OverviewTab {
                         ui.visuals().strong_text_color(),
                     );
                 });
-
-            ui.add_space(spacing);
-
-            // RAM + Load in a vertical stack
-            ui.vertical(|ui| {
-                // RAM
-                egui::Frame::new()
-                    .stroke(egui::Stroke::new(1.0_f32, border_color))
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_width(180.0);
-                        ui.label(RichText::new("Memory").strong());
-                        ui.add_space(4.0);
-                        if let Some((used, total)) = read_ram_mb() {
-                            let pct = used as f32 / total as f32;
-                            ui.label(format!("{used} MB / {total} MB  ({:.0}%)", pct * 100.0));
-                            let bar_h = 16.0;
-                            let (bar_rect, _) = ui.allocate_exact_size(
-                                Vec2::new(ui.available_width(), bar_h),
-                                egui::Sense::hover(),
-                            );
-                            ui.painter()
-                                .rect_filled(bar_rect, 3.0, ui.visuals().extreme_bg_color);
-                            let fill_w = (bar_rect.width() * pct).max(0.0);
-                            let fill =
-                                egui::Rect::from_min_size(bar_rect.min, Vec2::new(fill_w, bar_h));
-                            let ram_col = if pct > 0.85 {
-                                Color32::from_rgb(220, 80, 60)
-                            } else if pct > 0.65 {
-                                Color32::from_rgb(220, 180, 60)
-                            } else {
-                                Color32::from_rgb(80, 180, 100)
-                            };
-                            ui.painter().rect_filled(fill, 3.0, ram_col);
-                        } else {
-                            ui.label("—");
-                        }
-                    });
-
-                ui.add_space(spacing);
-
-                // Load Average
-                egui::Frame::new()
-                    .stroke(egui::Stroke::new(1.0_f32, border_color))
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_width(180.0);
-                        ui.label(RichText::new("Load Average").strong());
-                        ui.add_space(4.0);
-                        if let Some((l1, l5, l15)) = read_load_avg() {
-                            egui::Grid::new("load_grid")
-                                .num_columns(2)
-                                .spacing([8.0, 2.0])
-                                .show(ui, |ui| {
-                                    ui.label("1 min:");
-                                    ui.label(format!("{l1:.2}"));
-                                    ui.end_row();
-                                    ui.label("5 min:");
-                                    ui.label(format!("{l5:.2}"));
-                                    ui.end_row();
-                                    ui.label("15 min:");
-                                    ui.label(format!("{l15:.2}"));
-                                    ui.end_row();
-                                });
-                        } else {
-                            ui.label("—");
-                        }
-                    });
-            });
-        });
+        }
 
         ui.add_space(spacing);
 
-        // ── Row 2: Disk + Network I/O graphs ─────────────────────────────────
+        // ── Disk + Network I/O graphs ────────────────────────────────────────
         ui.horizontal(|ui| {
             let half_w = (ui.available_width() - spacing) / 2.0;
             dual_io_graph(
                 ui,
                 "Disk I/O",
                 disk_io_history,
-                ("Read", Color32::from_rgb(80, 180, 100)),
-                ("Write", Color32::from_rgb(220, 160, 40)),
+                ("▼ Read", s.ok),
+                ("▲ Write", s.warning),
                 half_w,
                 border_color,
             );
@@ -194,8 +225,8 @@ impl OverviewTab {
                 ui,
                 "Network I/O",
                 net_io_history,
-                ("Recv", Color32::from_rgb(100, 170, 240)),
-                ("Send", Color32::from_rgb(180, 140, 240)),
+                ("▼ Recv", s.accent),
+                ("▲ Send", s.manual),
                 half_w,
                 border_color,
             );
@@ -209,7 +240,11 @@ impl OverviewTab {
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.label(RichText::new("Top Processes (CPU%)").strong());
+                ui.label(
+                    RichText::new("Top processes (CPU%)")
+                        .strong()
+                        .size(tokens::FONT_HEADING),
+                );
                 ui.add_space(4.0);
 
                 let mut top: Vec<&ProcInfo> = snapshot.iter().collect();
@@ -226,35 +261,38 @@ impl OverviewTab {
                 }
 
                 let avail_w = ui.available_width();
-                let row_h = 20.0;
+                let row_h = 24.0;
                 let bar_col_w = avail_w * 0.35;
                 let name_w = avail_w * 0.30;
                 let pid_w = 60.0;
                 let cpu_w = 60.0;
                 let mem_w = 80.0;
 
-                // Header
+                // Header — weak, not accent (§3); numeric columns right-aligned
                 let hdr_bg = ui.visuals().widgets.noninteractive.bg_fill;
                 let (hr, _) =
                     ui.allocate_exact_size(Vec2::new(avail_w, row_h), egui::Sense::hover());
                 ui.painter().rect_filled(hr, 0.0, hdr_bg);
-                let hdr_font = egui::FontId::proportional(12.5);
-                let hdr_col = ui.visuals().strong_text_color();
+                let hdr_font = egui::FontId::proportional(tokens::FONT_LABEL);
+                let hdr_col = ui.visuals().weak_text_color();
                 let mut hx = hr.min.x + 4.0;
-                for (label, w) in [
-                    ("PID", pid_w),
-                    ("NAME", name_w),
-                    ("CPU%", cpu_w),
-                    ("MEM(MB)", mem_w),
-                    ("CPU BAR", bar_col_w),
+                for (label, w, numeric) in [
+                    ("PID", pid_w, true),
+                    ("NAME", name_w, false),
+                    ("CPU%", cpu_w, true),
+                    ("MEM (MB)", mem_w, true),
+                    ("LOAD", bar_col_w, false),
                 ] {
-                    ui.painter().text(
-                        egui::pos2(hx, hr.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        label,
-                        hdr_font.clone(),
-                        hdr_col,
-                    );
+                    let (pos, align) = if numeric {
+                        (
+                            egui::pos2(hx + w - 10.0, hr.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                        )
+                    } else {
+                        (egui::pos2(hx, hr.center().y), egui::Align2::LEFT_CENTER)
+                    };
+                    ui.painter()
+                        .text(pos, align, label, hdr_font.clone(), hdr_col);
                     hx += w;
                 }
 
@@ -269,17 +307,20 @@ impl OverviewTab {
                     ui.painter().rect_filled(rr, 0.0, row_bg);
 
                     let text_col = ui.visuals().text_color();
-                    let font = egui::FontId::proportional(13.0);
+                    let font = egui::FontId::proportional(tokens::FONT_BODY);
+                    // §2: numeric cells are monospace + right-aligned so they
+                    // don't jitter as values change on every refresh.
+                    let num_font = th::num_font(tokens::FONT_BODY);
                     let mut rx = rr.min.x + 4.0;
                     let cpu_pct = proc.cpu_percent;
                     let mem_mb = proc.mem_rss as f64 / 1_048_576.0;
 
                     // PID
                     ui.painter().text(
-                        egui::pos2(rx, rr.center().y),
-                        egui::Align2::LEFT_CENTER,
+                        egui::pos2(rx + pid_w - 10.0, rr.center().y),
+                        egui::Align2::RIGHT_CENTER,
                         proc.pid.to_string(),
-                        font.clone(),
+                        num_font.clone(),
                         text_col,
                     );
                     rx += pid_w;
@@ -300,28 +341,21 @@ impl OverviewTab {
                         text_col,
                     );
                     rx += name_w;
-                    // CPU%
-                    let cpu_col = if cpu_pct > 80.0 {
-                        Color32::from_rgb(240, 80, 60)
-                    } else if cpu_pct > 40.0 {
-                        Color32::from_rgb(240, 180, 60)
-                    } else {
-                        text_col
-                    };
+                    // CPU% — value carries the load colour
                     ui.painter().text(
-                        egui::pos2(rx, rr.center().y),
-                        egui::Align2::LEFT_CENTER,
+                        egui::pos2(rx + cpu_w - 10.0, rr.center().y),
+                        egui::Align2::RIGHT_CENTER,
                         format!("{cpu_pct:.1}"),
-                        font.clone(),
-                        cpu_col,
+                        num_font.clone(),
+                        th::load_color(ui, cpu_pct),
                     );
                     rx += cpu_w;
                     // Mem
                     ui.painter().text(
-                        egui::pos2(rx, rr.center().y),
-                        egui::Align2::LEFT_CENTER,
+                        egui::pos2(rx + mem_w - 10.0, rr.center().y),
+                        egui::Align2::RIGHT_CENTER,
                         format!("{mem_mb:.1}"),
-                        font.clone(),
+                        num_font.clone(),
                         text_col,
                     );
                     rx += mem_w;
@@ -338,14 +372,8 @@ impl OverviewTab {
                         bar_rect.min,
                         Vec2::new(fill_w, bar_rect.height()),
                     );
-                    let bar_col = if cpu_pct > 80.0 {
-                        Color32::from_rgb(220, 80, 60)
-                    } else if cpu_pct > 40.0 {
-                        Color32::from_rgb(220, 180, 60)
-                    } else {
-                        Color32::from_rgb(80, 180, 100)
-                    };
-                    ui.painter().rect_filled(fill, 2.0, bar_col);
+                    ui.painter()
+                        .rect_filled(fill, 2.0, th::load_color(ui, cpu_pct));
                 }
             });
     }

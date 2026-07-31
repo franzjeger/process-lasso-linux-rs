@@ -19,7 +19,7 @@ pub struct CpuConfig {
     pub default_affinity: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProBalanceConfig {
     pub enabled: bool,

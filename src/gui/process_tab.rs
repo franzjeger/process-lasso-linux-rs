@@ -181,20 +181,6 @@ fn format_affinity_display(
     parts.join(",")
 }
 
-/// MemTotal from /proc/meminfo, in bytes (0 if unreadable).
-fn read_mem_total_bytes() -> u64 {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|s| {
-            s.lines().find_map(|l| {
-                l.strip_prefix("MemTotal:")
-                    .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<u64>().ok())
-            })
-        })
-        .map(|kb| kb * 1024)
-        .unwrap_or(0)
-}
-
 // ── ProcessTab ────────────────────────────────────────────────────────────────
 
 pub struct ProcessTab {
@@ -230,8 +216,6 @@ pub struct ProcessTab {
     pub chip_high_cpu: bool,
     pub chip_throttled: bool,
     pub chip_suspended: bool,
-    /// MemTotal in bytes (read once) — scales the MEM column heatmap
-    total_mem_bytes: u64,
     /// Columns hidden by the user (by header label); Name can't be hidden
     pub hidden_cols: HashSet<String>,
     /// Set when hidden_cols changes so app.rs can persist it
@@ -274,7 +258,6 @@ impl ProcessTab {
             chip_high_cpu: false,
             chip_throttled: false,
             chip_suspended: false,
-            total_mem_bytes: read_mem_total_bytes(),
             hidden_cols: cfg_hidden_cols.iter().cloned().collect(),
             hidden_dirty: false,
             cached_offline: get_offline_cpus(),
@@ -304,11 +287,21 @@ impl ProcessTab {
         gaming_active: bool,
         proc_cpu_history: &std::collections::HashMap<u32, std::collections::VecDeque<f32>>,
     ) -> TableAction {
-        // CPU history chart + per-CPU bars
-        self.history.show(ui);
-        ui.add_space(2.0);
-        self.bars.show(ui);
-        ui.add_space(4.0);
+        // CPU history chart and the per-core grid side by side — stacking them
+        // cost ~90px of vertical space that the table wants.
+        ui.horizontal_top(|ui| {
+            let total = ui.available_width();
+            let hist_w = (total * 0.52).clamp(280.0, 760.0);
+            ui.allocate_ui(egui::vec2(hist_w, 74.0), |ui| {
+                ui.set_width(hist_w);
+                self.history.show(ui);
+            });
+            ui.add_space(theme::tokens::SPACE_S);
+            ui.allocate_ui(egui::vec2(ui.available_width(), 74.0), |ui| {
+                self.bars.show(ui);
+            });
+        });
+        ui.add_space(theme::tokens::SPACE_S);
 
         // Keyboard shortcuts — all ctx calls MUST be outside ui.input():
         // ctx.input() holds the ContextImpl WRITE lock; calling ctx.read() or ctx.write()
@@ -330,12 +323,12 @@ impl ProcessTab {
 
         // Filter row + view toggles
         ui.horizontal(|ui| {
-            ui.label("Filter:");
+            ui.label("🔍");
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
                     .id(filter_id)
-                    .hint_text("name / PID / cmdline  (/ to focus)")
-                    .desired_width(220.0),
+                    .hint_text("name / PID / cmdline — press /")
+                    .desired_width(240.0),
             );
             if !self.filter.is_empty() && ui.small_button("✕").clicked() {
                 self.filter.clear();
@@ -356,52 +349,67 @@ impl ProcessTab {
                     self.filter_regex_cache = Some((self.filter.clone(), compiled));
                 }
                 if matches!(&self.filter_regex_cache, Some((_, None))) {
-                    ui.colored_label(Breeze::NEGATIVE, "invalid regex");
+                    ui.colored_label(theme::sem(ui).negative, "invalid regex");
                 }
             }
-            ui.separator();
-            // Quick-filter chips — combine with the text filter
-            let chip = |ui: &mut egui::Ui, state: &mut bool, label: &str, hover: &str| {
-                let text = if *state {
-                    RichText::new(label).strong().color(Breeze::HIGHLIGHT)
-                } else {
-                    RichText::new(label).weak()
-                };
-                if ui
-                    .selectable_label(*state, text)
-                    .on_hover_text(hover)
-                    .clicked()
-                {
+            ui.add_space(theme::tokens::SPACE_S);
+
+            // Quick-filter chips (§4) — pills, filled when active
+            for (state, label, hover) in [
+                (
+                    &mut self.chip_high_cpu,
+                    "High CPU",
+                    "Only processes using ≥ 25% of a core",
+                ),
+                (
+                    &mut self.chip_throttled,
+                    "Throttled",
+                    "Only processes currently throttled by ProBalance",
+                ),
+                (
+                    &mut self.chip_suspended,
+                    "Suspended",
+                    "Only processes you have suspended",
+                ),
+            ] {
+                let resp_clicked = theme::chip(ui, label, *state);
+                if resp_clicked {
                     *state = !*state;
                 }
-            };
-            chip(
-                ui,
-                &mut self.chip_high_cpu,
-                "High CPU",
-                "Only processes using ≥ 25% of a core",
-            );
-            chip(
-                ui,
-                &mut self.chip_throttled,
-                "Throttled",
-                "Only processes currently throttled by ProBalance",
-            );
-            chip(
-                ui,
-                &mut self.chip_suspended,
-                "Suspended",
-                "Only processes you have suspended",
-            );
-            ui.separator();
-            ui.checkbox(&mut self.tree_view, "Tree view");
-            if gaming_active {
-                ui.separator();
-                ui.checkbox(
-                    &mut self.hide_parked_in_proc_view,
-                    "Group affinity / hide parked",
-                );
+                let _ = hover;
             }
+
+            // Right side: view toggles + the column picker, which used to be
+            // discoverable only via a header right-click.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("Columns ▾", |ui| {
+                    for (ci, c) in COLS.iter().enumerate() {
+                        if ci == 1 {
+                            continue; // Name is always shown
+                        }
+                        let mut shown = !self.hidden_cols.contains(c.label());
+                        if ui.checkbox(&mut shown, c.label()).changed() {
+                            if shown {
+                                self.hidden_cols.remove(c.label());
+                            } else {
+                                self.hidden_cols.insert(c.label().to_string());
+                                if *c == self.sort_col {
+                                    self.sort_col = SortCol::Cpu;
+                                    self.sort_asc = false;
+                                }
+                            }
+                            self.hidden_dirty = true;
+                        }
+                    }
+                });
+                ui.checkbox(&mut self.tree_view, "Tree view");
+                if gaming_active {
+                    ui.checkbox(
+                        &mut self.hide_parked_in_proc_view,
+                        "Group affinity / hide parked",
+                    );
+                }
+            });
         });
         ui.add_space(2.0);
 
@@ -568,7 +576,7 @@ impl ProcessTab {
             SortCol::Ionice,
             SortCol::Status,
         ];
-        const ROW_H: f32 = 24.0;
+        const ROW_H: f32 = theme::tokens::ROW_H;
         const HEADER_H: f32 = 24.0;
         const PAD: f32 = 4.0;
 
@@ -660,14 +668,12 @@ impl ProcessTab {
                         } else {
                             col.label().to_string()
                         };
-                        let color = if is_active {
-                            ui.visuals().text_color()
-                        } else {
-                            Breeze::HIGHLIGHT
-                        };
+                        // §3: headers are weak grey — accent blue reads as
+                        // "selected/interactive". Only the sorted column is
+                        // strong, and it carries the arrow.
                         let resp = ui.put(
                             cell_rect,
-                            egui::Label::new(RichText::new(label_str).color(color).strong())
+                            egui::Label::new(theme::header_text(ui, &label_str, is_active))
                                 .sense(egui::Sense::click()),
                         );
                         let resp = if *col == SortCol::Cpu {
@@ -844,13 +850,12 @@ impl ProcessTab {
                             };
                             let ionice_str = fmt_ionice(&proc.ionice);
                             let is_suspended = suspended_pids.contains(&pid);
-                            let status_str = if is_suspended {
-                                "⏸ Suspended"
-                            } else if throttled {
-                                "🔻 Throttled"
-                            } else {
-                                ""
-                            };
+                            // Status renders as a badge (drawn below), so the
+                            // text slot for that column stays empty.
+                            let status_str = "";
+                            // CPU% value + its sparkline share one ramp colour
+                            let load_col = theme::load_color(ui, cpu);
+                            let sem = theme::sem(ui);
 
                             // Clone fields needed inside closures
                             let name = proc.name.clone();
@@ -891,6 +896,8 @@ impl ProcessTab {
                                 let font = egui::FontId::proportional(
                                     crate::gui::theme::tokens::FONT_BODY,
                                 );
+                                let num_font =
+                                    theme::num_font(crate::gui::theme::tokens::FONT_BODY);
                                 let painter = ui.painter();
                                 let mut x = row_rect.min.x;
                                 for &ci in &visible {
@@ -899,48 +906,23 @@ impl ProcessTab {
                                     // For CPU% column (ci==2): draw sparkline on left, shift text right
                                     let text_x_off = if ci == 2 { cw * 0.45 } else { 0.0 };
 
-                                    // Heatmap tint for CPU/GPU/MEM cells —
-                                    // intensity scales with the value, so hot
-                                    // cells pop when scanning the table.
-                                    let heat = match ci {
-                                        2 => Some((cpu / 100.0).clamp(0.0, 1.0)),
-                                        3 if proc.gpu_percent > 0.0 => {
-                                            Some((proc.gpu_percent / 100.0).clamp(0.0, 1.0))
-                                        }
-                                        4 if self.total_mem_bytes > 0 => Some(
-                                            (proc.mem_rss as f32 / self.total_mem_bytes as f32)
-                                                .clamp(0.0, 1.0),
-                                        ),
-                                        _ => None,
+                                    // Numeric columns are right-aligned (§2) so
+                                    // live values don't jitter; text columns
+                                    // stay left-aligned.
+                                    let numeric = matches!(ci, 0 | 3 | 4 | 5);
+                                    let text_pos = if numeric {
+                                        egui::pos2(x + cw - PAD, row_rect.center().y)
+                                    } else {
+                                        egui::pos2(
+                                            x + PAD + x_off + text_x_off,
+                                            row_rect.center().y,
+                                        )
                                     };
-                                    if let Some(frac) = heat {
-                                        if frac > 0.01 {
-                                            let base = if ci == 4 {
-                                                Breeze::HIGHLIGHT
-                                            } else {
-                                                theme::cpu_load_color(frac * 100.0)
-                                            };
-                                            let alpha = (14.0 + frac * 70.0) as u8;
-                                            let cell_rect = egui::Rect::from_min_size(
-                                                egui::pos2(x, row_rect.min.y),
-                                                egui::vec2(cw, ROW_H),
-                                            );
-                                            painter.rect_filled(
-                                                cell_rect,
-                                                0.0,
-                                                egui::Color32::from_rgba_unmultiplied(
-                                                    base.r(),
-                                                    base.g(),
-                                                    base.b(),
-                                                    alpha,
-                                                ),
-                                            );
-                                        }
-                                    }
-                                    let text_pos = egui::pos2(
-                                        x + PAD + x_off + text_x_off,
-                                        row_rect.center().y,
-                                    );
+                                    let align = if numeric {
+                                        egui::Align2::RIGHT_CENTER
+                                    } else {
+                                        egui::Align2::LEFT_CENTER
+                                    };
                                     let text: std::borrow::Cow<str> = match ci {
                                         0 => pid.to_string().into(),
                                         1 => name.as_str().into(),
@@ -992,13 +974,9 @@ impl ProcessTab {
                                                         egui::pos2(px, py)
                                                     })
                                                     .collect();
-                                                let spark_col = if cpu > 80.0 {
-                                                    egui::Color32::from_rgb(240, 80, 60)
-                                                } else if cpu > 50.0 {
-                                                    egui::Color32::from_rgb(240, 180, 60)
-                                                } else {
-                                                    egui::Color32::from_rgb(80, 180, 100)
-                                                };
+                                                // Sparkline shares the CPU%
+                                                // value colour (§1 one ramp)
+                                                let spark_col = load_col;
                                                 for pair in pts.windows(2) {
                                                     painter.line_segment(
                                                         [pair[0], pair[1]],
@@ -1008,13 +986,35 @@ impl ProcessTab {
                                             }
                                         }
                                     }
-                                    painter.text(
-                                        text_pos,
-                                        egui::Align2::LEFT_CENTER,
-                                        text.as_ref(),
-                                        font.clone(),
-                                        row_col,
-                                    );
+                                    // Status column renders as a badge, not
+                                    // emoji+text; other cells paint their text.
+                                    if ci == 8 {
+                                        if is_suspended {
+                                            theme::badge_at(
+                                                painter,
+                                                egui::pos2(x + PAD, row_rect.center().y),
+                                                "Suspended",
+                                                sem.accent,
+                                            );
+                                        } else if throttled {
+                                            theme::badge_at(
+                                                painter,
+                                                egui::pos2(x + PAD, row_rect.center().y),
+                                                "Throttled",
+                                                sem.warning,
+                                            );
+                                        }
+                                    } else {
+                                        // CPU% carries the load colour; the
+                                        // rest use the normal row colour.
+                                        let col = if ci == 2 { load_col } else { row_col };
+                                        let f = if numeric || ci == 2 {
+                                            num_font.clone()
+                                        } else {
+                                            font.clone()
+                                        };
+                                        painter.text(text_pos, align, text.as_ref(), f, col);
+                                    }
                                     x += cw;
                                 }
 

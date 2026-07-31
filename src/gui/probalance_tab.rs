@@ -5,19 +5,32 @@ use egui::{RichText, Ui};
 
 pub struct ProBalanceTab {
     pub cfg: ProBalanceConfig,
-    pub new_exempt: String,
-    pub selected_exempt: Option<usize>,
-    pub status: String,
+    /// Buffer behind the "+ add pattern" chip.
+    new_exempt: String,
+    /// Last applied config — the apply bar is enabled only while `cfg` differs.
+    saved: ProBalanceConfig,
+    /// True while the "+ add pattern" chip is expanded into a text field.
+    adding_exempt: bool,
 }
 
 impl ProBalanceTab {
     pub fn new(cfg: ProBalanceConfig) -> Self {
         Self {
+            saved: cfg.clone(),
             cfg,
             new_exempt: String::new(),
-            selected_exempt: None,
-            status: String::new(),
+            adding_exempt: false,
         }
+    }
+
+    /// Plain-language summary of the thresholds, for the status card.
+    fn summary(&self) -> String {
+        format!(
+            "Throttles processes above {:.0}% CPU for {:.0} s · restores below {:.0}%",
+            self.cfg.cpu_threshold_percent,
+            self.cfg.consecutive_seconds,
+            self.cfg.restore_threshold_percent
+        )
     }
 
     /// Returns Some(updated_config) when Apply is clicked.
@@ -27,95 +40,166 @@ impl ProBalanceTab {
         snapshot: &[crate::monitor::ProcInfo],
         throttle_infos: &[crate::probalance::ThrottleInfo],
     ) -> Option<ProBalanceConfig> {
-        const LABEL_W: f32 = 280.0;
+        use crate::gui::theme::{self as th, tokens};
+        const LABEL_W: f32 = tokens::FORM_LABEL_W;
+        let s = th::sem(ui);
 
-        ui.checkbox(&mut self.cfg.enabled, "ProBalance Enabled");
-        ui.add_space(8.0);
+        // ── Status card: state, plain-language summary, live count ────────
+        th::card(ui, "ProBalance", |ui| {
+            ui.horizontal(|ui| {
+                th::toggle(ui, &mut self.cfg.enabled);
+                ui.add_space(tokens::SPACE_S);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(if self.cfg.enabled {
+                            "ProBalance is on"
+                        } else {
+                            "ProBalance is off"
+                        })
+                        .size(tokens::FONT_HERO)
+                        .strong(),
+                    );
+                    ui.label(
+                        RichText::new(self.summary())
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let n = throttle_infos.len();
+                    if n > 0 {
+                        th::badge(ui, &format!("{n} throttled now"), s.warning);
+                    }
+                });
+            });
+        });
+        ui.add_space(tokens::SPACE_M);
 
         // ── Live throttle view ────────────────────────────────────────────
-        if !throttle_infos.is_empty() {
-            ui.label(
-                RichText::new("Currently Throttled")
-                    .strong()
-                    .color(crate::gui::theme::Breeze::WARNING),
-            );
-            ui.add_space(4.0);
-            let header_col = ui.visuals().strong_text_color();
-            egui::Grid::new("pb_throttle_hdr")
+        th::card(ui, "Currently throttled", |ui| {
+            if throttle_infos.is_empty() {
+                ui.label(
+                    RichText::new(if self.cfg.enabled {
+                        "No processes are being throttled right now."
+                    } else {
+                        "ProBalance is off — nothing is being throttled."
+                    })
+                    .size(tokens::FONT_HELP)
+                    .color(ui.visuals().weak_text_color()),
+                );
+                return;
+            }
+
+            egui::Grid::new("pb_throttle_rows")
                 .num_columns(5)
-                .spacing([12.0, 2.0])
+                .min_row_height(tokens::ROW_H_DENSE)
+                .spacing([tokens::SPACE_M, 2.0])
                 .show(ui, |ui| {
                     for h in ["PID", "NAME", "CPU%", "THROTTLE", "RESTORE IN"] {
-                        ui.label(RichText::new(h).strong().color(header_col));
+                        ui.label(th::header_text(ui, h, false));
                     }
                     ui.end_row();
-                });
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .max_height(120.0)
-                .id_salt("pb_live_scroll")
-                .show(ui, |ui| {
+
                     let cpu_map: std::collections::HashMap<u32, f32> =
                         snapshot.iter().map(|p| (p.pid, p.cpu_percent)).collect();
-                    egui::Grid::new("pb_throttle_rows")
-                        .num_columns(5)
-                        .spacing([12.0, 2.0])
-                        .show(ui, |ui| {
-                            for info in throttle_infos {
-                                let cpu =
-                                    cpu_map.get(&info.pid).copied().unwrap_or(info.cpu_percent);
-                                let remaining =
-                                    (info.restore_hysteresis - info.consecutive_low).max(0.0);
-                                let restore_str = if remaining < 0.5 {
-                                    "Restoring…".to_string()
-                                } else {
-                                    format!("{remaining:.1}s")
-                                };
-                                ui.label(info.pid.to_string());
-                                ui.label(
-                                    RichText::new(&info.name)
-                                        .color(crate::gui::theme::Breeze::WARNING),
-                                );
-                                ui.label(format!("{cpu:.1}%"));
-                                match &info.unit {
-                                    Some(unit) => {
-                                        ui.label(format!("unit {unit}"));
-                                    }
-                                    None => {
-                                        ui.label(format!(
-                                            "{} → {}",
-                                            info.original_nice, info.throttle_nice
-                                        ));
-                                    }
-                                }
-                                ui.label(restore_str);
-                                ui.end_row();
-                            }
-                        });
-                });
-            ui.add_space(8.0);
-        } else if self.cfg.enabled {
-            ui.label(
-                RichText::new("Currently Throttled")
-                    .strong()
-                    .color(ui.visuals().weak_text_color()),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("No processes currently throttled.")
-                    .italics()
-                    .color(ui.visuals().weak_text_color()),
-            );
-            ui.add_space(8.0);
-        }
 
-        // ── Throttle Settings ─────────────────────────────────────────────
-        group_box(ui, "Throttle Settings", |ui| {
-            egui::Grid::new("probalance_throttle")
+                    for info in throttle_infos {
+                        let cpu = cpu_map.get(&info.pid).copied().unwrap_or(info.cpu_percent);
+
+                        ui.label(
+                            RichText::new(info.pid.to_string())
+                                .font(th::num_font(tokens::FONT_BODY))
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                        ui.label(RichText::new(&info.name).color(s.warning));
+                        ui.label(
+                            RichText::new(format!("{cpu:.1}"))
+                                .font(th::num_font(tokens::FONT_BODY))
+                                .color(th::load_color(ui, cpu)),
+                        );
+                        match &info.unit {
+                            Some(unit) => {
+                                ui.label(
+                                    RichText::new(format!("unit {unit}"))
+                                        .size(tokens::FONT_HELP)
+                                        .color(ui.visuals().weak_text_color()),
+                                );
+                            }
+                            None => {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "nice {} → {}",
+                                        info.original_nice, info.throttle_nice
+                                    ))
+                                    .size(tokens::FONT_HELP)
+                                    .color(ui.visuals().weak_text_color()),
+                                );
+                            }
+                        }
+                        restore_progress(
+                            ui,
+                            info.consecutive_low,
+                            info.restore_hysteresis,
+                            s.warning,
+                        );
+                        ui.end_row();
+                    }
+                });
+        });
+        ui.add_space(tokens::SPACE_M);
+
+        // ── Throttling and restore ────────────────────────────────────────
+        th::card(ui, "Throttling and restore", |ui| {
+            egui::Grid::new("pb_thresholds")
                 .num_columns(2)
-                .spacing([8.0, 6.0])
+                .min_row_height(tokens::ROW_H)
+                .spacing([tokens::SPACE_S, tokens::SPACE_XS])
                 .show(ui, |ui| {
-                    right_label(ui, LABEL_W, "Throttle method:");
+                    form_label(ui, LABEL_W, "Throttle above");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.cpu_threshold_percent)
+                                .range(10.0f32..=100.0)
+                                .suffix(" %"),
+                        );
+                        weak(ui, "for");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.consecutive_seconds)
+                                .range(1.0f32..=60.0)
+                                .suffix(" s"),
+                        );
+                    });
+                    ui.end_row();
+
+                    form_label(ui, LABEL_W, "Restore below");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.restore_threshold_percent)
+                                .range(1.0f32..=99.0)
+                                .suffix(" %"),
+                        );
+                        weak(ui, "for");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.restore_hysteresis_seconds)
+                                .range(1.0f32..=120.0)
+                                .suffix(" s"),
+                        );
+                    });
+                    ui.end_row();
+
+                    form_label(ui, LABEL_W, "Nice adjustment");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.nice_adjustment)
+                                .range(1..=19)
+                                .prefix("+"),
+                        );
+                        weak(ui, "capped at");
+                        ui.add(egui::DragValue::new(&mut self.cfg.nice_floor).range(1..=19));
+                    });
+                    ui.end_row();
+
+                    form_label(ui, LABEL_W, "Throttle method");
                     egui::ComboBox::from_id_salt("pb_method")
                         .selected_text(match self.cfg.method.as_str() {
                             "cgroup" => "cgroup (per-app CPUWeight)",
@@ -134,145 +218,85 @@ impl ProBalanceTab {
                     ui.end_row();
 
                     if self.cfg.method != "nice" {
-                        right_label(ui, LABEL_W, "Throttled CPUWeight (default 100):");
-                        ui.add(
-                            egui::DragValue::new(&mut self.cfg.cgroup_throttle_weight)
-                                .range(1..=100),
-                        );
+                        form_label(ui, LABEL_W, "Throttled CPUWeight");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.cfg.cgroup_throttle_weight)
+                                    .range(1..=100),
+                            );
+                            weak(ui, "kernel default is 100");
+                        });
                         ui.end_row();
 
-                        right_label(ui, LABEL_W, "Hard CPU quota (0 = none):");
-                        ui.add(
-                            egui::DragValue::new(&mut self.cfg.cgroup_quota_percent)
-                                .range(0..=800)
-                                .suffix("%"),
-                        );
+                        form_label(ui, LABEL_W, "Hard CPU quota");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.cfg.cgroup_quota_percent)
+                                    .range(0..=800)
+                                    .suffix(" %"),
+                            );
+                            weak(ui, "0 = no cap");
+                        });
                         ui.end_row();
                     }
-
-                    right_label(ui, LABEL_W, "CPU threshold:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.cfg.cpu_threshold_percent)
-                            .range(10.0f32..=100.0)
-                            .suffix("%"),
-                    );
-                    ui.end_row();
-
-                    right_label(ui, LABEL_W, "Consecutive seconds above threshold:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.cfg.consecutive_seconds)
-                            .range(1.0f32..=60.0)
-                            .suffix("s"),
-                    );
-                    ui.end_row();
-
-                    right_label(ui, LABEL_W, "Nice adjustment (added on throttle):");
-                    ui.add(egui::DragValue::new(&mut self.cfg.nice_adjustment).range(1..=19));
-                    ui.end_row();
-
-                    right_label(ui, LABEL_W, "Nice floor (max nice applied):");
-                    ui.add(egui::DragValue::new(&mut self.cfg.nice_floor).range(1..=19));
-                    ui.end_row();
                 });
         });
+        ui.add_space(tokens::SPACE_M);
 
-        ui.add_space(10.0);
+        // ── Exempt processes (chips) ──────────────────────────────────────
+        th::card(ui, "Exempt processes", |ui| {
+            ui.label(
+                RichText::new("Processes whose name or command line contains one of these patterns are never throttled.")
+                    .size(tokens::FONT_HELP)
+                    .color(ui.visuals().weak_text_color()),
+            );
+            ui.add_space(tokens::SPACE_S);
 
-        // ── Restore Settings ──────────────────────────────────────────────
-        group_box(ui, "Restore Settings", |ui| {
-            egui::Grid::new("probalance_restore")
-                .num_columns(2)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    right_label(ui, LABEL_W, "Restore when CPU below:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.cfg.restore_threshold_percent)
-                            .range(1.0f32..=99.0)
-                            .suffix("%"),
-                    );
-                    ui.end_row();
-
-                    right_label(
-                        ui,
-                        LABEL_W,
-                        "Restore hysteresis (seconds below restore threshold):",
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.cfg.restore_hysteresis_seconds)
-                            .range(1.0f32..=120.0)
-                            .suffix("s"),
-                    );
-                    ui.end_row();
-                });
-        });
-
-        ui.add_space(10.0);
-
-        // ── Exempt Processes ──────────────────────────────────────────────
-        group_box(ui, "Exempt Processes (pattern contains)", |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(140.0)
-                .id_salt("exempt_scroll")
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    for (i, pat) in self.cfg.exempt_patterns.iter().enumerate() {
-                        let is_sel = self.selected_exempt == Some(i);
-                        if ui
-                            .selectable_label(
-                                is_sel,
-                                egui::RichText::new(pat).color(ui.visuals().text_color()),
-                            )
-                            .clicked()
-                        {
-                            self.selected_exempt = if is_sel { None } else { Some(i) };
-                        }
+            let mut remove: Option<usize> = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(tokens::SPACE_XS, tokens::SPACE_XS);
+                for (i, pat) in self.cfg.exempt_patterns.iter().enumerate() {
+                    if removable_chip(ui, pat) {
+                        remove = Some(i);
                     }
-                });
-
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let avail = ui.available_width();
-                let btn_w = 90.0 + 110.0 + 8.0 * 2.0; // Add + Remove selected + spacing
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_exempt)
-                        .hint_text("Pattern to exempt...")
-                        .desired_width((avail - btn_w).max(80.0)),
-                );
-                if ui.button("Add").clicked() && !self.new_exempt.trim().is_empty() {
-                    self.cfg
-                        .exempt_patterns
-                        .push(self.new_exempt.trim().to_string());
-                    self.new_exempt.clear();
                 }
-                let has_sel = self.selected_exempt.is_some();
-                if ui
-                    .add_enabled(has_sel, egui::Button::new("Remove selected"))
-                    .clicked()
-                {
-                    if let Some(i) = self.selected_exempt {
-                        self.cfg.exempt_patterns.remove(i);
-                        self.selected_exempt = None;
+
+                if self.adding_exempt {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.new_exempt)
+                            .hint_text("pattern")
+                            .desired_width(140.0),
+                    );
+                    resp.request_focus();
+                    let commit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if commit {
+                        let pat = self.new_exempt.trim().to_string();
+                        if !pat.is_empty() && !self.cfg.exempt_patterns.contains(&pat) {
+                            self.cfg.exempt_patterns.push(pat);
+                        }
+                        self.new_exempt.clear();
+                        self.adding_exempt = false;
+                    } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.new_exempt.clear();
+                        self.adding_exempt = false;
                     }
+                } else if add_chip(ui, "+ add pattern") {
+                    self.adding_exempt = true;
                 }
             });
+            if let Some(i) = remove {
+                self.cfg.exempt_patterns.remove(i);
+            }
         });
 
-        ui.add_space(12.0);
-
-        if !self.status.is_empty() {
-            ui.colored_label(ui.visuals().weak_text_color(), &self.status);
-            ui.add_space(4.0);
+        // ── Apply bar ─────────────────────────────────────────────────────
+        let dirty = self.cfg != self.saved;
+        let (discard, apply) = th::apply_bar(ui, dirty);
+        if discard {
+            self.cfg = self.saved.clone();
         }
-
-        // Full-width Apply button
-        if ui
-            .add_sized(
-                [ui.available_width(), 28.0],
-                egui::Button::new("Apply Settings"),
-            )
-            .clicked()
-        {
-            self.status = "Settings applied.".into();
+        if apply {
+            self.saved = self.cfg.clone();
             return Some(self.cfg.clone());
         }
 
@@ -280,15 +304,80 @@ impl ProBalanceTab {
     }
 }
 
-/// Thin wrapper over the shared card container (single source of truth).
-fn group_box(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
-    crate::gui::theme::card(ui, title, add_contents);
-}
-
-/// Render a right-aligned label in a fixed-width grid cell.
-fn right_label(ui: &mut Ui, width: f32, text: &str) {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+/// Left-aligned form label in a fixed-width grid cell.
+fn form_label(ui: &mut Ui, width: f32, text: &str) {
+    ui.horizontal(|ui| {
         ui.set_min_width(width);
         ui.label(text);
     });
+}
+
+/// Inline helper text between two paired fields.
+fn weak(ui: &mut Ui, text: &str) {
+    ui.label(
+        RichText::new(text)
+            .size(crate::gui::theme::tokens::FONT_HELP)
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+/// "RESTORE IN" cell: a thin progress bar plus the remaining seconds.
+fn restore_progress(ui: &mut Ui, elapsed_low: f32, hysteresis: f32, color: egui::Color32) {
+    use crate::gui::theme::{self as th, tokens};
+    let remaining = (hysteresis - elapsed_low).max(0.0);
+    let frac = if hysteresis > 0.0 {
+        (elapsed_low / hysteresis).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(100.0, 8.0), egui::Sense::hover());
+        let r = egui::CornerRadius::same(4);
+        ui.painter().rect_filled(rect, r, th::tint(color, 46));
+        if frac > 0.0 {
+            let mut fill = rect;
+            fill.set_width(rect.width() * frac);
+            ui.painter().rect_filled(fill, r, color);
+        }
+        ui.add_space(tokens::SPACE_XS);
+        let label = if remaining < 0.5 {
+            "restoring…".to_string()
+        } else {
+            format!("{remaining:.1}s")
+        };
+        ui.label(
+            RichText::new(label)
+                .font(th::num_font(tokens::FONT_HELP))
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
+}
+
+/// A filled chip with a ✕ affordance. Returns true when the user removes it.
+fn removable_chip(ui: &mut Ui, label: &str) -> bool {
+    use crate::gui::theme::{self as th, tokens};
+    let text = format!("{label}  ✕");
+    let btn = egui::Button::new(
+        RichText::new(text)
+            .size(tokens::FONT_LABEL)
+            .color(ui.visuals().text_color()),
+    )
+    .fill(th::tint(ui.visuals().weak_text_color(), 34))
+    .stroke(egui::Stroke::NONE)
+    .corner_radius(egui::CornerRadius::same(9));
+    ui.add(btn).on_hover_text("Remove pattern").clicked()
+}
+
+/// A dashed, low-emphasis "add" chip.
+fn add_chip(ui: &mut Ui, label: &str) -> bool {
+    use crate::gui::theme::tokens;
+    let btn = egui::Button::new(
+        RichText::new(label)
+            .size(tokens::FONT_LABEL)
+            .color(ui.visuals().weak_text_color()),
+    )
+    .fill(egui::Color32::TRANSPARENT)
+    .stroke(egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color()))
+    .corner_radius(egui::CornerRadius::same(9));
+    ui.add(btn).clicked()
 }

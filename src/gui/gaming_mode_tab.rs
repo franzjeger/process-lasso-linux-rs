@@ -74,6 +74,8 @@ pub struct GamingModeTab {
     pub show_install_dialog: bool,
     /// "current: <governor> / <epp>" display next to the power-profile buttons
     power_status_text: String,
+    /// Current scaling governor, used to preselect the power-profile control.
+    power_governor: String,
     /// Result channel for the background helper-install thread — the polkit
     /// auth dialog can stay open for minutes, so installing synchronously
     /// would freeze the whole UI.
@@ -131,6 +133,7 @@ impl GamingModeTab {
             install_password: String::new(),
             show_install_dialog: false,
             power_status_text: String::new(),
+            power_governor: String::new(),
             install_result_rx: None,
             steam_picker: None,
             lutris_picker: None,
@@ -170,6 +173,7 @@ impl GamingModeTab {
             Some(epp) => format!("current: {gov} / {epp}"),
             None => format!("current: {gov}"),
         };
+        self.power_governor = gov;
     }
 
     fn refresh_cpu_status(&mut self) {
@@ -179,11 +183,20 @@ impl GamingModeTab {
         let offline = get_offline_cpus()
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
+        let total = online.len() + offline.len();
         if offline.is_empty() {
-            self.cpu_status_text = format!("All CPUs online: {online:?}");
+            self.cpu_status_text = format!("All {total} CPUs online");
             self.cpu_status_color = None; // theme default text color
         } else {
-            self.cpu_status_text = format!("Online: {online:?}  |  Offline (parked): {offline:?}");
+            self.cpu_status_text = format!(
+                "{} of {total} CPUs online · parked: {}",
+                online.len(),
+                offline
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             self.cpu_status_color = Some(crate::gui::theme::Breeze::WARNING);
         }
     }
@@ -376,18 +389,23 @@ impl GamingModeTab {
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            use crate::gui::theme::tokens;
+            use crate::gui::theme::{self as th, tokens};
+            let s = th::sem(ui);
 
-            let has_asym = self.topo.as_ref().map(|t| t.has_asymmetry()).unwrap_or(false);
+            let has_asym = self
+                .topo
+                .as_ref()
+                .map(|t| t.has_asymmetry())
+                .unwrap_or(false);
 
             // ── Helper banner: the blocking prerequisite gets one clear action
             if !self.helper_ok {
                 let color = if self.helper_outdated {
-                    crate::gui::theme::Breeze::WARNING
+                    s.warning
                 } else {
-                    crate::gui::theme::Breeze::NEGATIVE
+                    s.negative
                 };
-                if crate::gui::theme::banner(
+                if th::banner(
                     ui,
                     color,
                     &self.helper_status_text,
@@ -398,305 +416,360 @@ impl GamingModeTab {
                 ui.add_space(tokens::SPACE_S);
             }
 
-            // ── Status card: the one thing users come here for ────────────
-            crate::gui::theme::card(ui, "Gaming Mode", |ui| {
-                ui.label(RichText::new(&self.topo_description).weak());
-                ui.add_space(tokens::SPACE_XS);
-
-                let btn_text = if self.parked {
-                    "Disable Gaming Mode (Unpark CPUs)"
-                } else {
-                    "Enable Gaming Mode (Park non-preferred CPUs)"
-                };
-                let btn_color = if self.parked {
-                    egui::Color32::from_rgb(30, 74, 42)
-                } else {
-                    egui::Color32::from_rgb(76, 29, 149)
-                };
-                let enabled = has_asym && self.helper_ok && !self.parking_in_progress;
-                ui.add_enabled_ui(enabled, |ui| {
-                    let btn =
-                        egui::Button::new(RichText::new(btn_text).strong().color(Color32::WHITE))
-                            .min_size(egui::vec2(ui.available_width(), 40.0))
-                            .fill(btn_color);
-                    if ui.add(btn).clicked() {
+            // ── Status hero: state, topology summary, one primary action ──
+            th::card(ui, "Gaming Mode", |ui| {
+                ui.horizontal(|ui| {
+                    status_dot(
+                        ui,
                         if self.parked {
-                            self.disable_gaming_mode();
+                            s.ok
                         } else {
-                            self.enable_gaming_mode();
+                            ui.visuals().weak_text_color()
+                        },
+                    );
+                    ui.add_space(tokens::SPACE_XS);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(if self.parked {
+                                "Gaming Mode is on"
+                            } else {
+                                "Gaming Mode is off"
+                            })
+                            .size(tokens::FONT_HERO)
+                            .strong(),
+                        );
+                        ui.label(
+                            RichText::new(&self.topo_description)
+                                .size(tokens::FONT_HELP)
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let enabled = has_asym && self.helper_ok && !self.parking_in_progress;
+                        let label = if self.parked {
+                            "Deactivate"
+                        } else {
+                            "Activate"
+                        };
+                        let btn =
+                            egui::Button::new(RichText::new(label).strong().color(s.on_accent))
+                                .fill(if self.parked { s.negative } else { s.accent })
+                                .min_size(egui::vec2(110.0, 30.0));
+                        if ui.add_enabled(enabled, btn).clicked() {
+                            if self.parked {
+                                self.disable_gaming_mode();
+                            } else {
+                                self.enable_gaming_mode();
+                            }
+                        }
+                    });
+                });
+            });
+            ui.add_space(tokens::SPACE_S);
+
+            // ── Core map: which cores stay online in Gaming Mode ──────────
+            th::card(ui, "Cores", |ui| {
+                let (pref, nonpref, pref_label, nonpref_label) = match &self.topo {
+                    Some(t) => (
+                        t.preferred.iter().copied().collect::<Vec<u32>>(),
+                        t.non_preferred.iter().copied().collect::<Vec<u32>>(),
+                        t.preferred_label.clone(),
+                        t.non_preferred_label.clone(),
+                    ),
+                    None => (Vec::new(), Vec::new(), String::new(), String::new()),
+                };
+
+                ui.label(
+                    RichText::new(if has_asym {
+                        format!(
+                            "Parks {nonpref_label} so games initialise their thread pool on \
+                             {pref_label} only. Click a core to keep or park it."
+                        )
+                    } else {
+                        "No CPU asymmetry detected — parking is unavailable on this machine."
+                            .to_string()
+                    })
+                    .size(tokens::FONT_HELP)
+                    .color(ui.visuals().weak_text_color()),
+                );
+                ui.add_space(tokens::SPACE_S);
+
+                core_map(
+                    ui,
+                    &pref,
+                    &nonpref,
+                    &self.smt_siblings,
+                    &mut self.preferred_checks,
+                    has_asym,
+                );
+
+                ui.add_space(tokens::SPACE_S);
+                ui.horizontal(|ui| {
+                    if th::chip(ui, "All", false) {
+                        for v in self.preferred_checks.values_mut() {
+                            *v = true;
                         }
                     }
+                    let has_smt = !self.smt_siblings.is_empty();
+                    ui.add_enabled_ui(has_smt, |ui| {
+                        if th::chip(ui, "No SMT", false) {
+                            for (&cpu, v) in &mut self.preferred_checks {
+                                *v = !self.smt_siblings.contains(&cpu);
+                            }
+                        }
+                    });
+                    if th::chip(ui, "None", false) {
+                        for v in self.preferred_checks.values_mut() {
+                            *v = false;
+                        }
+                    }
+                    ui.add_space(tokens::SPACE_M);
+                    legend_swatch(ui, s.accent, "kept online");
+                    legend_swatch(ui, ui.visuals().weak_text_color(), "parked by you");
+                    legend_swatch(ui, s.manual, &nonpref_label);
                 });
-                let status_color = self
-                    .cpu_status_color
-                    .unwrap_or_else(|| ui.visuals().text_color());
-                ui.colored_label(status_color, &self.cpu_status_text);
                 ui.add_space(tokens::SPACE_XS);
-
-                ui.checkbox(
-                    &mut self.elevate_nice,
-                    "Elevate game priority (nice -1) — higher scheduling priority for game processes",
+                ui.label(
+                    RichText::new(&self.cpu_status_text)
+                        .size(tokens::FONT_SMALL)
+                        .color(
+                            self.cpu_status_color
+                                .unwrap_or_else(|| ui.visuals().weak_text_color()),
+                        ),
                 );
-                let mut auto_changed = false;
-                auto_changed |= ui
+            });
+            ui.add_space(tokens::SPACE_S);
+
+            // ── Behaviour: what happens when Gaming Mode is on ────────────
+            th::card(ui, "Behaviour", |ui| {
+                ui.checkbox(&mut self.elevate_nice, "Elevate game priority (nice -1)");
+                let mut auto_changed = ui
                     .checkbox(
                         &mut self.config.gaming_mode.auto_detect,
                         "Auto-enable when a game is detected (Steam/Proton)",
                     )
                     .changed();
                 if self.config.gaming_mode.auto_detect {
-                    auto_changed |= ui
-                        .checkbox(
-                            &mut self.config.gaming_mode.auto_park,
-                            "Also park non-preferred CPUs when auto-enabling",
-                        )
-                        .changed();
+                    ui.indent("gm_auto_park", |ui| {
+                        auto_changed |= ui
+                            .checkbox(
+                                &mut self.config.gaming_mode.auto_park,
+                                "Also park non-preferred CPUs when auto-enabling",
+                            )
+                            .changed();
+                    });
                 }
                 if auto_changed {
                     self.events
                         .push(GamingEvent::ConfigChanged(Box::new(self.config.clone())));
                 }
-            });
-            ui.add_space(tokens::SPACE_S);
 
-            // ── Advanced: topology & per-core selection ───────────────────
-            egui::CollapsingHeader::new("CPU topology & core selection")
-                .default_open(false)
-                .show(ui, |ui| {
-                    if let Some(ref topo) = self.topo {
-                        if topo.has_asymmetry() {
-                            ui.label(format!(
-                                "Parks {} so the game initialises its thread pool on {} only.",
-                                topo.non_preferred_label, topo.preferred_label
-                            ));
+                ui.add_space(tokens::SPACE_S);
+                ui.horizontal(|ui| {
+                    ui.label("Power profile");
+                    ui.add_space(tokens::SPACE_S);
+                    use cpu_park::PowerProfile;
+                    let profiles = [
+                        PowerProfile::Performance,
+                        PowerProfile::Balanced,
+                        PowerProfile::PowerSave,
+                    ];
+                    let sel = match self.power_governor.as_str() {
+                        "performance" => 0,
+                        "powersave" => 2,
+                        _ => 1,
+                    };
+                    ui.add_enabled_ui(self.helper_ok, |ui| {
+                        if let Some(i) =
+                            th::segmented(ui, &["Performance", "Balanced", "Power save"], sel)
+                        {
+                            let (_ok, msg) = cpu_park::apply_power_profile(profiles[i]);
+                            self.append_log(msg);
+                            self.refresh_power_status();
+                        }
+                    });
+                    ui.add_space(tokens::SPACE_S);
+                    ui.label(
+                        RichText::new(if self.helper_ok {
+                            self.power_status_text.clone()
                         } else {
-                            ui.label("No CPU asymmetry detected — parking is unavailable.");
-                        }
-                    }
-
-            // Preferred CCD checkboxes
-            if has_asym {
-                let pref_title = if let Some(ref t) = self.topo {
-                    format!("{} — Active Cores in Gaming Mode", t.preferred_label)
-                } else {
-                    "Preferred Cores — Active Cores in Gaming Mode".into()
-                };
-                let park_hint = if let Some(ref t) = self.topo {
-                    format!("Uncheck any CPU to park it along with the {}.", t.non_preferred_label)
-                } else {
-                    "Uncheck any CPU to park it along with the non-preferred cores.".into()
-                };
-                ui.label(RichText::new(pref_title).strong());
-                ui.label(park_hint);
-
-                let mut cpus: Vec<u32> = self.preferred_checks.keys().copied().collect();
-                cpus.sort_unstable();
-
-                ui.horizontal_wrapped(|ui| {
-                    for cpu in &cpus {
-                        let is_smt = self.smt_siblings.contains(cpu);
-                        let label = if is_smt { format!("CPU {cpu} (HT)") } else { format!("CPU {cpu}") };
-                        let checked = self.preferred_checks.get_mut(cpu).unwrap();
-                        ui.checkbox(checked, label);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("All").clicked() {
-                        for v in self.preferred_checks.values_mut() { *v = true; }
-                    }
-                    let has_smt = !self.smt_siblings.is_empty();
-                    ui.add_enabled_ui(has_smt, |ui| {
-                        if ui.button("No SMT (physical only)").clicked() {
-                            for (&cpu, v) in &mut self.preferred_checks {
-                                *v = !self.smt_siblings.contains(&cpu);
-                            }
-                        }
-                    });
-                    if ui.button("None").clicked() {
-                        for v in self.preferred_checks.values_mut() { *v = false; }
-                    }
-                });
-                ui.add_space(4.0);
-            }
-                });
-            ui.add_space(tokens::SPACE_S);
-
-            // Helper status when installed OK (errors surface in the banner)
-            if self.helper_ok {
-                ui.horizontal(|ui| {
-                    ui.colored_label(
-                        crate::gui::theme::Breeze::POSITIVE,
-                        &self.helper_status_text,
+                            "requires the privileged helper".to_string()
+                        })
+                        .size(tokens::FONT_HELP)
+                        .color(ui.visuals().weak_text_color()),
                     );
-                    if ui
-                        .button("Reinstall helper…")
-                        .on_hover_text("Reinstall or update the privileged sysfs helper")
-                        .clicked()
-                    {
-                        self.show_install_dialog = true;
-                    }
                 });
-                ui.add_space(tokens::SPACE_XS);
-            }
-
-            // ── Power profile (governor + EPP via helper) ─────────────────
-            egui::CollapsingHeader::new("Power profile")
-                .default_open(false)
-                .show(ui, |ui| {
-            ui.label("Sets the CPU frequency governor and energy-performance preference on all cores.");
-            ui.horizontal(|ui| {
-                use cpu_park::PowerProfile;
-                for profile in [
-                    PowerProfile::Performance,
-                    PowerProfile::Balanced,
-                    PowerProfile::PowerSave,
-                ] {
-                    if ui
-                        .add_enabled(self.helper_ok, egui::Button::new(profile.label()))
-                        .clicked()
-                    {
-                        let (_ok, msg) = cpu_park::apply_power_profile(profile);
-                        self.append_log(msg);
-                        self.refresh_power_status();
-                    }
-                }
-                ui.label(egui::RichText::new(&self.power_status_text).weak());
             });
-            if !self.helper_ok {
-                ui.label(
-                    egui::RichText::new("Requires the privileged helper (install above).").weak(),
-                );
-            }
-                });
             ui.add_space(tokens::SPACE_S);
 
-            // ── Reset All ─────────────────────────────────────────────────
-            ui.label(RichText::new("Reset All Changes").strong());
-            ui.label(RichText::new("Restores all per-process CPU affinities and unparks any parked CPUs.").weak());
-            if ui.button("↩  Reset All Changes").clicked() {
-                if self.parked {
-                    self.events.push(GamingEvent::GamingModeChanged { active: false, elevate_nice: false });
-                    self.parked = false;
-                }
-                if !get_offline_cpus().is_empty() {
-                    self.append_log("[Reset] Unparking CPUs…".into());
-                    let ll = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-                    let l2 = ll.clone();
-                    unpark_all(move |m| l2.lock().unwrap().push(m));
-                    for m in ll.lock().unwrap().drain(..) { self.append_log(m); }
-                    self.refresh_cpu_status();
-                    let topo = detect_topology();
-                    self.rebuild_preferred_checks(&topo);
-                    self.topo_description = topo.description.clone();
-                    self.topo = Some(topo);
-                }
-                self.events.push(GamingEvent::ResetAll);
-            }
-
-            ui.add_space(tokens::SPACE_S);
-
-            // ── Game Launcher ─────────────────────────────────────────────
-            egui::CollapsingHeader::new("Game launcher & profiles")
+            // ── Game launcher & profiles (collapsed) ──────────────────────
+            egui::CollapsingHeader::new("Game launcher and profiles")
                 .default_open(false)
                 .show(ui, |ui| {
-
-            // Profile combo
-            ui.horizontal(|ui| {
-                ui.label("Profile:");
-                let profiles = self.config.gaming_mode.profiles.keys().cloned().collect::<Vec<_>>();
-                egui::ComboBox::from_id_salt("profile_combo")
-                    .selected_text(&self.selected_profile)
-                    .show_ui(ui, |ui| {
-                        for name in &profiles {
-                            if ui.selectable_label(*name == self.selected_profile, name).clicked() {
-                                self.selected_profile = name.clone();
-                                self.load_profile(name);
-                            }
+                    ui.horizontal(|ui| {
+                        ui.label("Profile");
+                        let profiles = self
+                            .config
+                            .gaming_mode
+                            .profiles
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        egui::ComboBox::from_id_salt("profile_combo")
+                            .selected_text(if self.selected_profile.is_empty() {
+                                "—"
+                            } else {
+                                &self.selected_profile
+                            })
+                            .show_ui(ui, |ui| {
+                                for name in &profiles {
+                                    if ui
+                                        .selectable_label(*name == self.selected_profile, name)
+                                        .clicked()
+                                    {
+                                        self.selected_profile = name.clone();
+                                        self.load_profile(name);
+                                    }
+                                }
+                            });
+                        if ui.button("Save").clicked() {
+                            self.save_profile();
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.selected_profile.is_empty(),
+                                egui::Button::new("Delete"),
+                            )
+                            .clicked()
+                        {
+                            let name = self.selected_profile.clone();
+                            self.config.gaming_mode.profiles.remove(&name);
+                            self.selected_profile.clear();
+                            self.events
+                                .push(GamingEvent::ConfigChanged(Box::new(self.config.clone())));
                         }
                     });
-                if ui.button("Save").clicked() {
-                    self.save_profile();
-                }
-                if ui.button("Delete").clicked() {
-                    let name = self.selected_profile.clone();
-                    self.config.gaming_mode.profiles.remove(&name);
-                    self.selected_profile.clear();
-                    self.events
-                        .push(GamingEvent::ConfigChanged(Box::new(self.config.clone())));
-                }
-            });
 
-            // Game name
-            ui.horizontal(|ui| {
-                ui.label("Game:");
-                ui.text_edit_singleline(&mut self.game_name);
-                if ui.button("Steam…").clicked() {
-                    self.steam_picker = Some(crate::gui::dialogs::SteamGamePickerDialog::new());
-                }
-                if ui.button("Lutris…").clicked() {
-                    self.lutris_picker = Some(crate::gui::dialogs::LutrisGamePickerDialog::new());
-                }
-            });
-
-            // Command
-            ui.horizontal(|ui| {
-                ui.label("Command:");
-                ui.text_edit_singleline(&mut self.command);
-            });
-
-            // Launch row
-            ui.horizontal(|ui| {
-                let can_launch = !self.game_name.is_empty() && !self.command.is_empty();
-                ui.add_enabled_ui(can_launch, |ui| {
-                    if ui.button("Launch").clicked() {
-                        self.launch_game();
-                    }
-                });
-                ui.checkbox(&mut self.auto_restore, "Auto-disable Gaming Mode when game exits");
-            });
-
-            // Kill / watch status
-            ui.horizontal(|ui| {
-                let can_kill = self.watch_phase != WatchPhase::Idle;
-                ui.add_enabled_ui(can_kill, |ui| {
-                    if ui.button("Kill Game").clicked() {
-                        if let Some(pid) = self.launched_pid {
-                            let _ = nix::sys::signal::kill(
-                                nix::unistd::Pid::from_raw(pid as i32),
-                                nix::sys::signal::Signal::SIGTERM,
-                            );
-                            self.append_log(format!("[Launcher] Sent SIGTERM to PID {pid}"));
+                    ui.horizontal(|ui| {
+                        ui.label("Game");
+                        ui.text_edit_singleline(&mut self.game_name);
+                        if ui.button("Steam…").clicked() {
+                            self.steam_picker =
+                                Some(crate::gui::dialogs::SteamGamePickerDialog::new());
                         }
-                        if self.auto_restore && self.parked { self.disable_gaming_mode(); }
-                        self.watch_phase = WatchPhase::Idle;
-                        self.launched_pid = None;
-                        self.watch_status = String::new();
-                    }
-                });
-                if !self.watch_status.is_empty() {
-                    ui.colored_label(crate::gui::theme::Breeze::POSITIVE, &self.watch_status);
-                }
-            });
+                        if ui.button("Lutris…").clicked() {
+                            self.lutris_picker =
+                                Some(crate::gui::dialogs::LutrisGamePickerDialog::new());
+                        }
+                    });
 
-                });
-            ui.add_space(tokens::SPACE_S);
+                    ui.horizontal(|ui| {
+                        ui.label("Command");
+                        ui.text_edit_singleline(&mut self.command);
+                    });
 
-            // ── Log ───────────────────────────────────────────────────────
+                    ui.horizontal(|ui| {
+                        let can_launch = !self.game_name.is_empty() && !self.command.is_empty();
+                        let launch =
+                            egui::Button::new(RichText::new("Launch").strong().color(s.on_accent))
+                                .fill(s.accent);
+                        if ui.add_enabled(can_launch, launch).clicked() {
+                            self.launch_game();
+                        }
+                        let can_kill = self.watch_phase != WatchPhase::Idle;
+                        if ui
+                            .add_enabled(can_kill, egui::Button::new("Kill game"))
+                            .clicked()
+                        {
+                            if let Some(pid) = self.launched_pid {
+                                let _ = nix::sys::signal::kill(
+                                    nix::unistd::Pid::from_raw(pid as i32),
+                                    nix::sys::signal::Signal::SIGTERM,
+                                );
+                                self.append_log(format!("[Launcher] Sent SIGTERM to PID {pid}"));
+                            }
+                            if self.auto_restore && self.parked {
+                                self.disable_gaming_mode();
+                            }
+                            self.watch_phase = WatchPhase::Idle;
+                            self.launched_pid = None;
+                            self.watch_status = String::new();
+                        }
+                        ui.checkbox(&mut self.auto_restore, "Auto-disable when game exits");
+                        if !self.watch_status.is_empty() {
+                            ui.colored_label(s.ok, &self.watch_status);
+                        }
+                    });
+                });
+
+            // ── Activity log (collapsed) ──────────────────────────────────
             egui::CollapsingHeader::new("Activity log")
-                .default_open(true)
+                .default_open(false)
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
-                        .max_height(120.0)
+                        .max_height(140.0)
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
                             for line in &self.log_lines {
                                 ui.label(
                                     RichText::new(line)
-                                        .size(crate::gui::theme::tokens::FONT_SMALL),
+                                        .font(th::num_font(tokens::FONT_SMALL))
+                                        .color(ui.visuals().weak_text_color()),
                                 );
                             }
                         });
                 });
+
+            // ── Footer: helper status + destructive reset ─────────────────
+            ui.add_space(tokens::SPACE_S);
+            ui.separator();
+            ui.horizontal(|ui| {
+                if self.helper_ok {
+                    ui.colored_label(s.ok, &self.helper_status_text);
+                    if ui
+                        .small_button("Reinstall helper…")
+                        .on_hover_text("Reinstall or update the privileged sysfs helper")
+                        .clicked()
+                    {
+                        self.show_install_dialog = true;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let reset = egui::Button::new(RichText::new("↩  Reset all").color(s.negative))
+                        .stroke(egui::Stroke::new(1.0_f32, s.negative));
+                    if ui
+                        .add(reset)
+                        .on_hover_text(
+                            "Restores all per-process CPU affinities and unparks any parked CPUs.",
+                        )
+                        .clicked()
+                    {
+                        if self.parked {
+                            self.events.push(GamingEvent::GamingModeChanged {
+                                active: false,
+                                elevate_nice: false,
+                            });
+                            self.parked = false;
+                        }
+                        if !get_offline_cpus().is_empty() {
+                            self.append_log("[Reset] Unparking CPUs…".into());
+                            let ll =
+                                std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                            let l2 = ll.clone();
+                            unpark_all(move |m| l2.lock().unwrap().push(m));
+                            for m in ll.lock().unwrap().drain(..) {
+                                self.append_log(m);
+                            }
+                            self.refresh_cpu_status();
+                            let topo = detect_topology();
+                            self.rebuild_preferred_checks(&topo);
+                            self.topo_description = topo.description.clone();
+                            self.topo = Some(topo);
+                        }
+                        self.events.push(GamingEvent::ResetAll);
+                    }
+                });
+            });
         });
 
         // ── Install helper dialog ─────────────────────────────────────────
@@ -854,6 +927,137 @@ impl GamingModeTab {
         if let Some((prog, args)) = parts.split_first() {
             let _ = std::process::Command::new(prog).args(args).spawn();
         }
+    }
+}
+
+/// Small filled circle used as an on/off state indicator.
+fn status_dot(ui: &mut Ui, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 5.0, color);
+}
+
+/// Colour swatch + caption, used under the core map.
+fn legend_swatch(ui: &mut Ui, color: Color32, label: &str) {
+    use crate::gui::theme::tokens;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(2), color);
+    ui.label(
+        RichText::new(label)
+            .size(tokens::FONT_SMALL)
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+/// Grid of clickable core cells. Preferred cores toggle between "kept online"
+/// and "parked by you"; non-preferred cores are always parked in Gaming Mode
+/// and are shown for context only.
+fn core_map(
+    ui: &mut Ui,
+    preferred: &[u32],
+    non_preferred: &[u32],
+    smt: &HashSet<u32>,
+    checks: &mut HashMap<u32, bool>,
+    interactive: bool,
+) {
+    use crate::gui::theme::{self as th, tokens};
+    const CELL: f32 = 34.0;
+    const GAP: f32 = 4.0;
+    const COLS: usize = 16;
+
+    let s = th::sem(ui);
+    let mut cells: Vec<(u32, bool)> = preferred
+        .iter()
+        .map(|&c| (c, true))
+        .chain(non_preferred.iter().map(|&c| (c, false)))
+        .collect();
+    cells.sort_unstable();
+    if cells.is_empty() {
+        return;
+    }
+
+    let rows = cells.len().div_ceil(COLS);
+    let cols = cells.len().min(COLS);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(
+            cols as f32 * (CELL + GAP) - GAP,
+            rows as f32 * (CELL + GAP) - GAP,
+        ),
+        egui::Sense::hover(),
+    );
+
+    for (i, &(cpu, is_pref)) in cells.iter().enumerate() {
+        let (r, c) = (i / COLS, i % COLS);
+        let cell = egui::Rect::from_min_size(
+            rect.min + egui::vec2(c as f32 * (CELL + GAP), r as f32 * (CELL + GAP)),
+            egui::vec2(CELL, CELL),
+        );
+        let kept = is_pref && checks.get(&cpu).copied().unwrap_or(true);
+        let clickable = interactive && is_pref;
+        let resp = ui.interact(
+            cell,
+            ui.id().with(("core", cpu)),
+            if clickable {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            },
+        );
+        if resp.clicked() {
+            let v = checks.entry(cpu).or_insert(true);
+            *v = !*v;
+        }
+
+        let (fill, stroke) = if !is_pref {
+            (th::tint(s.manual, 26), egui::Stroke::NONE)
+        } else if kept {
+            (th::tint(s.accent, 38), egui::Stroke::new(1.0_f32, s.accent))
+        } else {
+            (
+                Color32::TRANSPARENT,
+                egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color()),
+            )
+        };
+        let radius = egui::CornerRadius::same(4);
+        ui.painter().rect_filled(cell, radius, fill);
+        if stroke != egui::Stroke::NONE {
+            ui.painter()
+                .rect_stroke(cell, radius, stroke, egui::StrokeKind::Inside);
+        }
+        if resp.hovered() && clickable {
+            ui.painter()
+                .rect_filled(cell, radius, th::tint(ui.visuals().text_color(), 20));
+        }
+
+        let text_col = if kept || !is_pref {
+            ui.visuals().text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        ui.painter().text(
+            cell.center() - egui::vec2(0.0, 5.0),
+            egui::Align2::CENTER_CENTER,
+            cpu.to_string(),
+            th::num_font(tokens::FONT_LABEL),
+            text_col,
+        );
+        let tag = if smt.contains(&cpu) { "HT" } else { "P" };
+        ui.painter().text(
+            cell.center() + egui::vec2(0.0, 7.0),
+            egui::Align2::CENTER_CENTER,
+            tag,
+            egui::FontId::proportional(9.0),
+            ui.visuals().weak_text_color(),
+        );
+
+        let state = if !is_pref {
+            "parked in Gaming Mode"
+        } else if kept {
+            "kept online"
+        } else {
+            "parked by you"
+        };
+        resp.on_hover_text(format!("CPU {cpu} — {state}"));
     }
 }
 
