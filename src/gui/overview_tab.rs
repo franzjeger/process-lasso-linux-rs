@@ -22,7 +22,7 @@ impl OverviewTab {
         net_io_history: &VecDeque<(f32, f32)>,
     ) {
         let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-        let spacing = 8.0;
+        let spacing = crate::gui::theme::tokens::SPACE_M;
 
         // ── Row 1: CPU graph + RAM + Load ────────────────────────────────────
         ui.horizontal(|ui| {

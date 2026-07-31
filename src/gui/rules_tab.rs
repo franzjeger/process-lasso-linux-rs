@@ -97,6 +97,27 @@ impl RulesTab {
             .map(|re| re.get_rules().to_vec())
             .unwrap_or_default();
 
+        // Empty state with a call to action instead of a bare empty table
+        if rules.is_empty() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("No rules yet")
+                        .strong()
+                        .size(crate::gui::theme::tokens::FONT_HEADING),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Right-click a process in the Processes tab and choose \"Add rule\", \
+                         pick a template below, or create one from scratch with \"Add\".",
+                    )
+                    .weak(),
+                );
+            });
+            ui.add_space(12.0);
+        }
+
         let selected_id = self.selected_rule_id.clone();
         let mut new_sel: Option<String> = selected_id.clone();
         let mut open_edit: Option<Rule> = None;
