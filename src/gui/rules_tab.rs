@@ -122,11 +122,7 @@ impl RulesTab {
             let s = theme::sem(ui);
             ui.add_space(28.0);
             ui.vertical_centered(|ui| {
-                ui.label(
-                    RichText::new("No rules yet")
-                        .strong()
-                        .size(tokens::FONT_HEADING),
-                );
+                ui.label(theme::bold(ui, "No rules yet", tokens::FONT_HEADING));
                 ui.add_space(tokens::SPACE_XS);
                 ui.label(
                     RichText::new(
@@ -145,7 +141,7 @@ impl RulesTab {
                     if ui.add(btn).clicked() {
                         self.open_add_dialog(None);
                     }
-                    if ui.button("Templates").clicked() {
+                    if ui.button("Templates ▾").clicked() {
                         self.presets_dialog = Some(RulePresetsDialog::new());
                     }
                 });
@@ -495,7 +491,7 @@ impl RulesTab {
                     if ui.add(new_btn).clicked() {
                         self.open_add_dialog(None);
                     }
-                    if ui.button("Templates").clicked() {
+                    if ui.button("Templates ▾").clicked() {
                         self.presets_dialog = Some(RulePresetsDialog::new());
                     }
 
@@ -503,7 +499,7 @@ impl RulesTab {
 
                     ui.add(
                         egui::TextEdit::singleline(&mut self.test_input)
-                            .hint_text("Test pattern…")
+                            .hint_text("🔍  test pattern")
                             .desired_width(150.0),
                     );
                     if !self.test_input.is_empty() {

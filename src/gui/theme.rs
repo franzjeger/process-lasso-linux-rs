@@ -70,10 +70,135 @@ pub fn pop_viewport_opacity(ctx: &Context, saved: (Color32, Color32)) {
 
 /// Apply the selected theme.
 pub fn apply_theme(ctx: &Context, native_ppp: f32, theme: &AppTheme) {
+    install_fonts(ctx);
     match theme {
         AppTheme::BreezeDark => apply(ctx, native_ppp),
         AppTheme::BreezeLight => apply_light(ctx, native_ppp),
     }
+}
+
+// ── Fonts ─────────────────────────────────────────────────────────────────────
+
+/// Font family name for bold text. egui's built-in fonts ship a single weight,
+/// so `RichText::strong()` only brightens the colour — the design's headings,
+/// KPI values and active column headers all need a real 700 weight.
+pub const BOLD: &str = "bold";
+
+/// Register the bundled DejaVu faces.
+///
+/// Two problems this solves at once:
+///  * no bold face — every heading in the design is 700 weight, and without a
+///    bold font the whole typographic hierarchy collapses to one weight;
+///  * missing glyphs — the design uses ▲ ▼ ▾ ✕ ↑ ↓, none of which exist in
+///    egui's bundled fonts, so they rendered as tofu boxes.
+///
+/// Idempotent: the fonts are only installed once per context.
+fn install_fonts(ctx: &Context) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, bytes) in [
+        (
+            "dejavu",
+            &include_bytes!("../../assets/fonts/DejaVuSans.ttf")[..],
+        ),
+        (
+            "dejavu_bold",
+            &include_bytes!("../../assets/fonts/DejaVuSans-Bold.ttf")[..],
+        ),
+        (
+            "dejavu_mono",
+            &include_bytes!("../../assets/fonts/DejaVuSansMono.ttf")[..],
+        ),
+    ] {
+        fonts.font_data.insert(
+            name.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
+    }
+
+    // Proportional and monospace lead with DejaVu; the built-in faces stay on
+    // as fallbacks so emoji still resolve.
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "dejavu".to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, "dejavu_mono".to_owned());
+
+    // Bold is its own family — egui has no weight axis, so `FontId` with this
+    // family is how a widget asks for 700.
+    fonts.families.insert(
+        egui::FontFamily::Name(BOLD.into()),
+        vec![
+            "dejavu_bold".to_owned(),
+            "dejavu".to_owned(),
+            "dejavu_mono".to_owned(),
+        ],
+    );
+
+    ctx.set_fonts(fonts);
+}
+
+/// A bold `FontId` at the given size — use instead of `RichText::strong()`
+/// wherever the design calls for a real 700 weight.
+pub fn bold_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(BOLD.into()))
+}
+
+/// The highest-contrast text colour for the active theme.
+///
+/// Not `Visuals::strong_text_color()`: egui derives that from
+/// `widgets.active.fg_stroke`, which the light theme sets to white so pressed
+/// widgets read against the blue active fill. Anything calling it for emphasis
+/// text therefore renders white-on-light and disappears.
+pub fn strong_color(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::WHITE
+    } else {
+        Color32::from_rgb(0x1b, 0x1e, 0x21)
+    }
+}
+
+/// Surface colour for cards.
+///
+/// Mockup 3a puts white cards on the light grey page, which is what separates
+/// them; in the dark mockups the card and the page share a fill and the border
+/// alone does the work, so dark keeps its transparent surface.
+pub fn card_fill(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::TRANSPARENT
+    } else {
+        Color32::WHITE
+    }
+}
+
+/// Surface colour for a plot area inside a card.
+///
+/// In dark the plot sits darker than its card; in light the card is already
+/// white, so `extreme_bg_color` (also white) would erase the plot's edge —
+/// mockup 3a uses a faint grey there instead.
+pub fn plot_fill(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        ui.visuals().extreme_bg_color
+    } else {
+        ui.visuals().faint_bg_color
+    }
+}
+
+/// Bold rich text at the given size, in the theme's strongest text colour.
+pub fn bold(ui: &egui::Ui, text: impl Into<String>, size: f32) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .font(bold_font(size))
+        .color(strong_color(ui))
 }
 
 // ── Breeze Dark palette ───────────────────────────────────────────────────────
@@ -103,7 +228,8 @@ impl Breeze {
     // Semantic colours — used for CPU load, status indicators, log lines
     pub const POSITIVE: Color32 = Color32::from_rgb(0x27, 0xae, 0x60); // #27ae60  green
     pub const WARNING: Color32 = Color32::from_rgb(0xf6, 0x74, 0x00); // #f67400  orange
-    pub const NEGATIVE: Color32 = Color32::from_rgb(0xda, 0x44, 0x53); // #da4453  red
+                                                                      // NEGATIVE lives in `sem()`/`sem_for()` — widgets take the theme-aware
+                                                                      // value from there rather than the dark-theme constant.
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -160,7 +286,7 @@ pub fn chip_colored(ui: &mut egui::Ui, label: &str, active: bool, color: Color32
         ..sem(ui)
     };
     let text = if active {
-        format!("{label} ×")
+        format!("{label} ✕")
     } else {
         label.to_string()
     };
@@ -202,23 +328,6 @@ pub fn chip_colored(ui: &mut egui::Ui, label: &str, active: bool, color: Color32
     resp.clicked()
 }
 
-/// Small status badge (filled tint + coloured text), e.g. "Throttled".
-pub fn badge(ui: &mut egui::Ui, label: &str, color: Color32) {
-    let galley = ui.painter().layout_no_wrap(
-        label.to_string(),
-        egui::FontId::proportional(tokens::FONT_LABEL),
-        color,
-    );
-    let pad = egui::vec2(7.0, 1.0);
-    let size = galley.size() + pad * 2.0;
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    if ui.is_rect_visible(rect) {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(3), tint(color, 46));
-        ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
-    }
-}
-
 /// Paint a badge into an explicit rect (for painter-driven tables).
 pub fn badge_at(painter: &egui::Painter, pos: egui::Pos2, label: &str, color: Color32) {
     let galley = painter.layout_no_wrap(
@@ -238,6 +347,13 @@ pub fn badge_at(painter: &egui::Painter, pos: egui::Pos2, label: &str, color: Co
 /// Neutral outlined badge (match types, kinds).
 pub fn badge_outline(ui: &mut egui::Ui, label: &str) {
     let col = ui.visuals().weak_text_color();
+    badge_outline_colored(ui, label, col)
+}
+
+/// Outlined badge in an explicit colour — the mockups use this for live
+/// counters ("1 throttled now"), where a filled badge would compete with the
+/// status text beside it.
+pub fn badge_outline_colored(ui: &mut egui::Ui, label: &str, col: Color32) {
     let galley = ui.painter().layout_no_wrap(
         label.to_string(),
         egui::FontId::proportional(tokens::FONT_LABEL),
@@ -250,7 +366,7 @@ pub fn badge_outline(ui: &mut egui::Ui, label: &str) {
         ui.painter().rect_stroke(
             rect,
             CornerRadius::same(3),
-            Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            Stroke::new(1.0_f32, col),
             egui::StrokeKind::Inside,
         );
         ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
@@ -360,6 +476,7 @@ pub fn kpi_card(
     stripe: Color32,
 ) {
     let resp = egui::Frame::new()
+        .fill(card_fill(ui))
         .stroke(Stroke::new(
             1.0_f32,
             ui.visuals().widgets.noninteractive.bg_stroke.color,
@@ -379,12 +496,7 @@ pub fn kpi_card(
                         .size(tokens::FONT_SMALL)
                         .color(ui.visuals().weak_text_color()),
                 );
-                ui.label(
-                    egui::RichText::new(value)
-                        .size(tokens::FONT_KPI)
-                        .strong()
-                        .monospace(),
-                );
+                ui.label(bold(ui, value, tokens::FONT_KPI));
                 ui.label(
                     egui::RichText::new(detail)
                         .size(tokens::FONT_HELP)
@@ -444,11 +556,14 @@ pub fn apply_bar(ui: &mut egui::Ui, dirty: bool) -> (bool, bool) {
 /// Column-header label: weak, small — never accent blue, which reads as
 /// "interactive/selected". Only the active sort column gets strong text.
 pub fn header_text(ui: &egui::Ui, label: &str, active: bool) -> egui::RichText {
-    let t = egui::RichText::new(label).size(tokens::FONT_LABEL);
     if active {
-        t.strong().color(ui.visuals().strong_text_color())
+        egui::RichText::new(label)
+            .font(bold_font(tokens::FONT_LABEL))
+            .color(strong_color(ui))
     } else {
-        t.color(ui.visuals().weak_text_color())
+        egui::RichText::new(label)
+            .size(tokens::FONT_LABEL)
+            .color(ui.visuals().weak_text_color())
     }
 }
 
@@ -460,19 +575,35 @@ pub fn num_font(size: f32) -> egui::FontId {
 /// QGroupBox-style bordered card with a top-left title — THE section container
 /// for every tab (single definition; per-tab copies are deprecated).
 pub fn card(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    card_hinted(ui, title, "", add_contents)
+}
+
+/// A card whose title carries a weak hint on the same line, e.g.
+/// "Active cores in Gaming Mode — click to park or activate".
+pub fn card_hinted(
+    ui: &mut egui::Ui,
+    title: &str,
+    hint: &str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
     let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
     egui::Frame::new()
+        .fill(card_fill(ui))
         .stroke(egui::Stroke::new(1.0_f32, border_color))
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(
-                egui::RichText::new(title)
-                    .strong()
-                    .size(tokens::FONT_HEADING)
-                    .color(ui.visuals().strong_text_color()),
-            );
+            ui.horizontal(|ui| {
+                ui.label(bold(ui, title, tokens::FONT_HEADING));
+                if !hint.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("— {hint}"))
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+            });
             ui.add_space(tokens::SPACE_XS);
             add_contents(ui);
         });
@@ -495,10 +626,18 @@ pub fn banner(ui: &mut egui::Ui, color: Color32, text: &str, action: Option<&str
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot.center(), 4.0, color);
                 ui.colored_label(color, text);
                 if let Some(label) = action {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(label).clicked() {
+                        let btn = egui::Button::new(
+                            egui::RichText::new(label)
+                                .color(sem(ui).on_accent)
+                                .font(bold_font(tokens::FONT_BODY)),
+                        )
+                        .fill(color);
+                        if ui.add(btn).clicked() {
                             clicked = true;
                         }
                     });
@@ -639,39 +778,6 @@ pub fn cpu_load_color(pct: f32) -> Color32 {
 }
 
 // ── Row highlight colours for the process table ───────────────────────────────
-
-/// Text colour for a process row given its CPU load and throttle state.
-/// `text_color` should be `ui.visuals().text_color()` so it adapts to Breeze Dark/Light.
-pub fn row_color(cpu_pct: f32, throttled: bool, text_color: Color32, dark_mode: bool) -> Color32 {
-    // The dark-theme accents (Breeze yellow/green/orange) have poor contrast
-    // as TEXT on a light background — use darkened variants there.
-    let (warn, hot, warm, calm) = if dark_mode {
-        (
-            Breeze::WARNING,
-            Breeze::NEGATIVE,
-            Color32::from_rgb(0xfd, 0xbc, 0x4b), // Breeze yellow
-            Breeze::POSITIVE,
-        )
-    } else {
-        (
-            Color32::from_rgb(0xa7, 0x4f, 0x00), // dark amber
-            Color32::from_rgb(0xb2, 0x27, 0x36), // dark red
-            Color32::from_rgb(0x8a, 0x66, 0x00), // dark yellow-brown
-            Color32::from_rgb(0x1d, 0x7d, 0x46), // dark green
-        )
-    };
-    if throttled {
-        warn
-    } else if cpu_pct >= 80.0 {
-        hot
-    } else if cpu_pct >= 40.0 {
-        warm
-    } else if cpu_pct >= 10.0 {
-        calm
-    } else {
-        text_color
-    }
-}
 
 // ── Theme application ─────────────────────────────────────────────────────────
 

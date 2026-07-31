@@ -85,6 +85,9 @@ pub struct GamingModeTab {
 
     // Pending re-enable after unpark (profile switch)
     pending_enable_after_unpark: bool,
+    /// Expansion state of the two panels behind the footer buttons.
+    show_launcher: bool,
+    show_log: bool,
 
     // Events to emit to app.rs
     pub events: Vec<GamingEvent>,
@@ -138,6 +141,8 @@ impl GamingModeTab {
             steam_picker: None,
             lutris_picker: None,
             pending_enable_after_unpark: false,
+            show_launcher: false,
+            show_log: false,
             events: Vec::new(),
         };
         tab.refresh_helper_status();
@@ -391,6 +396,7 @@ impl GamingModeTab {
         egui::ScrollArea::vertical().show(ui, |ui| {
             use crate::gui::theme::{self as th, tokens};
             let s = th::sem(ui);
+            let mut reset_clicked = false;
 
             let has_asym = self
                 .topo
@@ -417,7 +423,7 @@ impl GamingModeTab {
             }
 
             // ── Status hero: state, topology summary, one primary action ──
-            th::card(ui, "Gaming Mode", |ui| {
+            card_untitled(ui, |ui| {
                 ui.horizontal(|ui| {
                     status_dot(
                         ui,
@@ -435,13 +441,16 @@ impl GamingModeTab {
                             } else {
                                 "Gaming Mode is off"
                             })
-                            .size(tokens::FONT_HERO)
-                            .strong(),
+                            .font(th::bold_font(tokens::FONT_HERO))
+                            .color(crate::gui::theme::strong_color(ui)),
                         );
                         ui.label(
-                            RichText::new(&self.topo_description)
-                                .size(tokens::FONT_HELP)
-                                .color(ui.visuals().weak_text_color()),
+                            RichText::new(format!(
+                                "{} · {}",
+                                self.topo_description, self.cpu_status_text
+                            ))
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -468,80 +477,74 @@ impl GamingModeTab {
             ui.add_space(tokens::SPACE_S);
 
             // ── Core map: which cores stay online in Gaming Mode ──────────
-            th::card(ui, "Cores", |ui| {
-                let (pref, nonpref, pref_label, nonpref_label) = match &self.topo {
-                    Some(t) => (
-                        t.preferred.iter().copied().collect::<Vec<u32>>(),
-                        t.non_preferred.iter().copied().collect::<Vec<u32>>(),
-                        t.preferred_label.clone(),
-                        t.non_preferred_label.clone(),
-                    ),
-                    None => (Vec::new(), Vec::new(), String::new(), String::new()),
-                };
+            th::card_hinted(
+                ui,
+                "Active cores in Gaming Mode",
+                "click to park or activate",
+                |ui| {
+                    let (pref, nonpref, pref_label, nonpref_label) = match &self.topo {
+                        Some(t) => (
+                            t.preferred.iter().copied().collect::<Vec<u32>>(),
+                            t.non_preferred.iter().copied().collect::<Vec<u32>>(),
+                            t.preferred_label.clone(),
+                            t.non_preferred_label.clone(),
+                        ),
+                        None => (Vec::new(), Vec::new(), String::new(), String::new()),
+                    };
 
-                ui.label(
-                    RichText::new(if has_asym {
-                        format!(
-                            "Parks {nonpref_label} so games initialise their thread pool on \
-                             {pref_label} only. Click a core to keep or park it."
+                    if !has_asym {
+                        ui.label(
+                        RichText::new(
+                            "No CPU asymmetry detected — parking is unavailable on this machine.",
                         )
-                    } else {
-                        "No CPU asymmetry detected — parking is unavailable on this machine."
-                            .to_string()
-                    })
-                    .size(tokens::FONT_HELP)
-                    .color(ui.visuals().weak_text_color()),
-                );
-                ui.add_space(tokens::SPACE_S);
-
-                core_map(
-                    ui,
-                    &pref,
-                    &nonpref,
-                    &self.smt_siblings,
-                    &mut self.preferred_checks,
-                    has_asym,
-                );
-
-                ui.add_space(tokens::SPACE_S);
-                ui.horizontal(|ui| {
-                    if th::chip(ui, "All", false) {
-                        for v in self.preferred_checks.values_mut() {
-                            *v = true;
-                        }
+                        .size(tokens::FONT_HELP)
+                        .color(ui.visuals().weak_text_color()),
+                    );
+                        ui.add_space(tokens::SPACE_S);
                     }
-                    let has_smt = !self.smt_siblings.is_empty();
-                    ui.add_enabled_ui(has_smt, |ui| {
-                        if th::chip(ui, "No SMT", false) {
-                            for (&cpu, v) in &mut self.preferred_checks {
-                                *v = !self.smt_siblings.contains(&cpu);
+
+                    core_map(
+                        ui,
+                        &pref,
+                        &nonpref,
+                        &self.smt_siblings,
+                        &mut self.preferred_checks,
+                        has_asym,
+                    );
+
+                    ui.add_space(tokens::SPACE_S);
+                    ui.horizontal(|ui| {
+                        if th::chip(ui, "All", false) {
+                            for v in self.preferred_checks.values_mut() {
+                                *v = true;
                             }
                         }
-                    });
-                    if th::chip(ui, "None", false) {
-                        for v in self.preferred_checks.values_mut() {
-                            *v = false;
+                        let has_smt = !self.smt_siblings.is_empty();
+                        ui.add_enabled_ui(has_smt, |ui| {
+                            if th::chip(ui, "No SMT", false) {
+                                for (&cpu, v) in &mut self.preferred_checks {
+                                    *v = !self.smt_siblings.contains(&cpu);
+                                }
+                            }
+                        });
+                        if th::chip(ui, "None", false) {
+                            for v in self.preferred_checks.values_mut() {
+                                *v = false;
+                            }
                         }
-                    }
-                    ui.add_space(tokens::SPACE_M);
-                    legend_swatch(ui, s.accent, "kept online");
-                    legend_swatch(ui, ui.visuals().weak_text_color(), "parked by you");
-                    // Uniform-topology machines have no non-preferred group, so
-                    // the third swatch would render with an empty caption.
-                    if !nonpref_label.is_empty() {
-                        legend_swatch(ui, s.manual, &nonpref_label);
-                    }
-                });
-                ui.add_space(tokens::SPACE_XS);
-                ui.label(
-                    RichText::new(&self.cpu_status_text)
-                        .size(tokens::FONT_SMALL)
-                        .color(
-                            self.cpu_status_color
-                                .unwrap_or_else(|| ui.visuals().weak_text_color()),
-                        ),
-                );
-            });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Uniform-topology machines have no non-preferred group,
+                            // so that swatch would render with an empty caption.
+                            if !nonpref_label.is_empty() {
+                                legend_swatch(ui, s.manual, &format!("{nonpref_label} parked"));
+                            }
+                            if !pref_label.is_empty() {
+                                legend_swatch(ui, s.accent, &format!("{pref_label} active"));
+                            }
+                        });
+                    });
+                },
+            );
             ui.add_space(tokens::SPACE_S);
 
             // ── Behaviour: what happens when Gaming Mode is on ────────────
@@ -607,9 +610,48 @@ impl GamingModeTab {
             ui.add_space(tokens::SPACE_S);
 
             // ── Game launcher & profiles (collapsed) ──────────────────────
-            egui::CollapsingHeader::new("Game launcher and profiles")
-                .default_open(false)
-                .show(ui, |ui| {
+            // ── One row of three: the two panels plus the destructive
+            //    reset, as mockup 2b lays them out.
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - tokens::SPACE_S * 2.0) / 3.0;
+                let arrow = |open: bool| if open { "▾" } else { "▸" };
+                if ui
+                    .add_sized(
+                        [w, 26.0],
+                        egui::Button::new(format!(
+                            "{}  Game launcher and profiles",
+                            arrow(self.show_launcher)
+                        )),
+                    )
+                    .clicked()
+                {
+                    self.show_launcher = !self.show_launcher;
+                }
+                if ui
+                    .add_sized(
+                        [w, 26.0],
+                        egui::Button::new(format!("{}  Activity log", arrow(self.show_log))),
+                    )
+                    .clicked()
+                {
+                    self.show_log = !self.show_log;
+                }
+                let reset = egui::Button::new(RichText::new("↩  Reset all").color(s.negative))
+                    .stroke(egui::Stroke::new(1.0_f32, s.negative));
+                if ui
+                    .add_sized([w, 26.0], reset)
+                    .on_hover_text(
+                        "Restores all per-process CPU affinities and unparks any parked CPUs.",
+                    )
+                    .clicked()
+                {
+                    reset_clicked = true;
+                }
+            });
+            ui.add_space(tokens::SPACE_S);
+
+            if self.show_launcher {
+                th::card(ui, "Game launcher and profiles", |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Profile");
                         let profiles = self
@@ -705,11 +747,11 @@ impl GamingModeTab {
                         }
                     });
                 });
+            }
 
             // ── Activity log (collapsed) ──────────────────────────────────
-            egui::CollapsingHeader::new("Activity log")
-                .default_open(false)
-                .show(ui, |ui| {
+            if self.show_log {
+                th::card(ui, "Activity log", |ui| {
                     egui::ScrollArea::vertical()
                         .max_height(140.0)
                         .stick_to_bottom(true)
@@ -723,12 +765,12 @@ impl GamingModeTab {
                             }
                         });
                 });
+            }
 
-            // ── Footer: helper status + destructive reset ─────────────────
-            ui.add_space(tokens::SPACE_S);
-            ui.separator();
-            ui.horizontal(|ui| {
-                if self.helper_ok {
+            // ── Footer: helper status ─────────────────────────────────────
+            if self.helper_ok {
+                ui.add_space(tokens::SPACE_S);
+                ui.horizontal(|ui| {
                     ui.colored_label(s.ok, &self.helper_status_text);
                     if ui
                         .small_button("Reinstall helper…")
@@ -737,43 +779,33 @@ impl GamingModeTab {
                     {
                         self.show_install_dialog = true;
                     }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let reset = egui::Button::new(RichText::new("Reset all").color(s.negative))
-                        .stroke(egui::Stroke::new(1.0_f32, s.negative));
-                    if ui
-                        .add(reset)
-                        .on_hover_text(
-                            "Restores all per-process CPU affinities and unparks any parked CPUs.",
-                        )
-                        .clicked()
-                    {
-                        if self.parked {
-                            self.events.push(GamingEvent::GamingModeChanged {
-                                active: false,
-                                elevate_nice: false,
-                            });
-                            self.parked = false;
-                        }
-                        if !get_offline_cpus().is_empty() {
-                            self.append_log("[Reset] Unparking CPUs…".into());
-                            let ll =
-                                std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-                            let l2 = ll.clone();
-                            unpark_all(move |m| l2.lock().unwrap().push(m));
-                            for m in ll.lock().unwrap().drain(..) {
-                                self.append_log(m);
-                            }
-                            self.refresh_cpu_status();
-                            let topo = detect_topology();
-                            self.rebuild_preferred_checks(&topo);
-                            self.topo_description = topo.description.clone();
-                            self.topo = Some(topo);
-                        }
-                        self.events.push(GamingEvent::ResetAll);
-                    }
                 });
-            });
+            }
+
+            if reset_clicked {
+                if self.parked {
+                    self.events.push(GamingEvent::GamingModeChanged {
+                        active: false,
+                        elevate_nice: false,
+                    });
+                    self.parked = false;
+                }
+                if !get_offline_cpus().is_empty() {
+                    self.append_log("[Reset] Unparking CPUs…".into());
+                    let ll = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                    let l2 = ll.clone();
+                    unpark_all(move |m| l2.lock().unwrap().push(m));
+                    for m in ll.lock().unwrap().drain(..) {
+                        self.append_log(m);
+                    }
+                    self.refresh_cpu_status();
+                    let topo = detect_topology();
+                    self.rebuild_preferred_checks(&topo);
+                    self.topo_description = topo.description.clone();
+                    self.topo = Some(topo);
+                }
+                self.events.push(GamingEvent::ResetAll);
+            }
         });
 
         // ── Install helper dialog ─────────────────────────────────────────
@@ -1085,4 +1117,19 @@ fn proc_name_matches(game_name: &str, pid: u32) -> bool {
         }
     }
     false
+}
+
+/// A bordered container with no heading — mockup 2b's status card leads with
+/// its hero line, so a card title above it would just say the same thing.
+fn card_untitled(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    let border = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    egui::Frame::new()
+        .fill(crate::gui::theme::card_fill(ui))
+        .stroke(egui::Stroke::new(1.0_f32, border))
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(egui::CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            add_contents(ui);
+        });
 }

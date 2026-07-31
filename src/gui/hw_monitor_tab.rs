@@ -73,7 +73,7 @@ impl HwMonitorTab {
                     .desired_width(w)
                     .hint_text("Search sensors…"),
             );
-            if !self.filter.is_empty() && ui.small_button("×").clicked() {
+            if !self.filter.is_empty() && ui.small_button("✕").clicked() {
                 self.filter.clear();
             }
 
@@ -353,7 +353,7 @@ fn group_header_row(ui: &mut Ui, group: &SensorGroup) {
         egui::RichText::new(title)
             .size(tokens::FONT_BODY)
             .strong()
-            .color(ui.visuals().strong_text_color()),
+            .color(crate::gui::theme::strong_color(ui)),
     )
     .into_galley(
         ui,

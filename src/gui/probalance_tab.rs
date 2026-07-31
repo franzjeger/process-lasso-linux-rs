@@ -45,7 +45,7 @@ impl ProBalanceTab {
         let s = th::sem(ui);
 
         // ── Status card: state, plain-language summary, live count ────────
-        th::card(ui, "ProBalance", |ui| {
+        card_untitled(ui, |ui| {
             ui.horizontal(|ui| {
                 th::toggle(ui, &mut self.cfg.enabled);
                 ui.add_space(tokens::SPACE_S);
@@ -56,8 +56,8 @@ impl ProBalanceTab {
                         } else {
                             "ProBalance is off"
                         })
-                        .size(tokens::FONT_HERO)
-                        .strong(),
+                        .font(th::bold_font(tokens::FONT_HERO))
+                        .color(crate::gui::theme::strong_color(ui)),
                     );
                     ui.label(
                         RichText::new(self.summary())
@@ -68,7 +68,7 @@ impl ProBalanceTab {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let n = throttle_infos.len();
                     if n > 0 {
-                        th::badge(ui, &format!("{n} throttled now"), s.warning);
+                        th::badge_outline_colored(ui, &format!("{n} throttled now"), s.warning);
                     }
                 });
             });
@@ -76,7 +76,7 @@ impl ProBalanceTab {
         ui.add_space(tokens::SPACE_M);
 
         // ── Live throttle view ────────────────────────────────────────────
-        th::card(ui, "Currently throttled", |ui| {
+        card_untitled(ui, |ui| {
             if throttle_infos.is_empty() {
                 ui.label(
                     RichText::new(if self.cfg.enabled {
@@ -155,6 +155,24 @@ impl ProBalanceTab {
                 .min_row_height(tokens::ROW_H)
                 .spacing([tokens::SPACE_S, tokens::SPACE_XS])
                 .show(ui, |ui| {
+                    form_label(ui, LABEL_W, "Throttle method");
+                    egui::ComboBox::from_id_salt("pb_method")
+                        .selected_text(match self.cfg.method.as_str() {
+                            "cgroup" => "cgroup (per-app CPUWeight)",
+                            "auto" => "auto (cgroup, nice fallback)",
+                            _ => "nice (process priority)",
+                        })
+                        .show_ui(ui, |ui| {
+                            for (val, label) in [
+                                ("nice", "nice (process priority)"),
+                                ("cgroup", "cgroup (per-app CPUWeight)"),
+                                ("auto", "auto (cgroup, nice fallback)"),
+                            ] {
+                                ui.selectable_value(&mut self.cfg.method, val.to_string(), label);
+                            }
+                        });
+                    ui.end_row();
+
                     form_label(ui, LABEL_W, "Throttle above");
                     ui.horizontal(|ui| {
                         ui.add(
@@ -166,22 +184,6 @@ impl ProBalanceTab {
                         ui.add(
                             egui::DragValue::new(&mut self.cfg.consecutive_seconds)
                                 .range(1.0f32..=60.0)
-                                .suffix(" s"),
-                        );
-                    });
-                    ui.end_row();
-
-                    form_label(ui, LABEL_W, "Restore below");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.cfg.restore_threshold_percent)
-                                .range(1.0f32..=99.0)
-                                .suffix(" %"),
-                        );
-                        weak(ui, "for");
-                        ui.add(
-                            egui::DragValue::new(&mut self.cfg.restore_hysteresis_seconds)
-                                .range(1.0f32..=120.0)
                                 .suffix(" s"),
                         );
                     });
@@ -199,22 +201,20 @@ impl ProBalanceTab {
                     });
                     ui.end_row();
 
-                    form_label(ui, LABEL_W, "Throttle method");
-                    egui::ComboBox::from_id_salt("pb_method")
-                        .selected_text(match self.cfg.method.as_str() {
-                            "cgroup" => "cgroup (per-app CPUWeight)",
-                            "auto" => "auto (cgroup, nice fallback)",
-                            _ => "nice (process priority)",
-                        })
-                        .show_ui(ui, |ui| {
-                            for (val, label) in [
-                                ("nice", "nice (process priority)"),
-                                ("cgroup", "cgroup (per-app CPUWeight)"),
-                                ("auto", "auto (cgroup, nice fallback)"),
-                            ] {
-                                ui.selectable_value(&mut self.cfg.method, val.to_string(), label);
-                            }
-                        });
+                    form_label(ui, LABEL_W, "Restore below");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.restore_threshold_percent)
+                                .range(1.0f32..=99.0)
+                                .suffix(" %"),
+                        );
+                        weak(ui, "for");
+                        ui.add(
+                            egui::DragValue::new(&mut self.cfg.restore_hysteresis_seconds)
+                                .range(1.0f32..=120.0)
+                                .suffix(" s"),
+                        );
+                    });
                     ui.end_row();
 
                     if self.cfg.method != "nice" {
@@ -356,7 +356,7 @@ fn restore_progress(ui: &mut Ui, elapsed_low: f32, hysteresis: f32, color: egui:
 /// A filled chip with a × affordance. Returns true when the user removes it.
 fn removable_chip(ui: &mut Ui, label: &str) -> bool {
     use crate::gui::theme::{self as th, tokens};
-    let text = format!("{label}  ×");
+    let text = format!("{label}  ✕");
     let btn = egui::Button::new(
         RichText::new(text)
             .size(tokens::FONT_LABEL)
@@ -380,4 +380,19 @@ fn add_chip(ui: &mut Ui, label: &str) -> bool {
     .stroke(egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color()))
     .corner_radius(egui::CornerRadius::same(9));
     ui.add(btn).clicked()
+}
+
+/// A bordered container with no heading — mockup 2f uses these for the status
+/// card (its hero line is the title) and for the throttle table.
+fn card_untitled(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    let border = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    egui::Frame::new()
+        .fill(crate::gui::theme::card_fill(ui))
+        .stroke(egui::Stroke::new(1.0_f32, border))
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(egui::CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            add_contents(ui);
+        });
 }
