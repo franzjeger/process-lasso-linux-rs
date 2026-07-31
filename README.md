@@ -20,18 +20,25 @@ Inspired by Windows Process Lasso, rebuilt from scratch for Linux with KDE/Wayla
 - Top-10 processes by CPU in a live table
 
 ### Process Table
-- Live sortable table: PID, name, CPU%, memory, nice, affinity, I/O priority, status
-- Sort stability — equal-CPU% rows always ordered by PID, no flickering
-- Live filter by name, PID, or full command line (`/` to focus, `✕` to clear)
+- Live sortable table: PID, name, CPU%, **GPU%** (NVIDIA/NVML per-process), memory, nice, affinity, I/O priority, status
+- **Heatmap cells** — CPU/GPU/MEM cell tint scales with the value, Task-Manager style
+- **Quick-filter chips** — High CPU / Throttled / Suspended, combinable with the text filter
+- Live filter by name, PID, or full command line (`/` to focus, `✕` to clear), with **regex toggle**
+- **Column chooser** — right-click the header to show/hide columns (persisted)
+- **Double-click a row** for a details window: state, threads, open FDs, executable, working dir, per-process I/O, CPU sparkline
 - Right-click context menu: kill, force-kill, suspend/resume, set affinity, set nice, set I/O priority, add rule
-- **Suspend / Resume** — SIGSTOP / SIGCONT with `⏸ Suspended` status indicator
-- `Delete` kills selected process, `F5` forces immediate refresh
-- Cmdline tooltip on hover over the name column
+- **Kill with undo** — 5-second countdown toast before the signal fires
+- **"Remember settings"** — after a manual affinity/nice/ionice change, one click turns it into a persistent rule
+- Virtualized rendering — only visible rows are laid out, smooth with 1000+ processes
+- Sort stability — equal-CPU% rows always ordered by PID, no flickering
 - Per-CPU load bars with frequency readout and offline/parked indicators
 - Rolling 120-sample CPU history chart
 
 ### ProBalance
-- Automatically throttles high-CPU processes by raising their nice priority
+- Automatically throttles high-CPU processes; restores them when they calm down
+- **Two throttle methods**: classic nice priority, or **cgroup v2 per-app `CPUWeight`** via systemd
+  (opt-in `method = cgroup`/`auto`; rootless, sanctioned — see
+  [docs/design-cgroup-probalance.md](docs/design-cgroup-probalance.md))
 - Configurable CPU threshold, consecutive-seconds trigger, nice adjustment, and restore hysteresis
 - Per-process exempt list (pattern matching)
 - Desktop notifications (D-Bus/zbus) when processes are throttled or restored
@@ -39,10 +46,16 @@ Inspired by Windows Process Lasso, rebuilt from scratch for Linux with KDE/Wayla
 ### Gaming Mode
 - Detects asymmetric CPU topologies (Intel P/E-cores, AMD X3D preferred/non-preferred CCDs)
 - Parks non-preferred CPUs via a privileged helper to maximise L3 cache locality
+- **Auto-detection** (opt-in): enables/disables Gaming Mode automatically when a
+  Steam/Proton game starts or exits, with optional CPU parking
+- **Power profiles**: Performance / Balanced / Power Save buttons set the CPU governor
+  and energy-performance preference on all cores (driver-aware — no min-frequency traps
+  on non-EPP systems)
 - Optional per-process nice elevation for the game process
 - Game Launcher: launch a command, watch for its process, auto-restore CPUs when the game exits
 - Steam and Lutris library pickers
 - Persistent named gaming profiles (save/load CPU configurations)
+- All changes are restored on quit/window close (nices, throttles, parked CPUs)
 
 ### Rules Engine
 - Per-process rules: CPU affinity, nice priority, I/O class/level
@@ -62,8 +75,11 @@ Inspired by Windows Process Lasso, rebuilt from scratch for Linux with KDE/Wayla
 - Per-run delta column: shows improvement/regression vs. previous run
 - Export results to CSV
 
-### Log
+### Log & Notifications
 - Scrolling event log: ProBalance throttle/restore, rule matches, gaming mode changes, startup info
+- **Notification center** — 🔔 in the status bar with an unseen-count badge for notable events
+  (throttles, HW alerts, gaming mode, kills), no log-diving needed
+- **Persistent log file** at `~/.local/share/argus-lasso/argus-lasso.log` with 1 MiB rotation
 - Auto-scroll toggle; save log to file
 
 ### Settings
@@ -90,11 +106,18 @@ argus-lasso kill <pid> [--force]
 
 # Set CPU affinity
 argus-lasso set-affinity <pid> <cpu-list>   # e.g. "0-7,16-23"
+
+# JSON status snapshot for scripting/status bars (CPU model, load, top processes)
+argus-lasso status --top 10
 ```
 
 ---
 
 ## Screenshots
+
+> **Note:** the screenshots below predate the latest UI refresh (regrouped navigation,
+> notification center, heatmap table cells, restructured Gaming Mode tab) and some newer
+> features — fresh captures are coming.
 
 | Tab | Preview |
 |-----|---------|
@@ -148,6 +171,19 @@ sudo dnf install rust cargo pkg-config wayland-devel mesa-libGL-devel ImageMagic
 ---
 
 ## Building & Installing
+
+### Pre-built binaries
+Every release ships `x86_64` and `aarch64` tarballs with sha256 checksums —
+grab the latest from the [Releases page](https://github.com/franzjeger/process-lasso-linux-rs/releases/latest):
+```bash
+tar xzf argus-lasso-<version>-x86_64-linux.tar.gz
+cd argus-lasso-<version>-x86_64-linux
+install -Dm755 argus-lasso ~/.local/bin/argus-lasso
+```
+
+### Arch (AUR-style)
+An AUR package template lives in [`dist/PKGBUILD`](dist/PKGBUILD) — builds from the
+release tag and installs binary, desktop entry, icon, and systemd user service.
 
 ### Quick install (user-local)
 ```bash
@@ -205,8 +241,10 @@ RUST_LOG=debug argus-lasso
 |-----|--------|
 | `/` | Focus the filter field |
 | `F5` | Force immediate refresh |
-| `Delete` | Kill (SIGTERM) selected process |
+| `Delete` | Kill (SIGTERM) selected process — 5s undo toast |
+| Double-click row | Open the process details window |
 | Right-click row | Context menu (kill, suspend/resume, affinity, nice, I/O, add rule) |
+| Right-click header | Column chooser (show/hide columns) |
 
 ---
 
@@ -222,13 +260,13 @@ Existing configs from `~/.config/process-lasso-rs/` are automatically migrated o
 ## Gaming Mode — Privileged Helper
 
 Parking/unparking CPUs requires writing to `/sys/devices/system/cpu/cpuN/online`, which needs root.
-Argus-Lasso ships a small helper script (`argus-lasso-sysfs`) installed via:
+Argus-Lasso ships a small helper script (`argus-lasso-sysfs`) installed from the Gaming Mode tab.
+Installation prefers **polkit (`pkexec`)** — authentication happens in the system dialog and no
+password ever passes through the app; a root-password fallback exists for systems without a
+polkit agent.
 
-```
-Settings → Gaming Mode tab → "Install / Update Helper (root)"
-```
-
-This is the only operation requiring elevated privileges. The main application runs entirely as a normal user.
+This is the only operation requiring elevated privileges. The main application runs entirely
+as a normal user (the cgroup ProBalance method is likewise rootless via `systemctl --user`).
 
 ---
 
