@@ -28,6 +28,14 @@ enum ProcState {
     Throttled,
 }
 
+/// Which mechanism actually throttled this process — restore must use the
+/// same one even if the configured method changes mid-throttle.
+#[derive(Debug, Clone, PartialEq)]
+enum Applied {
+    Nice,
+    Cgroup { unit: String },
+}
+
 #[derive(Debug, Clone)]
 struct ProcEntry {
     state: ProcState,
@@ -35,6 +43,7 @@ struct ProcEntry {
     consecutive_low: f32,  // seconds spent below restore threshold
     original_nice: Option<i32>,
     throttle_nice: Option<i32>,
+    applied: Option<Applied>,
 }
 
 impl ProcEntry {
@@ -45,8 +54,17 @@ impl ProcEntry {
             consecutive_low: 0.0,
             original_nice: Some(original_nice),
             throttle_nice: None,
+            applied: None,
         }
     }
+}
+
+/// Refcounted per-unit throttle: N hog PIDs in one app scope share one
+/// CPUWeight change, restored when the last one calms down or dies.
+#[derive(Debug, Clone)]
+struct UnitThrottle {
+    count: usize,
+    original_weight: Option<u64>,
 }
 
 // ── Throttle detail for UI display ───────────────────────────────────────────
@@ -62,6 +80,8 @@ pub struct ThrottleInfo {
     pub consecutive_low: f32,
     /// Target seconds below restore threshold before restoring.
     pub restore_hysteresis: f32,
+    /// systemd unit throttled via CPUWeight, when the cgroup method applied.
+    pub unit: Option<String>,
 }
 
 // ── A snapshot of one process (what ProBalance needs) ────────────────────────
@@ -160,6 +180,12 @@ fn finalize_restore(entry: &mut ProcEntry, original_nice: i32) {
 pub struct ProBalance {
     cfg: ProBalanceConfig,
     states: HashMap<u32, ProcEntry>,
+    /// unit name → refcounted cgroup throttle (see docs/design-cgroup-probalance.md)
+    unit_refs: HashMap<String, UnitThrottle>,
+    /// Units where set-property failed — don't retry every tick
+    cgroup_failed_units: std::collections::HashSet<String>,
+    /// PIDs logged as un-throttleable under method="cgroup" (log once)
+    cgroup_failed_pids: std::collections::HashSet<u32>,
     log_callback: Option<Box<dyn Fn(String) + Send>>,
 }
 
@@ -168,6 +194,9 @@ impl ProBalance {
         Self {
             cfg,
             states: HashMap::new(),
+            unit_refs: HashMap::new(),
+            cgroup_failed_units: std::collections::HashSet::new(),
+            cgroup_failed_pids: std::collections::HashSet::new(),
             log_callback: None,
         }
     }
@@ -178,6 +207,9 @@ impl ProBalance {
         if !cfg.enabled && self.cfg.enabled {
             self.restore_all("ProBalance disabled");
         }
+        // Method/weight changes get a fresh chance on previously failed targets.
+        self.cgroup_failed_units.clear();
+        self.cgroup_failed_pids.clear();
         self.cfg = cfg;
     }
 
@@ -186,23 +218,151 @@ impl ProBalance {
         self.restore_all("shutdown");
     }
 
-    /// Restore every currently throttled process to its original nice and
-    /// forget all tracked state.
+    /// Restore every currently throttled process (via whichever mechanism
+    /// throttled it) and forget all tracked state.
     fn restore_all(&mut self, reason: &str) {
         let mut pending_logs: Vec<String> = Vec::new();
-        for (&pid, entry) in self.states.iter() {
+        let entries: Vec<(u32, ProcEntry)> = self.states.drain().collect();
+        for (pid, entry) in entries {
             if entry.state == ProcState::Throttled {
                 let orig = entry.original_nice.unwrap_or(0);
-                if utils::set_nice(pid, orig) {
-                    pending_logs.push(format!(
-                        "[ProBalance] RESTORE ({reason}) PID {pid} nice→{orig}"
+                self.undo_applied(pid, entry.applied.as_ref(), orig, reason, &mut pending_logs);
+            }
+        }
+        self.unit_refs.clear();
+        for msg in pending_logs {
+            self.log(msg);
+        }
+    }
+
+    /// Undo one throttle using the mechanism that applied it. `None` applied
+    /// means a legacy/nice entry.
+    fn undo_applied(
+        &mut self,
+        pid: u32,
+        applied: Option<&Applied>,
+        original_nice: i32,
+        reason: &str,
+        logs: &mut Vec<String>,
+    ) {
+        match applied {
+            Some(Applied::Cgroup { unit }) => {
+                let unit = unit.clone();
+                self.release_unit(&unit, reason, logs);
+            }
+            Some(Applied::Nice) | None => {
+                if utils::set_nice(pid, original_nice) {
+                    logs.push(format!(
+                        "[ProBalance] RESTORE ({reason}) PID {pid} nice→{original_nice}"
                     ));
                 }
             }
         }
-        self.states.clear();
-        for msg in pending_logs {
-            self.log(msg);
+    }
+
+    /// Drop one reference on a unit throttle; restore the unit when the last
+    /// reference goes away.
+    fn release_unit(&mut self, unit: &str, reason: &str, logs: &mut Vec<String>) {
+        let Some(t) = self.unit_refs.get_mut(unit) else {
+            return;
+        };
+        t.count = t.count.saturating_sub(1);
+        if t.count == 0 {
+            let original = t.original_weight;
+            self.unit_refs.remove(unit);
+            if crate::cgroup::restore_unit(unit, original) {
+                logs.push(format!(
+                    "[ProBalance] RESTORE ({reason}) unit {unit} CPUWeight→{}",
+                    original.map_or("default".to_string(), |w| w.to_string())
+                ));
+            } else {
+                logs.push(format!(
+                    "[ProBalance] RESTORE ({reason}) unit {unit} FAILED — check `systemctl --user`"
+                ));
+            }
+        }
+    }
+
+    /// Try to throttle one process using the configured method. Returns the
+    /// mechanism that succeeded, or None (state machine stays Normal and
+    /// retries next tick).
+    fn apply_throttle(
+        &mut self,
+        proc: &ProcSnapshot,
+        new_nice: i32,
+        logs: &mut Vec<String>,
+    ) -> Option<Applied> {
+        let method = self.cfg.method.as_str();
+        let cgroup_wanted = matches!(method, "cgroup" | "auto");
+
+        if cgroup_wanted {
+            match crate::cgroup::unit_for_pid(proc.pid) {
+                Some(unit) if !self.cgroup_failed_units.contains(&unit) => {
+                    if let Some(t) = self.unit_refs.get_mut(&unit) {
+                        // Unit already throttled by another hog PID — share it.
+                        t.count += 1;
+                        logs.push(format!(
+                            "[ProBalance] THROTTLE {}({}) cpu={:.1}% joins throttled unit {unit}",
+                            proc.name, proc.pid, proc.cpu_percent
+                        ));
+                        return Some(Applied::Cgroup { unit });
+                    }
+                    let original = crate::cgroup::read_unit_cpu_weight(&unit);
+                    if crate::cgroup::throttle_unit(
+                        &unit,
+                        self.cfg.cgroup_throttle_weight,
+                        self.cfg.cgroup_quota_percent,
+                    ) {
+                        self.unit_refs.insert(
+                            unit.clone(),
+                            UnitThrottle {
+                                count: 1,
+                                original_weight: original,
+                            },
+                        );
+                        logs.push(format!(
+                            "[ProBalance] THROTTLE {}({}) cpu={:.1}% unit {unit} CPUWeight→{}",
+                            proc.name, proc.pid, proc.cpu_percent, self.cfg.cgroup_throttle_weight
+                        ));
+                        return Some(Applied::Cgroup { unit });
+                    }
+                    self.cgroup_failed_units.insert(unit.clone());
+                    logs.push(format!(
+                        "[ProBalance] cgroup throttle FAILED for unit {unit}{}",
+                        if method == "auto" {
+                            " — falling back to nice"
+                        } else {
+                            ""
+                        }
+                    ));
+                    if method == "cgroup" {
+                        return None;
+                    }
+                }
+                Some(_) if method == "cgroup" => return None, // known-failed unit
+                Some(_) => {}                                 // auto: fall through to nice
+                None if method == "cgroup" => {
+                    if self.cgroup_failed_pids.insert(proc.pid) {
+                        logs.push(format!(
+                            "[ProBalance] {}({}) has no throttleable user unit (method=cgroup) — skipping",
+                            proc.name, proc.pid
+                        ));
+                    }
+                    return None;
+                }
+                None => {} // auto: fall through to nice
+            }
+        }
+
+        // Nice path (method="nice", or auto-fallback)
+        if utils::set_nice(proc.pid, new_nice) {
+            logs.push(format!(
+                "[ProBalance] THROTTLE {}({}) cpu={:.1}% nice {}→{}",
+                proc.name, proc.pid, proc.cpu_percent, proc.nice, new_nice
+            ));
+            Some(Applied::Nice)
+        } else {
+            None
         }
     }
 
@@ -228,61 +388,84 @@ impl ProBalance {
             return;
         }
 
-        // Clean up dead PIDs
-        let alive: std::collections::HashSet<u32> = snapshot.iter().map(|p| p.pid).collect();
-        self.states.retain(|pid, _| alive.contains(pid));
-
         // Collect log messages separately to avoid holding &mut self while calling self.log()
         let mut pending_logs: Vec<String> = Vec::new();
+
+        // Clean up dead PIDs. A cgroup-throttled unit outlives its hog PID, so
+        // release the unit reference instead of just dropping the entry.
+        let alive: std::collections::HashSet<u32> = snapshot.iter().map(|p| p.pid).collect();
+        let dead: Vec<u32> = self
+            .states
+            .keys()
+            .filter(|p| !alive.contains(p))
+            .copied()
+            .collect();
+        for pid in dead {
+            if let Some(entry) = self.states.remove(&pid) {
+                if entry.state == ProcState::Throttled {
+                    if let Some(Applied::Cgroup { unit }) = &entry.applied {
+                        let unit = unit.clone();
+                        self.release_unit(&unit, "process exited", &mut pending_logs);
+                    }
+                    // Nice: nothing to restore — the process is gone.
+                }
+            }
+        }
+        self.cgroup_failed_pids.retain(|p| alive.contains(p));
 
         for proc in snapshot {
             if self.is_exempt(&proc.name) {
                 // A process exempted *after* being throttled must be restored,
-                // not silently abandoned at its penalty nice.
+                // not silently abandoned in its throttled state.
                 if let Some(entry) = self.states.remove(&proc.pid) {
                     if entry.state == ProcState::Throttled {
                         let orig = entry.original_nice.unwrap_or(0);
-                        if utils::set_nice(proc.pid, orig) {
-                            pending_logs.push(format!(
-                                "[ProBalance] RESTORE (exempted) {}({}) nice→{}",
-                                proc.name, proc.pid, orig
-                            ));
-                        }
+                        self.undo_applied(
+                            proc.pid,
+                            entry.applied.as_ref(),
+                            orig,
+                            "exempted",
+                            &mut pending_logs,
+                        );
                     }
                 }
                 continue;
             }
 
-            let entry = self
-                .states
-                .entry(proc.pid)
-                .or_insert_with(|| ProcEntry::new(proc.nice));
-
             // Pure step: advance counters and decide what to do. No syscalls.
-            let decision = decide(entry, proc, tick_seconds, &self.cfg);
+            // (Scoped so the entry borrow ends before the impure application —
+            // apply_throttle/undo_applied need &mut self.)
+            let decision = {
+                let entry = self
+                    .states
+                    .entry(proc.pid)
+                    .or_insert_with(|| ProcEntry::new(proc.nice));
+                decide(entry, proc, tick_seconds, &self.cfg)
+            };
 
-            // Apply syscall at the boundary, then finalize entry state.
+            // Apply side effects at the boundary, then finalize entry state.
             match decision {
                 Decision::None => {}
                 Decision::Throttle { new_nice } => {
-                    let ok = utils::set_nice(proc.pid, new_nice);
-                    if ok {
-                        pending_logs.push(format!(
-                            "[ProBalance] THROTTLE {}({}) cpu={:.1}% nice {}→{}",
-                            proc.name, proc.pid, proc.cpu_percent, proc.nice, new_nice
-                        ));
+                    let applied = self.apply_throttle(proc, new_nice, &mut pending_logs);
+                    if let Some(entry) = self.states.get_mut(&proc.pid) {
+                        finalize_throttle(entry, new_nice, applied.is_some());
+                        entry.applied = applied;
                     }
-                    finalize_throttle(entry, new_nice, ok);
                 }
                 Decision::Restore { original_nice } => {
-                    let ok = utils::set_nice(proc.pid, original_nice);
-                    if ok {
-                        pending_logs.push(format!(
-                            "[ProBalance] RESTORE {}({}) cpu={:.1}% nice {}→{}",
-                            proc.name, proc.pid, proc.cpu_percent, proc.nice, original_nice
-                        ));
+                    let applied = self.states.get(&proc.pid).and_then(|e| e.applied.clone());
+                    self.undo_applied(
+                        proc.pid,
+                        applied.as_ref(),
+                        original_nice,
+                        "calmed down",
+                        &mut pending_logs,
+                    );
+                    if let Some(entry) = self.states.get_mut(&proc.pid) {
+                        finalize_restore(entry, original_nice);
+                        entry.applied = None;
                     }
-                    finalize_restore(entry, original_nice);
                 }
             }
         }
@@ -329,6 +512,10 @@ impl ProBalance {
                     throttle_nice: e.throttle_nice.unwrap_or(0),
                     consecutive_low: e.consecutive_low,
                     restore_hysteresis: self.cfg.restore_hysteresis_seconds,
+                    unit: match &e.applied {
+                        Some(Applied::Cgroup { unit }) => Some(unit.clone()),
+                        _ => None,
+                    },
                 }
             })
             .collect()
@@ -462,6 +649,7 @@ mod tests {
             restore_threshold_percent: 30.0,
             restore_hysteresis_seconds: 4.0,
             exempt_patterns: vec![],
+            ..Default::default()
         }
     }
 
