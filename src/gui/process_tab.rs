@@ -181,6 +181,20 @@ fn format_affinity_display(
     parts.join(",")
 }
 
+/// MemTotal from /proc/meminfo, in bytes (0 if unreadable).
+fn read_mem_total_bytes() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                l.strip_prefix("MemTotal:")
+                    .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<u64>().ok())
+            })
+        })
+        .map(|kb| kb * 1024)
+        .unwrap_or(0)
+}
+
 // ── ProcessTab ────────────────────────────────────────────────────────────────
 
 pub struct ProcessTab {
@@ -212,6 +226,12 @@ pub struct ProcessTab {
     pub pending_kill: Option<PendingKill>,
     // Set to true when col_widths change so app.rs can persist them
     pub cols_dirty: bool,
+    // Quick-filter chips (combine with the text filter)
+    pub chip_high_cpu: bool,
+    pub chip_throttled: bool,
+    pub chip_suspended: bool,
+    /// MemTotal in bytes (read once) — scales the MEM column heatmap
+    total_mem_bytes: u64,
     /// Columns hidden by the user (by header label); Name can't be hidden
     pub hidden_cols: HashSet<String>,
     /// Set when hidden_cols changes so app.rs can persist it
@@ -251,6 +271,10 @@ impl ProcessTab {
             last_avail_w: 0.0,
             pending_kill: None,
             cols_dirty: false,
+            chip_high_cpu: false,
+            chip_throttled: false,
+            chip_suspended: false,
+            total_mem_bytes: read_mem_total_bytes(),
             hidden_cols: cfg_hidden_cols.iter().cloned().collect(),
             hidden_dirty: false,
             cached_offline: get_offline_cpus(),
@@ -336,6 +360,40 @@ impl ProcessTab {
                 }
             }
             ui.separator();
+            // Quick-filter chips — combine with the text filter
+            let chip = |ui: &mut egui::Ui, state: &mut bool, label: &str, hover: &str| {
+                let text = if *state {
+                    RichText::new(label).strong().color(Breeze::HIGHLIGHT)
+                } else {
+                    RichText::new(label).weak()
+                };
+                if ui
+                    .selectable_label(*state, text)
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    *state = !*state;
+                }
+            };
+            chip(
+                ui,
+                &mut self.chip_high_cpu,
+                "High CPU",
+                "Only processes using ≥ 25% of a core",
+            );
+            chip(
+                ui,
+                &mut self.chip_throttled,
+                "Throttled",
+                "Only processes currently throttled by ProBalance",
+            );
+            chip(
+                ui,
+                &mut self.chip_suspended,
+                "Suspended",
+                "Only processes you have suspended",
+            );
+            ui.separator();
             ui.checkbox(&mut self.tree_view, "Tree view");
             if gaming_active {
                 ui.separator();
@@ -365,6 +423,15 @@ impl ProcessTab {
                         || p.cmdline.to_lowercase().contains(&filter_lower)
                 });
             }
+        }
+        if self.chip_high_cpu {
+            sorted.retain(|p| p.cpu_percent >= 25.0);
+        }
+        if self.chip_throttled {
+            sorted.retain(|p| throttled_pids.contains(&p.pid));
+        }
+        if self.chip_suspended {
+            sorted.retain(|p| suspended_pids.contains(&p.pid));
         }
 
         let asc = self.sort_asc;
@@ -756,8 +823,12 @@ impl ProcessTab {
                             let is_sel = new_selected == Some(pid);
                             let throttled = throttled_pids.contains(&pid);
                             let cpu = proc.cpu_percent;
-                            let row_col =
-                                theme::row_color(cpu, throttled, ui.visuals().text_color());
+                            let row_col = theme::row_color(
+                                cpu,
+                                throttled,
+                                ui.visuals().text_color(),
+                                ui.visuals().dark_mode,
+                            );
                             let aff_full = format_affinity_display(
                                 &proc.affinity,
                                 &offline,
@@ -827,6 +898,45 @@ impl ProcessTab {
                                     let x_off = if ci == 1 { indent } else { 0.0 };
                                     // For CPU% column (ci==2): draw sparkline on left, shift text right
                                     let text_x_off = if ci == 2 { cw * 0.45 } else { 0.0 };
+
+                                    // Heatmap tint for CPU/GPU/MEM cells —
+                                    // intensity scales with the value, so hot
+                                    // cells pop when scanning the table.
+                                    let heat = match ci {
+                                        2 => Some((cpu / 100.0).clamp(0.0, 1.0)),
+                                        3 if proc.gpu_percent > 0.0 => {
+                                            Some((proc.gpu_percent / 100.0).clamp(0.0, 1.0))
+                                        }
+                                        4 if self.total_mem_bytes > 0 => Some(
+                                            (proc.mem_rss as f32 / self.total_mem_bytes as f32)
+                                                .clamp(0.0, 1.0),
+                                        ),
+                                        _ => None,
+                                    };
+                                    if let Some(frac) = heat {
+                                        if frac > 0.01 {
+                                            let base = if ci == 4 {
+                                                Breeze::HIGHLIGHT
+                                            } else {
+                                                theme::cpu_load_color(frac * 100.0)
+                                            };
+                                            let alpha = (14.0 + frac * 70.0) as u8;
+                                            let cell_rect = egui::Rect::from_min_size(
+                                                egui::pos2(x, row_rect.min.y),
+                                                egui::vec2(cw, ROW_H),
+                                            );
+                                            painter.rect_filled(
+                                                cell_rect,
+                                                0.0,
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    base.r(),
+                                                    base.g(),
+                                                    base.b(),
+                                                    alpha,
+                                                ),
+                                            );
+                                        }
+                                    }
                                     let text_pos = egui::pos2(
                                         x + PAD + x_off + text_x_off,
                                         row_rect.center().y,
