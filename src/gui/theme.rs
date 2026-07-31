@@ -534,6 +534,17 @@ pub fn num_font(size: f32) -> egui::FontId {
 /// QGroupBox-style bordered card with a top-left title — THE section container
 /// for every tab (single definition; per-tab copies are deprecated).
 pub fn card(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    card_hinted(ui, title, "", add_contents)
+}
+
+/// A card whose title carries a weak hint on the same line, e.g.
+/// "Active cores in Gaming Mode — click to park or activate".
+pub fn card_hinted(
+    ui: &mut egui::Ui,
+    title: &str,
+    hint: &str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
     let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0_f32, border_color))
@@ -541,7 +552,16 @@ pub fn card(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui:
         .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(bold(ui, title, tokens::FONT_HEADING));
+            ui.horizontal(|ui| {
+                ui.label(bold(ui, title, tokens::FONT_HEADING));
+                if !hint.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("— {hint}"))
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+            });
             ui.add_space(tokens::SPACE_XS);
             add_contents(ui);
         });
@@ -564,10 +584,18 @@ pub fn banner(ui: &mut egui::Ui, color: Color32, text: &str, action: Option<&str
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot.center(), 4.0, color);
                 ui.colored_label(color, text);
                 if let Some(label) = action {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(label).clicked() {
+                        let btn = egui::Button::new(
+                            egui::RichText::new(label)
+                                .color(sem(ui).on_accent)
+                                .font(bold_font(tokens::FONT_BODY)),
+                        )
+                        .fill(color);
+                        if ui.add(btn).clicked() {
                             clicked = true;
                         }
                     });
