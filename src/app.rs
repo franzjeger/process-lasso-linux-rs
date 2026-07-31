@@ -967,52 +967,160 @@ impl eframe::App for ArgusLassoApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Tab bar: primary workflow tabs on the left, tools/meta on the
-            // right — nine equal flat tabs buried the ones people live in.
+            // Tab bar: five primary workflow tabs on the left; the occasional
+            // tools live behind a "Tools ▾" menu and Settings behind the gear,
+            // so nine equal flat tabs no longer bury the ones people live in.
             ui.horizontal(|ui| {
-                let proc_label = format!("Processes ({})", self.proc_count);
-                let pb_label = if self.throttled_count > 0 {
-                    format!("ProBalance ({})", self.throttled_count)
-                } else {
-                    "ProBalance".into()
-                };
+                use crate::gui::theme as th;
+                let s = th::sem(ui);
 
-                let mut tab_button = |ui: &mut egui::Ui, label: &str, tab: Tab, weak: bool| {
-                    let selected = self.active_tab == tab;
-                    let text = if selected {
-                        RichText::new(label)
-                            .color(crate::gui::theme::Breeze::HIGHLIGHT)
-                            .strong()
-                    } else if weak {
-                        RichText::new(label).weak()
+                // One tab: accent background + 2px bottom underline when active,
+                // with an optional count pill badge inside the label.
+                // A plain fn returning "was clicked" — a closure capturing the
+                // result slot would hold a mutable borrow across the whole bar.
+                let active_now = self.active_tab.clone();
+                let mut clicked_tab: Option<Tab> = None;
+                fn tab_button(
+                    ui: &mut egui::Ui,
+                    label: &str,
+                    selected: bool,
+                    badge: Option<usize>,
+                ) -> bool {
+                    use crate::gui::theme::{self as th, tokens};
+                    let s = th::sem(ui);
+                    let text_col = if selected {
+                        s.accent
                     } else {
-                        RichText::new(label) // inherits theme text color
+                        ui.visuals().text_color()
                     };
-                    if ui.selectable_label(selected, text).clicked() {
-                        self.active_tab = tab;
+                    let galley = ui.painter().layout_no_wrap(
+                        label.to_string(),
+                        egui::FontId::proportional(tokens::FONT_BODY),
+                        text_col,
+                    );
+                    let badge_txt = badge.map(|n| n.to_string());
+                    let badge_galley = badge_txt.as_ref().map(|t| {
+                        ui.painter().layout_no_wrap(
+                            t.clone(),
+                            egui::FontId::proportional(tokens::FONT_SMALL),
+                            if selected { s.on_accent } else { s.accent },
+                        )
+                    });
+                    let badge_w = badge_galley
+                        .as_ref()
+                        .map(|g| g.size().x + 12.0 + 6.0)
+                        .unwrap_or(0.0);
+                    let pad = egui::vec2(10.0, 5.0);
+                    let size = egui::vec2(
+                        galley.size().x + badge_w + pad.x * 2.0,
+                        galley.size().y + pad.y * 2.0,
+                    );
+                    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+                    if ui.is_rect_visible(rect) {
+                        if selected {
+                            ui.painter().rect_filled(
+                                rect,
+                                egui::CornerRadius {
+                                    nw: 3,
+                                    ne: 3,
+                                    sw: 0,
+                                    se: 0,
+                                },
+                                th::tint(s.accent, 38),
+                            );
+                            // 2px accent underline
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(rect.left(), rect.bottom() - 2.0),
+                                    egui::vec2(rect.width(), 2.0),
+                                ),
+                                0.0,
+                                s.accent,
+                            );
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(
+                                rect,
+                                egui::CornerRadius::same(3),
+                                ui.visuals().widgets.hovered.bg_fill,
+                            );
+                        }
+                        ui.painter()
+                            .galley(rect.min + pad, galley, egui::Color32::WHITE);
+                        if let Some(bg) = badge_galley {
+                            let bw = bg.size().x + 12.0;
+                            let brect = egui::Rect::from_min_size(
+                                egui::pos2(rect.max.x - pad.x - bw, rect.center().y - 8.0),
+                                egui::vec2(bw, 16.0),
+                            );
+                            let fill = if selected {
+                                s.accent
+                            } else {
+                                th::tint(s.accent, 46)
+                            };
+                            ui.painter()
+                                .rect_filled(brect, egui::CornerRadius::same(8), fill);
+                            let off = (brect.size() - bg.size()) * 0.5;
+                            ui.painter()
+                                .galley(brect.min + off, bg, egui::Color32::WHITE);
+                        }
+                    }
+                    resp.clicked()
+                }
+
+                let pick = |ui: &mut egui::Ui,
+                            label: &str,
+                            tab: Tab,
+                            badge: Option<usize>,
+                            clicked_tab: &mut Option<Tab>| {
+                    if tab_button(ui, label, active_now == tab, badge) {
+                        *clicked_tab = Some(tab);
                     }
                 };
 
-                for (label, tab) in [
-                    ("Overview", Tab::Overview),
-                    (proc_label.as_str(), Tab::Processes),
-                    ("Rules", Tab::Rules),
-                    (pb_label.as_str(), Tab::ProBalance),
-                    ("Gaming Mode", Tab::GamingMode),
-                ] {
-                    tab_button(ui, label, tab, false);
-                }
+                pick(ui, "Overview", Tab::Overview, None, &mut clicked_tab);
+                pick(
+                    ui,
+                    "Processes",
+                    Tab::Processes,
+                    Some(self.proc_count),
+                    &mut clicked_tab,
+                );
+                pick(ui, "Rules", Tab::Rules, None, &mut clicked_tab);
+                pick(
+                    ui,
+                    "ProBalance",
+                    Tab::ProBalance,
+                    (self.throttled_count > 0).then_some(self.throttled_count),
+                    &mut clicked_tab,
+                );
+                pick(ui, "Gaming Mode", Tab::GamingMode, None, &mut clicked_tab);
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Reverse order: right_to_left lays out from the right edge
-                    for (label, tab) in [
-                        ("⚙ Settings", Tab::Settings),
-                        ("Log", Tab::Log),
-                        ("Benchmark", Tab::Benchmark),
-                        ("HW Monitor", Tab::HwMonitor),
-                    ] {
-                        tab_button(ui, label, tab, true);
-                    }
+                    // Right-to-left: gear first (rightmost), then Tools menu.
+                    pick(ui, "⚙", Tab::Settings, None, &mut clicked_tab);
+                    let tools_active =
+                        matches!(active_now, Tab::HwMonitor | Tab::Benchmark | Tab::Log);
+                    let tools_label = if tools_active {
+                        RichText::new("Tools ▾").color(s.accent).strong()
+                    } else {
+                        RichText::new("Tools ▾")
+                    };
+                    ui.menu_button(tools_label, |ui| {
+                        for (label, tab) in [
+                            ("HW Monitor", Tab::HwMonitor),
+                            ("Benchmark", Tab::Benchmark),
+                            ("Log", Tab::Log),
+                        ] {
+                            if ui.selectable_label(active_now == tab, label).clicked() {
+                                clicked_tab = Some(tab);
+                                ui.close();
+                            }
+                        }
+                    });
                 });
+                if let Some(tab) = clicked_tab {
+                    self.active_tab = tab;
+                }
             });
             ui.separator();
 
@@ -1026,6 +1134,8 @@ impl eframe::App for ArgusLassoApp {
                         &snapshot,
                         &disk_io_history,
                         &net_io_history,
+                        self.cpu_temp,
+                        self.throttled_count,
                     );
                 }
 

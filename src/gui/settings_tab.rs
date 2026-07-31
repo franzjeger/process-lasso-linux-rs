@@ -3,18 +3,23 @@
 use crate::config::Config;
 use crate::cpu_park::{detect_topology, CpuTopology};
 use crate::gui::dialogs::AffinityDialog;
-use crate::gui::theme::AppTheme;
+use crate::gui::theme::tokens;
+use crate::gui::theme::{self, AppTheme};
 use crate::utils::cpuset_to_cpulist;
 use egui::Ui;
 
 pub struct SettingsTab {
     pub config: Config,
+    /// Snapshot of the last-saved config — drives the dirty indicator and Discard.
+    pub saved: Config,
     pub default_affinity_enabled: bool,
     pub default_affinity_text: String,
     pub cpu_dialog: Option<AffinityDialog>,
     pub opacity: f32,
     pub native_ppp: f32,
     pub autostart_enabled: bool,
+    /// Autostart state as last written to disk.
+    saved_autostart: bool,
     pub status: String,
     /// Active theme — changes are applied immediately in show().
     pub theme: AppTheme,
@@ -23,6 +28,9 @@ pub struct SettingsTab {
     pub available_governors: Vec<String>,
     pub cpu_epp: String,
     pub available_epps: Vec<String>,
+    /// Governor/EPP as last applied to sysfs.
+    saved_governor: String,
+    saved_epp: String,
     pub power_status: String,
     /// Detected CPU topology — drives dynamic quick-buttons
     pub topo: CpuTopology,
@@ -36,49 +44,166 @@ impl SettingsTab {
         // Restore opacity and theme from persisted config.
         let opacity = config.ui.opacity.clamp(0.1, 1.0);
         let theme = AppTheme::from_str(&config.ui.theme);
+        let governor = read_governor();
+        let epp = read_epp();
         Self {
             default_affinity_text: current_affinity,
             default_affinity_enabled,
             cpu_dialog: None,
+            saved: config.clone(),
             config,
             opacity,
             native_ppp: 1.0,
             autostart_enabled,
+            saved_autostart: autostart_enabled,
             status: String::new(),
             theme,
-            cpu_governor: read_governor(),
+            saved_governor: governor.clone(),
+            cpu_governor: governor,
             available_governors: read_available_governors(),
-            cpu_epp: read_epp(),
+            saved_epp: epp.clone(),
+            cpu_epp: epp,
             available_epps: read_available_epps(),
             power_status: String::new(),
             topo: detect_topology(),
         }
     }
 
-    /// Returns Some(updated_config) when any Apply button is clicked.
-    pub fn show(&mut self, ui: &mut Ui, ctx: &egui::Context, opacity: f32) -> Option<Config> {
-        let mut changed = false;
+    /// Default affinity as it would be stored in the config.
+    fn edited_affinity(&self) -> Option<String> {
+        if self.default_affinity_enabled {
+            let t = self.default_affinity_text.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        } else {
+            None
+        }
+    }
 
-        // ── Default CPU Affinity ──────────────────────────────────────────
-        group_box(ui, "Default CPU Affinity", |ui| {
-            if self.topo.has_asymmetry() {
-                ui.label(format!(
-                    "Applied to every process that doesn't match a specific rule.\n\
-                     Detected: {}. Typical: Default → {}, Game rule → {}",
+    /// True when the edited state differs from the last-saved state.
+    /// Opacity/theme are deliberately excluded — they are live-preview fields
+    /// that app.rs applies and persists on every frame.
+    fn is_dirty(&self) -> bool {
+        let a = &self.config;
+        let b = &self.saved;
+        self.edited_affinity() != b.cpu.default_affinity
+            || a.monitor.display_refresh_interval_ms != b.monitor.display_refresh_interval_ms
+            || a.monitor.rule_enforce_interval_ms != b.monitor.rule_enforce_interval_ms
+            || a.ui.notifications_enabled != b.ui.notifications_enabled
+            || a.hw_alerts.enabled != b.hw_alerts.enabled
+            || (a.hw_alerts.temp_threshold_celsius - b.hw_alerts.temp_threshold_celsius).abs()
+                > 0.01
+            || a.hw_alerts.cooldown_secs != b.hw_alerts.cooldown_secs
+            || self.autostart_enabled != self.saved_autostart
+            || self.cpu_governor != self.saved_governor
+            || self.cpu_epp != self.saved_epp
+    }
+
+    /// Restore every edited field from the saved snapshot.
+    fn discard(&mut self) {
+        self.config = self.saved.clone();
+        let aff = self.saved.cpu.default_affinity.clone().unwrap_or_default();
+        self.default_affinity_enabled = !aff.is_empty();
+        self.default_affinity_text = aff;
+        self.autostart_enabled = self.saved_autostart;
+        self.cpu_governor = self.saved_governor.clone();
+        self.cpu_epp = self.saved_epp.clone();
+        self.status = "Changes discarded.".into();
+        self.power_status.clear();
+    }
+
+    /// Commit the edited state: write affinity into the config, push
+    /// governor/EPP to sysfs and (de)register autostart. Returns the config
+    /// that the caller should persist.
+    fn apply(&mut self, ctx: &egui::Context) -> Config {
+        let mut msgs: Vec<String> = Vec::new();
+
+        // Default affinity
+        self.config.cpu.default_affinity = self.edited_affinity();
+        match &self.config.cpu.default_affinity {
+            Some(list) => msgs.push(format!("Default affinity → {list}")),
+            None if self.default_affinity_enabled => {
+                msgs.push("Default affinity → all CPUs".into())
+            }
+            None => msgs.push("Default affinity disabled".into()),
+        }
+
+        // Live-preview fields are persisted alongside everything else.
+        self.config.ui.opacity = self.opacity;
+        self.config.ui.theme = self.theme.to_str().into();
+        theme::apply_theme(ctx, self.native_ppp, &self.theme);
+
+        // CPU power
+        if !self.available_governors.is_empty() && self.cpu_governor != self.saved_governor {
+            match set_governor(&self.cpu_governor) {
+                Ok(_) => {
+                    msgs.push(format!("Governor → {}", self.cpu_governor));
+                    self.saved_governor = self.cpu_governor.clone();
+                }
+                Err(e) => msgs.push(format!("Governor failed: {e}")),
+            }
+        }
+        if !self.available_epps.is_empty() && self.cpu_epp != self.saved_epp {
+            match set_epp(&self.cpu_epp) {
+                Ok(_) => {
+                    msgs.push(format!("EPP → {}", self.cpu_epp));
+                    self.saved_epp = self.cpu_epp.clone();
+                }
+                Err(e) => msgs.push(format!("EPP failed: {e}")),
+            }
+        }
+
+        // Autostart
+        if self.autostart_enabled != self.saved_autostart {
+            if self.autostart_enabled {
+                match write_autostart() {
+                    Ok(_) => {
+                        msgs.push("Autostart enabled (XDG + systemd)".into());
+                        self.saved_autostart = true;
+                    }
+                    Err(e) => msgs.push(format!("Autostart failed: {e}")),
+                }
+            } else {
+                match disable_autostart() {
+                    Ok(_) => {
+                        msgs.push("Autostart disabled".into());
+                        self.saved_autostart = false;
+                    }
+                    Err(e) => msgs.push(format!("Disable failed: {e}")),
+                }
+            }
+        }
+
+        self.status = msgs.join("  ·  ");
+        self.saved = self.config.clone();
+        self.config.clone()
+    }
+
+    /// Returns Some(updated_config) when "Apply changes" is clicked.
+    pub fn show(&mut self, ui: &mut Ui, ctx: &egui::Context, opacity: f32) -> Option<Config> {
+        let mut applied: Option<Config> = None;
+
+        // ── Default CPU affinity ──────────────────────────────────────────
+        theme::card(ui, "Default CPU affinity", |ui| {
+            let help = if self.topo.has_asymmetry() {
+                format!(
+                    "Applied to every process that doesn't match a specific rule. \
+                     Detected: {}. Typical: Default → {}, Game rule → {}.",
                     self.topo.kind_label(),
                     self.topo.non_preferred_label,
                     self.topo.preferred_label,
-                ));
+                )
             } else {
-                ui.label("Applied to every process that doesn't match a specific rule.");
-            }
-            ui.add_space(4.0);
+                "Applied to every process that doesn't match a specific rule.".to_string()
+            };
+            help_text(ui, &help);
+            ui.add_space(tokens::SPACE_S);
 
-            ui.horizontal(|ui| {
-                ui.checkbox(
-                    &mut self.default_affinity_enabled,
-                    "Enable default affinity:",
-                );
+            form_row(ui, "Default affinity", |ui| {
+                ui.checkbox(&mut self.default_affinity_enabled, "Enabled");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.default_affinity_text)
                         .hint_text("e.g. 8-15,24-31")
@@ -97,36 +222,30 @@ impl SettingsTab {
                 }
             });
 
-            ui.horizontal(|ui| {
-                ui.label("Quick:");
+            form_row(ui, "Quick presets", |ui| {
+                let current = self.default_affinity_text.trim().to_string();
+                let on = self.default_affinity_enabled;
                 if self.topo.has_asymmetry() {
-                    let pref_list = cpuset_to_cpulist(&self.topo.preferred);
-                    let npref_list = cpuset_to_cpulist(&self.topo.non_preferred);
-                    if ui
-                        .add_enabled(
-                            self.default_affinity_enabled,
-                            egui::Button::new(self.topo.preferred_button_label()),
-                        )
-                        .clicked()
-                    {
-                        self.default_affinity_text = pref_list;
+                    let pref = cpuset_to_cpulist(&self.topo.preferred);
+                    let npref = cpuset_to_cpulist(&self.topo.non_preferred);
+                    if theme::chip(
+                        ui,
+                        &self.topo.preferred_button_label(),
+                        on && current == pref,
+                    ) {
+                        self.default_affinity_text = pref;
                         self.default_affinity_enabled = true;
                     }
-                    if ui
-                        .add_enabled(
-                            self.default_affinity_enabled,
-                            egui::Button::new(self.topo.non_preferred_button_label()),
-                        )
-                        .clicked()
-                    {
-                        self.default_affinity_text = npref_list;
+                    if theme::chip(
+                        ui,
+                        &self.topo.non_preferred_button_label(),
+                        on && current == npref,
+                    ) {
+                        self.default_affinity_text = npref;
                         self.default_affinity_enabled = true;
                     }
                 }
-                if ui
-                    .add_enabled(self.default_affinity_enabled, egui::Button::new("All"))
-                    .clicked()
-                {
+                if theme::chip(ui, "All cores", on && current.is_empty()) {
                     self.default_affinity_text = String::new();
                     self.default_affinity_enabled = true;
                 }
@@ -143,81 +262,55 @@ impl SettingsTab {
             }
         }
 
-        ui.add_space(4.0);
-        if ui
-            .button("Apply — enforce on all running processes now")
-            .clicked()
-        {
-            if self.default_affinity_enabled {
-                let cpulist = self.default_affinity_text.trim().to_string();
-                if cpulist.is_empty() {
-                    self.status = "Select at least one CPU.".into();
-                } else {
-                    self.config.cpu.default_affinity = Some(cpulist.clone());
-                    self.status = format!("Default affinity → {}. Enforcing now…", cpulist);
-                    changed = true;
+        ui.add_space(tokens::SPACE_M);
+
+        // ── Monitoring ────────────────────────────────────────────────────
+        theme::card(ui, "Monitoring", |ui| {
+            help_text(
+                ui,
+                "How often rules are enforced on running processes, and how often \
+                 the process table refreshes on screen.",
+            );
+            ui.add_space(tokens::SPACE_S);
+
+            form_row(ui, "Display refresh", |ui| {
+                const PICKS: [u64; 4] = [500, 1000, 2000, 5000];
+                let sel = PICKS
+                    .iter()
+                    .position(|ms| *ms == self.config.monitor.display_refresh_interval_ms)
+                    .unwrap_or(usize::MAX);
+                if let Some(i) = theme::segmented(ui, &["0.5 s", "1 s", "2 s", "5 s"], sel) {
+                    self.config.monitor.display_refresh_interval_ms = PICKS[i];
                 }
-            } else {
-                self.config.cpu.default_affinity = None;
-                self.status = "Default affinity disabled.".into();
-                changed = true;
-            }
-        }
+                ui.add_space(tokens::SPACE_S);
+                ui.add(
+                    egui::DragValue::new(&mut self.config.monitor.display_refresh_interval_ms)
+                        .range(500..=10000)
+                        .suffix(" ms"),
+                );
+            });
 
-        ui.add_space(12.0);
-
-        // ── Monitor Intervals ─────────────────────────────────────────────
-        group_box(ui, "Monitor Intervals", |ui| {
-            egui::Grid::new("mon_grid")
-                .num_columns(2)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("Rule enforce interval:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.config.monitor.rule_enforce_interval_ms)
-                            .range(100..=10000)
-                            .suffix("ms"),
-                    );
-                    ui.end_row();
-
-                    ui.label("Display refresh interval:");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(
-                                &mut self.config.monitor.display_refresh_interval_ms,
-                            )
-                            .range(500..=10000)
-                            .suffix("ms"),
-                        );
-                        for (label, ms) in
-                            [("0.5s", 500u64), ("1s", 1000), ("2s", 2000), ("5s", 5000)]
-                        {
-                            if ui.small_button(label).clicked() {
-                                self.config.monitor.display_refresh_interval_ms = ms;
-                            }
-                        }
-                    });
-                    ui.end_row();
-                });
+            form_row(ui, "Rule enforce interval", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.config.monitor.rule_enforce_interval_ms)
+                        .range(100..=10000)
+                        .suffix(" ms"),
+                );
+            });
         });
 
-        ui.add_space(4.0);
-        if ui.button("Apply Monitor Settings").clicked() {
-            // Persist opacity and theme into the config that will be saved to disk.
-            self.config.ui.opacity = self.opacity;
-            self.config.ui.theme = self.theme.to_str().into();
-            crate::gui::theme::apply_theme(ctx, self.native_ppp, &self.theme);
-            self.status = "Settings applied.".into();
-            changed = true;
-        }
+        ui.add_space(tokens::SPACE_M);
 
-        ui.add_space(12.0);
+        // ── Appearance and power ──────────────────────────────────────────
+        theme::card(ui, "Appearance and power", |ui| {
+            help_text(
+                ui,
+                "Theme and window opacity preview live as you change them. \
+                 Governor and energy preference are written to sysfs on apply.",
+            );
+            ui.add_space(tokens::SPACE_S);
 
-        // ── Appearance ────────────────────────────────────────────────────
-        group_box(ui, "Appearance", |ui| {
-            // Theme selector — applied immediately on change.
-            ui.horizontal(|ui| {
-                ui.label("Theme:");
+            form_row(ui, "Theme", |ui| {
                 let prev_theme = self.theme.clone();
                 egui::ComboBox::from_id_salt("theme_picker")
                     .selected_text(self.theme.label())
@@ -227,185 +320,146 @@ impl SettingsTab {
                         }
                     });
                 if self.theme != prev_theme {
-                    crate::gui::theme::apply_theme(ctx, self.native_ppp, &self.theme);
+                    theme::apply_theme(ctx, self.native_ppp, &self.theme);
                 }
             });
 
-            ui.add_space(4.0);
+            form_row(ui, "Window opacity", |ui| {
+                ui.add(egui::Slider::new(&mut self.opacity, 0.1f32..=1.0).show_value(true));
+            });
 
-            // Opacity slider — live preview handled in app.rs.
-            let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-            egui::Frame::new()
-                .stroke(egui::Stroke::new(1.0_f32, border_color))
-                .inner_margin(egui::Margin::same(6))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Window opacity:");
-                        ui.add(egui::Slider::new(&mut self.opacity, 0.1f32..=1.0).show_value(true));
-                    });
-                });
-        });
-
-        ui.add_space(12.0);
-
-        // ── CPU Power ─────────────────────────────────────────────────────
-        group_box(ui, "CPU Power", |ui| {
-            egui::Grid::new("cpu_power_grid")
-                .num_columns(2)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("Scaling governor:");
-                    if self.available_governors.is_empty() {
-                        ui.label(egui::RichText::new("(not available)").italics());
-                    } else {
-                        egui::ComboBox::from_id_salt("gov_picker")
-                            .selected_text(&self.cpu_governor)
-                            .show_ui(ui, |ui| {
-                                for g in &self.available_governors.clone() {
-                                    ui.selectable_value(
-                                        &mut self.cpu_governor,
-                                        g.clone(),
-                                        g.as_str(),
-                                    );
-                                }
-                            });
-                    }
-                    ui.end_row();
-
-                    ui.label("Energy perf. preference:");
-                    if self.available_epps.is_empty() {
-                        ui.label(egui::RichText::new("(not available)").italics());
-                    } else {
-                        egui::ComboBox::from_id_salt("epp_picker")
-                            .selected_text(&self.cpu_epp)
-                            .show_ui(ui, |ui| {
-                                for e in &self.available_epps.clone() {
-                                    ui.selectable_value(&mut self.cpu_epp, e.clone(), e.as_str());
-                                }
-                            });
-                    }
-                    ui.end_row();
-                });
-        });
-
-        ui.add_space(4.0);
-        if ui.button("Apply CPU Power Settings").clicked() {
-            let mut msgs: Vec<String> = Vec::new();
-            if !self.available_governors.is_empty() {
-                match set_governor(&self.cpu_governor) {
-                    Ok(_) => msgs.push(format!("Governor → {}", self.cpu_governor)),
-                    Err(e) => msgs.push(format!("Governor failed: {e}")),
+            form_row(ui, "Scaling governor", |ui| {
+                if self.available_governors.is_empty() {
+                    ui.label(
+                        egui::RichText::new("(not available)")
+                            .italics()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                } else {
+                    egui::ComboBox::from_id_salt("gov_picker")
+                        .selected_text(&self.cpu_governor)
+                        .show_ui(ui, |ui| {
+                            for g in &self.available_governors.clone() {
+                                ui.selectable_value(&mut self.cpu_governor, g.clone(), g.as_str());
+                            }
+                        });
                 }
-            }
-            if !self.available_epps.is_empty() {
-                match set_epp(&self.cpu_epp) {
-                    Ok(_) => msgs.push(format!("EPP → {}", self.cpu_epp)),
-                    Err(e) => msgs.push(format!("EPP failed: {e}")),
+            });
+
+            form_row(ui, "Energy perf. preference", |ui| {
+                if self.available_epps.is_empty() {
+                    ui.label(
+                        egui::RichText::new("(not available)")
+                            .italics()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                } else {
+                    egui::ComboBox::from_id_salt("epp_picker")
+                        .selected_text(&self.cpu_epp)
+                        .show_ui(ui, |ui| {
+                            for e in &self.available_epps.clone() {
+                                ui.selectable_value(&mut self.cpu_epp, e.clone(), e.as_str());
+                            }
+                        });
                 }
+            });
+
+            if !self.power_status.is_empty() {
+                help_text(ui, &self.power_status.clone());
             }
-            self.power_status = msgs.join("  |  ");
-        }
-
-        if !self.power_status.is_empty() {
-            ui.add_space(4.0);
-            ui.colored_label(ui.visuals().weak_text_color(), &self.power_status);
-        }
-
-        ui.add_space(12.0);
-
-        // ── Notifications ─────────────────────────────────────────────────
-        group_box(ui, "Notifications", |ui| {
-            ui.checkbox(
-                &mut self.config.ui.notifications_enabled,
-                "Enable desktop notifications (ProBalance throttle, HW alerts, kill events)",
-            );
         });
 
-        ui.add_space(12.0);
+        ui.add_space(tokens::SPACE_M);
 
-        // ── Temperature Alerts ────────────────────────────────────────────
-        group_box(ui, "Temperature Alerts", |ui| {
-            ui.checkbox(
-                &mut self.config.hw_alerts.enabled,
-                "Enable temperature alerts (desktop notifications)",
+        // ── Notifications and startup ─────────────────────────────────────
+        theme::card(ui, "Notifications and startup", |ui| {
+            help_text(
+                ui,
+                "Desktop notifications cover ProBalance throttling, hardware alerts \
+                 and kill events.",
             );
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("Alert threshold:");
-                ui.add(
-                    egui::Slider::new(
-                        &mut self.config.hw_alerts.temp_threshold_celsius,
-                        50.0..=110.0,
-                    )
-                    .suffix(" °C")
-                    .step_by(1.0),
+            ui.add_space(tokens::SPACE_S);
+
+            form_row(ui, "Desktop notifications", |ui| {
+                ui.checkbox(&mut self.config.ui.notifications_enabled, "Enabled");
+            });
+
+            form_row(ui, "Temperature alerts", |ui| {
+                ui.checkbox(&mut self.config.hw_alerts.enabled, "Enabled");
+                let on = self.config.hw_alerts.enabled;
+                let weak = ui.visuals().weak_text_color();
+                ui.add_enabled_ui(on, |ui| {
+                    ui.label("at");
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.hw_alerts.temp_threshold_celsius)
+                            .range(50.0..=110.0)
+                            .speed(1.0)
+                            .fixed_decimals(0)
+                            .suffix(" °C"),
+                    );
+                    ui.colored_label(weak, "·  at least");
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.hw_alerts.cooldown_secs)
+                            .range(10..=300)
+                            .speed(5.0)
+                            .suffix(" s"),
+                    );
+                    ui.colored_label(weak, "between alerts");
+                });
+            });
+
+            form_row(ui, "Start with session", |ui| {
+                ui.checkbox(
+                    &mut self.autostart_enabled,
+                    "Launch Argus-Lasso automatically with your desktop session",
                 );
             });
-            ui.horizontal(|ui| {
-                ui.label("Cooldown between alerts:");
-                let mut cooldown = self.config.hw_alerts.cooldown_secs as f64;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut cooldown, 10.0..=300.0)
-                            .suffix(" s")
-                            .step_by(5.0),
-                    )
-                    .changed()
-                {
-                    self.config.hw_alerts.cooldown_secs = cooldown as u64;
-                }
-            });
-            if ui.button("Apply Alert Settings").clicked() {
-                changed = true;
-            }
         });
-        ui.add_space(8.0);
-
-        // ── Autostart ─────────────────────────────────────────────────────
-        group_box(ui, "Autostart", |ui| {
-            ui.checkbox(
-                &mut self.autostart_enabled,
-                "Start Argus-Lasso automatically with your desktop session",
-            );
-        });
-
-        ui.add_space(4.0);
-        if ui
-            .add_sized(
-                [ui.available_width(), 28.0],
-                egui::Button::new("Apply Autostart Setting"),
-            )
-            .clicked()
-        {
-            if self.autostart_enabled {
-                match write_autostart() {
-                    Ok(_) => self.status = "Autostart enabled (XDG + systemd).".into(),
-                    Err(e) => self.status = format!("Autostart failed: {e}"),
-                }
-            } else {
-                match disable_autostart() {
-                    Ok(_) => self.status = "Autostart disabled.".into(),
-                    Err(e) => self.status = format!("Disable failed: {e}"),
-                }
-            }
-        }
 
         if !self.status.is_empty() {
-            ui.add_space(4.0);
+            ui.add_space(tokens::SPACE_S);
             ui.colored_label(ui.visuals().weak_text_color(), &self.status);
         }
 
-        if changed {
-            Some(self.config.clone())
-        } else {
-            None
+        // ── Single bottom apply bar (§5) ──────────────────────────────────
+        let dirty = self.is_dirty();
+        let (discard, apply) = theme::apply_bar(ui, dirty);
+        if discard {
+            self.discard();
         }
+        if apply {
+            applied = Some(self.apply(ctx));
+        }
+
+        applied
     }
 }
 
-/// Thin wrapper over the shared card container (single source of truth).
-fn group_box(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
-    crate::gui::theme::card(ui, title, add_contents);
+/// Two-column settings row: fixed-width, left-aligned label + control column (§7).
+fn form_row(ui: &mut Ui, label: &str, add_contents: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        let h = ui.spacing().interact_size.y;
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(tokens::FORM_LABEL_W, h), egui::Sense::hover());
+        ui.painter().text(
+            egui::pos2(rect.left(), rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(tokens::FONT_BODY),
+            ui.visuals().text_color(),
+        );
+        add_contents(ui);
+    });
+    ui.add_space(tokens::SPACE_XS);
+}
+
+/// Weak, small help line under a group title (§7).
+fn help_text(ui: &mut Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(tokens::FONT_HELP)
+            .color(ui.visuals().weak_text_color()),
+    );
 }
 
 // ── CPU governor / EPP sysfs helpers ─────────────────────────────────────────

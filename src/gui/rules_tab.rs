@@ -1,4 +1,4 @@
-//! Rules tab: toolbar + sortable rule table.
+//! Rules tab: compact toolbar + rule table (design 2d).
 
 use std::sync::{Arc, Mutex};
 
@@ -6,6 +6,7 @@ use egui::RichText;
 use egui_extras::{Column, TableBuilder};
 
 use crate::gui::dialogs::{RuleEditDialog, RulePresetsDialog};
+use crate::gui::theme::{self, tokens};
 use crate::rules::{Rule, RuleEngine};
 
 /// Result from a background file-dialog thread.
@@ -97,352 +98,243 @@ impl RulesTab {
             .map(|re| re.get_rules().to_vec())
             .unwrap_or_default();
 
-        // Empty state with a call to action instead of a bare empty table
-        if rules.is_empty() {
-            ui.add_space(24.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new("No rules yet")
-                        .strong()
-                        .size(crate::gui::theme::tokens::FONT_HEADING),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Right-click a process in the Processes tab and choose \"Add rule\", \
-                         pick a template below, or create one from scratch with \"Add\".",
-                    )
-                    .weak(),
-                );
-            });
-            ui.add_space(12.0);
-        }
-
         let selected_id = self.selected_rule_id.clone();
         let mut new_sel: Option<String> = selected_id.clone();
         let mut open_edit: Option<Rule> = None;
-        let has_sel = self.selected_rule_id.is_some();
+        let mut delete_rule_id: Option<String> = None;
+        let mut toggle_rule_id: Option<String> = None;
 
         // ── Toolbar ────────────────────────────────────────────────────────
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(0, 4))
-            .show(ui, |ui| {
+        self.toolbar(ui, rule_engine, rule_profiles, on_profiles_changed, &rules);
+
+        if !self.status.is_empty() {
+            ui.label(
+                RichText::new(&self.status)
+                    .size(tokens::FONT_HELP)
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
+
+        ui.add_space(tokens::SPACE_XS);
+
+        // ── Empty state with a call to action ──────────────────────────────
+        if rules.is_empty() {
+            let s = theme::sem(ui);
+            ui.add_space(28.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("No rules yet")
+                        .strong()
+                        .size(tokens::FONT_HEADING),
+                );
+                ui.add_space(tokens::SPACE_XS);
+                ui.label(
+                    RichText::new(
+                        "Right-click a process in the Processes tab and choose \"Add rule\", \
+                         start from a template, or create one from scratch.",
+                    )
+                    .size(tokens::FONT_HELP)
+                    .color(ui.visuals().weak_text_color()),
+                );
+                ui.add_space(tokens::SPACE_M);
                 ui.horizontal(|ui| {
-                    if ui.button("Add Rule").clicked() {
+                    // Centre the two buttons inside the centred vertical layout.
+                    let btn =
+                        egui::Button::new(RichText::new("+ New rule").color(s.on_accent).strong())
+                            .fill(s.accent);
+                    if ui.add(btn).clicked() {
                         self.open_add_dialog(None);
                     }
-                    if ui.button("Templates…").clicked() {
+                    if ui.button("Templates").clicked() {
                         self.presets_dialog = Some(RulePresetsDialog::new());
-                    }
-
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    if ui.add_enabled(has_sel, egui::Button::new("Edit")).clicked() {
-                        if let (Some(id), Ok(re)) = (&self.selected_rule_id, rule_engine.lock()) {
-                            if let Some(r) = re.get_rules().iter().find(|r| &r.rule_id == id) {
-                                self.edit_dialog = Some(RuleEditDialog::new(r.clone()));
-                            }
-                        }
-                    }
-
-                    if ui
-                        .add_enabled(has_sel, egui::Button::new("Delete"))
-                        .clicked()
-                    {
-                        self.confirm_delete_rule = true;
-                    }
-
-                    if ui
-                        .add_enabled(has_sel, egui::Button::new("Enable / Disable"))
-                        .clicked()
-                    {
-                        if let (Some(id), Ok(mut re)) = (&self.selected_rule_id, rule_engine.lock())
-                        {
-                            if let Some(r) =
-                                re.get_rules_mut().iter_mut().find(|r| &r.rule_id == id)
-                            {
-                                r.enabled = !r.enabled;
-                                *on_rules_changed = true;
-                            }
-                        }
-                    }
-
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    if ui.button("Export…").clicked() {
-                        self.export_rules(rule_engine);
-                    }
-                    if ui.button("Import…").clicked() {
-                        let tx = self.file_tx.clone();
-                        std::thread::spawn(move || {
-                            let path = match crate::file_dialog::open("*.json") {
-                                Some(p) => p,
-                                None => return,
-                            };
-                            let result = match std::fs::read_to_string(&path) {
-                                Err(e) => Err(format!("Read error: {e}")),
-                                Ok(s) => serde_json::from_str::<Vec<crate::config::RuleConfig>>(&s)
-                                    .map_err(|e| format!("Parse error: {e}")),
-                            };
-                            tx.send(FileDialogResult::ImportDone(result)).ok();
-                        });
-                    }
-
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    // ── Rule Profiles ────────────────────────────────────
-                    ui.label(egui::RichText::new("Profile:").strong());
-                    let profile_names: Vec<String> = {
-                        let mut v: Vec<String> = rule_profiles.keys().cloned().collect();
-                        v.sort();
-                        v
-                    };
-                    egui::ComboBox::from_id_salt("profile_picker")
-                        .selected_text(if self.selected_profile.is_empty() {
-                            "—"
-                        } else {
-                            &self.selected_profile
-                        })
-                        .width(130.0)
-                        .show_ui(ui, |ui| {
-                            for name in &profile_names {
-                                ui.selectable_value(
-                                    &mut self.selected_profile,
-                                    name.clone(),
-                                    name.as_str(),
-                                );
-                            }
-                        });
-
-                    if ui
-                        .add_enabled(!self.selected_profile.is_empty(), egui::Button::new("Load"))
-                        .clicked()
-                    {
-                        self.confirm_load_profile = true;
-                    }
-
-                    if ui
-                        .add_enabled(
-                            !self.selected_profile.is_empty(),
-                            egui::Button::new("Delete"),
-                        )
-                        .clicked()
-                    {
-                        self.confirm_delete_profile = true;
-                    }
-
-                    ui.separator();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.profile_name)
-                            .hint_text("New profile name…")
-                            .desired_width(130.0),
-                    );
-                    if ui
-                        .add_enabled(
-                            !self.profile_name.trim().is_empty(),
-                            egui::Button::new("Save as Profile"),
-                        )
-                        .clicked()
-                    {
-                        let name = self.profile_name.trim().to_string();
-                        let rules = rule_engine
-                            .lock()
-                            .map(|re| re.to_config_list())
-                            .unwrap_or_default();
-                        rule_profiles.insert(name.clone(), rules);
-                        self.selected_profile = name.clone();
-                        self.profile_name.clear();
-                        *on_profiles_changed = true;
-                        self.status = format!("Saved as profile '{name}'.");
-                    }
-
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new("Test pattern:").strong());
-                    ui.text_edit_singleline(&mut self.test_input);
-                    if !self.test_input.is_empty() {
-                        let matches: Vec<String> = rules
-                            .iter()
-                            .filter(|r| r.enabled && r.matches(&self.test_input))
-                            .map(|r| r.name.clone())
-                            .collect();
-                        if matches.is_empty() {
-                            ui.colored_label(ui.visuals().weak_text_color(), "No rules match");
-                        } else {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(100, 200, 140),
-                                format!("Matches: {}", matches.join(", ")),
-                            );
-                        }
                     }
                 });
             });
+            ui.add_space(tokens::SPACE_M);
+        } else {
+            // ── Rule table ─────────────────────────────────────────────────
+            let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
+            let text_color = ui.visuals().text_color();
+            let dim_color = ui.visuals().weak_text_color();
 
-        if !self.status.is_empty() {
-            ui.label(RichText::new(&self.status).color(ui.visuals().weak_text_color()));
+            // Column widths proportional to available width. id_salt includes
+            // avail_w so egui_extras re-initialises columns on window resize.
+            let avail_w = ui.available_width() - 2.0;
+            let table_left = ui.min_rect().left();
+            let table_right = table_left + avail_w;
+            let col_pattern = (avail_w * 0.13).clamp(80.0, 200.0);
+            let col_match = (avail_w * 0.08).clamp(70.0, 120.0);
+            let col_aff = (avail_w * 0.11).clamp(70.0, 160.0);
+            let col_nice = (avail_w * 0.05).clamp(44.0, 70.0);
+            let col_io = (avail_w * 0.08).clamp(70.0, 120.0);
+
+            egui::Frame::new()
+                .stroke(egui::Stroke::new(1.0_f32, border_color))
+                .inner_margin(egui::Margin::same(1))
+                .show(ui, |ui| {
+                    TableBuilder::new(ui)
+                        .id_salt(avail_w as i32) // reset stored widths when window resizes
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::exact(38.0))
+                        .column(Column::remainder())
+                        .column(Column::initial(col_pattern).clip(true))
+                        .column(Column::initial(col_match).clip(true))
+                        .column(Column::initial(col_aff).clip(true))
+                        .column(Column::initial(col_nice).clip(true))
+                        .column(Column::initial(col_io).clip(true))
+                        .column(Column::exact(96.0))
+                        .min_scrolled_height(120.0)
+                        .header(24.0, |mut hdr| {
+                            for label in [
+                                "ON", "NAME", "PATTERN", "MATCH", "AFFINITY", "NICE", "I/O", "",
+                            ] {
+                                hdr.col(|ui| {
+                                    ui.label(theme::header_text(ui, label, false));
+                                });
+                            }
+                        })
+                        .body(|mut body| {
+                            for rule in &rules {
+                                let rule_id = rule.rule_id.clone();
+                                let is_sel = selected_id.as_deref() == Some(&rule.rule_id);
+                                let row_color = if rule.enabled { text_color } else { dim_color };
+                                let mut row_hovered = false;
+
+                                body.row(tokens::ROW_H, |mut row| {
+                                    row.set_selected(is_sel);
+
+                                    let (_, r0) = row.col(|ui| {
+                                        // Hover is measured on the full row band so the
+                                        // action buttons don't flicker when aimed at.
+                                        let band = ui.max_rect();
+                                        row_hovered = ui
+                                            .ctx()
+                                            .pointer_latest_pos()
+                                            .map(|p| {
+                                                p.y >= band.top()
+                                                    && p.y <= band.bottom()
+                                                    && p.x >= table_left
+                                                    && p.x <= table_right
+                                            })
+                                            .unwrap_or(false);
+                                        let mut on = rule.enabled;
+                                        if theme::toggle(ui, &mut on) {
+                                            toggle_rule_id = Some(rule_id.clone());
+                                        }
+                                    });
+                                    let (_, r1) = row.col(|ui| {
+                                        ui.label(RichText::new(&rule.name).color(row_color));
+                                    });
+                                    let (_, r2) = row.col(|ui| {
+                                        ui.label(RichText::new(&rule.pattern).color(row_color));
+                                    });
+                                    let (_, r3) = row.col(|ui| {
+                                        theme::badge_outline(ui, &rule.match_type);
+                                    });
+                                    let (_, r4) = row.col(|ui| {
+                                        ui.label(
+                                            RichText::new(rule.affinity.as_deref().unwrap_or("—"))
+                                                .color(row_color),
+                                        );
+                                    });
+                                    // §2: numeric cell — monospace, right-aligned.
+                                    let (_, r5) = row.col(|ui| {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let txt = rule
+                                                    .nice
+                                                    .map(|n| n.to_string())
+                                                    .unwrap_or_else(|| "—".into());
+                                                ui.label(
+                                                    RichText::new(txt)
+                                                        .font(theme::num_font(tokens::FONT_BODY))
+                                                        .color(row_color),
+                                                );
+                                            },
+                                        );
+                                    });
+                                    let (_, r6) = row.col(|ui| {
+                                        let txt = match (rule.ionice_class, rule.ionice_level) {
+                                            (Some(c), Some(l)) => format!("cls {c} · {l}"),
+                                            (Some(c), None) => format!("cls {c}"),
+                                            (None, Some(l)) => format!("lvl {l}"),
+                                            (None, None) => "—".into(),
+                                        };
+                                        ui.label(
+                                            RichText::new(txt)
+                                                .font(theme::num_font(tokens::FONT_SMALL))
+                                                .color(row_color),
+                                        );
+                                    });
+                                    // Row-level actions: only on hover/selection.
+                                    let (_, r7) = row.col(|ui| {
+                                        if row_hovered || is_sel {
+                                            ui.spacing_mut().item_spacing.x = tokens::SPACE_XS;
+                                            if ui
+                                                .small_button("Edit")
+                                                .on_hover_text("Edit rule")
+                                                .clicked()
+                                            {
+                                                new_sel = Some(rule_id.clone());
+                                                open_edit = Some(rule.clone());
+                                            }
+                                            if ui
+                                                .small_button("Delete")
+                                                .on_hover_text("Delete rule")
+                                                .clicked()
+                                            {
+                                                delete_rule_id = Some(rule_id.clone());
+                                            }
+                                        }
+                                    });
+
+                                    let clicked = r0.clicked()
+                                        || r1.clicked()
+                                        || r2.clicked()
+                                        || r3.clicked()
+                                        || r4.clicked()
+                                        || r5.clicked()
+                                        || r6.clicked()
+                                        || r7.clicked();
+                                    let doubled = r0.double_clicked()
+                                        || r1.double_clicked()
+                                        || r2.double_clicked()
+                                        || r3.double_clicked()
+                                        || r4.double_clicked()
+                                        || r5.double_clicked()
+                                        || r6.double_clicked()
+                                        || r7.double_clicked();
+
+                                    if doubled {
+                                        new_sel = Some(rule_id.clone());
+                                        open_edit = Some(rule.clone());
+                                    } else if clicked {
+                                        new_sel = Some(rule_id.clone());
+                                    }
+                                });
+                            }
+                        });
+                });
         }
-
-        ui.add_space(2.0);
-
-        // ── Rule table ─────────────────────────────────────────────────────
-        // NAME uses Column::remainder() to fill all remaining space; all other
-        // columns are resizable (drag the divider in the header).
-        let header_color = ui.visuals().strong_text_color();
-        let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-        let text_color = ui.visuals().text_color();
-        let dim_color = ui.visuals().weak_text_color();
-
-        // Compute column widths proportional to available width.
-        // id_salt includes avail_w so egui_extras re-initialises columns on window resize.
-        let avail_w = ui.available_width() - 2.0;
-        let col_pattern = (avail_w * 0.13).clamp(80.0, 200.0);
-        let col_match = (avail_w * 0.07).clamp(55.0, 110.0);
-        let col_aff = (avail_w * 0.11).clamp(70.0, 160.0);
-        let col_nice = (avail_w * 0.04).clamp(38.0, 60.0);
-        let col_iocls = (avail_w * 0.05).clamp(50.0, 80.0);
-        let col_iolv = (avail_w * 0.05).clamp(45.0, 75.0);
-
-        egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0_f32, border_color))
-            .inner_margin(egui::Margin::same(1))
-            .show(ui, |ui| {
-                TableBuilder::new(ui)
-                    .id_salt(avail_w as i32) // reset stored widths when window resizes
-                    .striped(true)
-                    .resizable(true)
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::exact(48.0))
-                    .column(Column::remainder())
-                    .column(Column::initial(col_pattern).clip(true))
-                    .column(Column::initial(col_match).clip(true))
-                    .column(Column::initial(col_aff).clip(true))
-                    .column(Column::initial(col_nice).clip(true))
-                    .column(Column::initial(col_iocls).clip(true))
-                    .column(Column::initial(col_iolv).clip(true))
-                    .min_scrolled_height(120.0)
-                    .header(24.0, |mut hdr| {
-                        for label in [
-                            "ON", "NAME", "PATTERN", "MATCH", "AFFINITY", "NICE", "I/O CLS",
-                            "I/O LVL",
-                        ] {
-                            hdr.col(|ui| {
-                                ui.label(RichText::new(label).color(header_color).strong());
-                            });
-                        }
-                    })
-                    .body(|mut body| {
-                        if rules.is_empty() {
-                            body.row(32.0, |mut row| {
-                                row.col(|_| {});
-                                row.col(|ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            "No rules yet — click \"Add Rule\" to create one.",
-                                        )
-                                        .color(dim_color)
-                                        .italics(),
-                                    );
-                                });
-                                for _ in 2..8 {
-                                    row.col(|_| {});
-                                }
-                            });
-                        }
-
-                        for rule in &rules {
-                            let rule_id = rule.rule_id.clone();
-                            let is_sel = selected_id.as_deref() == Some(&rule.rule_id);
-                            let row_color = if rule.enabled { text_color } else { dim_color };
-
-                            body.row(22.0, |mut row| {
-                                row.set_selected(is_sel);
-
-                                let en_text = if rule.enabled { "Yes" } else { "No" };
-                                let (_, r0) = row.col(|ui| {
-                                    ui.label(RichText::new(en_text).color(row_color));
-                                });
-                                let (_, r1) = row.col(|ui| {
-                                    ui.label(RichText::new(&rule.name).color(row_color));
-                                });
-                                let (_, r2) = row.col(|ui| {
-                                    ui.label(RichText::new(&rule.pattern).color(row_color));
-                                });
-                                let (_, r3) = row.col(|ui| {
-                                    ui.label(RichText::new(&rule.match_type).color(row_color));
-                                });
-                                let (_, r4) = row.col(|ui| {
-                                    ui.label(
-                                        RichText::new(rule.affinity.as_deref().unwrap_or(""))
-                                            .color(row_color),
-                                    );
-                                });
-                                let (_, r5) = row.col(|ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            rule.nice.map(|n| n.to_string()).unwrap_or_default(),
-                                        )
-                                        .color(row_color),
-                                    );
-                                });
-                                let (_, r6) = row.col(|ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            rule.ionice_class
-                                                .map(|c| c.to_string())
-                                                .unwrap_or_default(),
-                                        )
-                                        .color(row_color),
-                                    );
-                                });
-                                let (_, r7) = row.col(|ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            rule.ionice_level
-                                                .map(|l| l.to_string())
-                                                .unwrap_or_default(),
-                                        )
-                                        .color(row_color),
-                                    );
-                                });
-
-                                let clicked = r0.clicked()
-                                    || r1.clicked()
-                                    || r2.clicked()
-                                    || r3.clicked()
-                                    || r4.clicked()
-                                    || r5.clicked()
-                                    || r6.clicked()
-                                    || r7.clicked();
-                                let doubled = r0.double_clicked()
-                                    || r1.double_clicked()
-                                    || r2.double_clicked()
-                                    || r3.double_clicked()
-                                    || r4.double_clicked()
-                                    || r5.double_clicked()
-                                    || r6.double_clicked()
-                                    || r7.double_clicked();
-
-                                if doubled {
-                                    new_sel = Some(rule_id.clone());
-                                    open_edit = Some(rule.clone());
-                                } else if clicked {
-                                    new_sel = Some(rule_id.clone());
-                                }
-                            });
-                        }
-                    });
-            });
 
         self.selected_rule_id = new_sel;
         if let Some(rule) = open_edit {
             self.edit_dialog = Some(RuleEditDialog::new(rule));
+        }
+        if let Some(id) = delete_rule_id {
+            self.selected_rule_id = Some(id);
+            self.confirm_delete_rule = true;
+        }
+        if let Some(id) = toggle_rule_id {
+            if let Ok(mut re) = rule_engine.lock() {
+                if let Some(r) = re.get_rules_mut().iter_mut().find(|r| r.rule_id == id) {
+                    r.enabled = !r.enabled;
+                    *on_rules_changed = true;
+                }
+            }
         }
 
         // ── Confirm dialogs ────────────────────────────────────────────────
@@ -461,7 +353,7 @@ impl RulesTab {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.label(format!("Delete rule '{rule_name}'?"));
-                    ui.add_space(8.0);
+                    ui.add_space(tokens::SPACE_S);
                     ui.horizontal(|ui| {
                         if ui.button("Delete").clicked() {
                             confirmed = true;
@@ -496,7 +388,7 @@ impl RulesTab {
                     ui.label(format!(
                         "Load profile '{profile}'?\nThis replaces all current rules."
                     ));
-                    ui.add_space(8.0);
+                    ui.add_space(tokens::SPACE_S);
                     ui.horizontal(|ui| {
                         if ui.button("Load").clicked() {
                             confirmed = true;
@@ -533,7 +425,7 @@ impl RulesTab {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.label(format!("Delete profile '{profile}'?"));
-                    ui.add_space(8.0);
+                    ui.add_space(tokens::SPACE_S);
                     ui.horizontal(|ui| {
                         if ui.button("Delete").clicked() {
                             confirmed = true;
@@ -580,6 +472,176 @@ impl RulesTab {
                 }
             }
         }
+    }
+
+    /// Slim toolbar: primary action, templates, live pattern test, profile
+    /// picker and an overflow menu for the rare file/profile operations.
+    fn toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        rule_engine: &Arc<Mutex<RuleEngine>>,
+        rule_profiles: &mut std::collections::HashMap<String, Vec<crate::config::RuleConfig>>,
+        on_profiles_changed: &mut bool,
+        rules: &[Rule],
+    ) {
+        let s = theme::sem(ui);
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(0, 4))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let new_btn =
+                        egui::Button::new(RichText::new("+ New rule").color(s.on_accent).strong())
+                            .fill(s.accent);
+                    if ui.add(new_btn).clicked() {
+                        self.open_add_dialog(None);
+                    }
+                    if ui.button("Templates ▾").clicked() {
+                        self.presets_dialog = Some(RulePresetsDialog::new());
+                    }
+
+                    ui.add_space(tokens::SPACE_S);
+
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.test_input)
+                            .hint_text("Test pattern…")
+                            .desired_width(150.0),
+                    );
+                    if !self.test_input.is_empty() {
+                        let matches: Vec<String> = rules
+                            .iter()
+                            .filter(|r| r.enabled && r.matches(&self.test_input))
+                            .map(|r| r.name.clone())
+                            .collect();
+                        if matches.is_empty() {
+                            ui.label(
+                                RichText::new("No rules match")
+                                    .size(tokens::FONT_HELP)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        } else {
+                            ui.label(
+                                RichText::new(format!("✓ Matches «{}»", matches.join(", ")))
+                                    .size(tokens::FONT_HELP)
+                                    .color(s.ok),
+                            );
+                        }
+                    }
+
+                    // Spacer → profile picker + overflow menu on the right.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.overflow_menu(ui, rule_engine, rule_profiles, on_profiles_changed);
+                        self.profile_picker(ui, rule_profiles);
+                    });
+                });
+            });
+    }
+
+    fn profile_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        rule_profiles: &std::collections::HashMap<String, Vec<crate::config::RuleConfig>>,
+    ) {
+        let mut profile_names: Vec<String> = rule_profiles.keys().cloned().collect();
+        profile_names.sort();
+        let current = if self.selected_profile.is_empty() {
+            "Profile: —".to_string()
+        } else {
+            format!("Profile: {}", self.selected_profile)
+        };
+        egui::ComboBox::from_id_salt("profile_picker")
+            .selected_text(current)
+            .width(160.0)
+            .show_ui(ui, |ui| {
+                if profile_names.is_empty() {
+                    ui.label(
+                        RichText::new("No saved profiles")
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                for name in &profile_names {
+                    let picked = self.selected_profile == *name;
+                    if ui.selectable_label(picked, name.as_str()).clicked() && !picked {
+                        self.selected_profile = name.clone();
+                        self.confirm_load_profile = true;
+                    }
+                }
+            });
+    }
+
+    fn overflow_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        rule_engine: &Arc<Mutex<RuleEngine>>,
+        rule_profiles: &mut std::collections::HashMap<String, Vec<crate::config::RuleConfig>>,
+        on_profiles_changed: &mut bool,
+    ) {
+        ui.menu_button("⋯", |ui| {
+            ui.set_min_width(210.0);
+            if ui.button("Export rules…").clicked() {
+                self.export_rules(rule_engine);
+                ui.close();
+            }
+            if ui.button("Import rules…").clicked() {
+                self.import_rules();
+                ui.close();
+            }
+            ui.separator();
+            ui.label(
+                RichText::new("SAVE AS PROFILE")
+                    .size(tokens::FONT_LABEL)
+                    .color(ui.visuals().weak_text_color()),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.profile_name)
+                    .hint_text("Profile name…")
+                    .desired_width(190.0),
+            );
+            let can_save = !self.profile_name.trim().is_empty();
+            if ui
+                .add_enabled(can_save, egui::Button::new("Save profile"))
+                .clicked()
+            {
+                let name = self.profile_name.trim().to_string();
+                let saved = rule_engine
+                    .lock()
+                    .map(|re| re.to_config_list())
+                    .unwrap_or_default();
+                rule_profiles.insert(name.clone(), saved);
+                self.selected_profile = name.clone();
+                self.profile_name.clear();
+                *on_profiles_changed = true;
+                self.status = format!("Saved as profile '{name}'.");
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .add_enabled(
+                    !self.selected_profile.is_empty(),
+                    egui::Button::new("Delete profile"),
+                )
+                .clicked()
+            {
+                self.confirm_delete_profile = true;
+                ui.close();
+            }
+        });
+    }
+
+    fn import_rules(&mut self) {
+        let tx = self.file_tx.clone();
+        std::thread::spawn(move || {
+            let path = match crate::file_dialog::open("*.json") {
+                Some(p) => p,
+                None => return,
+            };
+            let result = match std::fs::read_to_string(&path) {
+                Err(e) => Err(format!("Read error: {e}")),
+                Ok(s) => serde_json::from_str::<Vec<crate::config::RuleConfig>>(&s)
+                    .map_err(|e| format!("Parse error: {e}")),
+            };
+            tx.send(FileDialogResult::ImportDone(result)).ok();
+        });
     }
 
     fn export_rules(&mut self, rule_engine: &Arc<Mutex<RuleEngine>>) {
