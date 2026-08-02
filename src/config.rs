@@ -98,11 +98,18 @@ pub struct UiConfig {
     pub col_widths: Vec<f32>,
     /// Enable desktop notifications (ProBalance throttle, HW alerts, kill events).
     pub notifications_enabled: bool,
+    /// Check GitHub for a newer release on startup.
+    #[serde(default = "default_true")]
+    pub check_updates_on_start: bool,
     /// HW Monitor column widths: [val, min, max, avg]
     #[serde(default = "default_hw_mon_col_widths")]
     pub hw_mon_col_widths: Vec<f32>,
     /// Process-table columns hidden by the user (by header label, e.g. "GPU%")
     pub hidden_columns: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_col_widths() -> Vec<f32> {
@@ -123,6 +130,7 @@ impl Default for UiConfig {
             sort_ascending: false,
             col_widths: default_col_widths(),
             notifications_enabled: true,
+            check_updates_on_start: true,
             hw_mon_col_widths: default_hw_mon_col_widths(),
             hidden_columns: Vec::new(),
         }

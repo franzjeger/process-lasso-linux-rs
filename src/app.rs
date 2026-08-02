@@ -123,6 +123,8 @@ pub struct ArgusLassoApp {
     process_tab: ProcessTab,
     rules_tab: RulesTab,
     probalance_tab: ProBalanceTab,
+    /// In-app update check / self-install.
+    updates: crate::updater::UpdateState,
     gaming_mode_tab: GamingModeTab,
     hw_monitor_tab: HwMonitorTab,
     bench_tab: BenchTab,
@@ -187,6 +189,11 @@ impl ArgusLassoApp {
         let startup_theme = crate::gui::theme::AppTheme::from_str(&config.ui.theme);
         crate::gui::theme::apply_theme(&cc.egui_ctx, native_ppp, &startup_theme);
 
+        let mut updates = crate::updater::UpdateState::default();
+        if config.ui.check_updates_on_start {
+            updates.start_check();
+        }
+
         let probalance_tab = ProBalanceTab::new(config.probalance.clone());
         let gaming_mode_tab = GamingModeTab::new(config.clone());
         let mut settings_tab = SettingsTab::new(config.clone());
@@ -247,6 +254,7 @@ impl ArgusLassoApp {
             process_tab: ProcessTab::new(&config.ui.col_widths, &config.ui.hidden_columns),
             rules_tab: RulesTab::new(),
             probalance_tab,
+            updates,
             gaming_mode_tab,
             hw_monitor_tab: HwMonitorTab::new_with_widths(&config.ui.hw_mon_col_widths),
             bench_tab: BenchTab::new(),
@@ -1124,6 +1132,46 @@ impl eframe::App for ArgusLassoApp {
             });
             ui.separator();
 
+            // ── Update banner ────────────────────────────────────────────
+            // Poll first: the worker runs off-thread, so without an explicit
+            // repaint the result would sit unseen until the next input event.
+            if self.updates.poll() {
+                ctx.request_repaint();
+            }
+            if let Some(update) = self.updates.available.as_ref() {
+                if !self.updates.banner_dismissed {
+                    let s = crate::gui::theme::sem(ui);
+                    let text = if self.updates.installed {
+                        format!("{} installed — restart to run it", update.tag)
+                    } else {
+                        format!(
+                            "{} is available (you have v{})",
+                            update.tag,
+                            crate::updater::current_version()
+                        )
+                    };
+                    let action = if self.updates.installed {
+                        "Restart now"
+                    } else if self.updates.busy {
+                        "Working…"
+                    } else {
+                        "Update now"
+                    };
+                    ui.add_space(4.0);
+                    if crate::gui::theme::banner(ui, s.accent, &text, Some(action))
+                        && !self.updates.busy
+                    {
+                        if self.updates.installed {
+                            // exec() replaces this process and does not return.
+                            self.updates.message = crate::updater::restart();
+                        } else {
+                            self.updates.start_install();
+                        }
+                    }
+                    ui.add_space(4.0);
+                }
+            }
+
             // ── Tab content ──────────────────────────────────────────────
             match self.active_tab {
                 Tab::Overview => {
@@ -1272,7 +1320,9 @@ impl eframe::App for ArgusLassoApp {
                 }
 
                 Tab::Settings => {
-                    let config_changed = self.settings_tab.show(ui, ctx, self.opacity);
+                    let config_changed =
+                        self.settings_tab
+                            .show(ui, ctx, self.opacity, &mut self.updates);
 
                     // Live opacity preview — apply every frame the slider moves,
                     // regardless of whether the Apply button was clicked.

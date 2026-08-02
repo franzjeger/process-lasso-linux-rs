@@ -63,6 +63,8 @@ wayland-sys      = { version = "0.31", features = ["client"] }
 
 # Raw window handle (re-export from eframe's transitive dep, pinned to same version)
 raw-window-handle = "0.6"
+ureq = { version = "3.3.0", features = ["rustls"] }
+sha2 = "0.11.0"
 
 [build-dependencies]
 png = "0.17"
