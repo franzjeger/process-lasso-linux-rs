@@ -465,11 +465,22 @@ pub fn segmented(ui: &mut egui::Ui, options: &[&str], selected: usize) -> Option
     clicked
 }
 
+/// Horizontal chrome `kpi_card` draws outside the content: its 12px inner
+/// margins on both sides.
+///
+/// Callers divide the available width into whole card slots and the card
+/// subtracts this itself. Having the caller compensate instead is what used
+/// to push the fourth KPI card off the right edge — the margin value was
+/// duplicated as a hand-tuned constant that drifted from the real one.
+const KPI_CARD_CHROME: f32 = 24.0;
+
 /// KPI card: uppercase label, big tabular value, weak detail line, and a
 /// 3px accent stripe down the left edge in `stripe`.
+///
+/// `outer_width` is the full slot the card occupies, borders included.
 pub fn kpi_card(
     ui: &mut egui::Ui,
-    width: f32,
+    outer_width: f32,
     label: &str,
     value: &str,
     detail: &str,
@@ -489,7 +500,11 @@ pub fn kpi_card(
         })
         .corner_radius(CornerRadius::same(4))
         .show(ui, |ui| {
-            ui.set_width(width);
+            // A row laying these out zeroes item_spacing.x to keep its width
+            // arithmetic exact; child uis inherit it, so restore the theme
+            // default for the card's own contents.
+            ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            ui.set_width((outer_width - KPI_CARD_CHROME).max(0.0));
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(label.to_uppercase())

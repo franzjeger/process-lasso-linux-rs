@@ -31,7 +31,13 @@ impl OverviewTab {
 
         // ── KPI row: the four numbers people open this tab for ───────────────
         ui.horizontal(|ui| {
-            let card_w = (ui.available_width() - spacing * 3.0) / 4.0 - 26.0;
+            // The explicit add_space calls are the only gaps this row wants.
+            // Left at the default, item_spacing.x adds another 8px at each of
+            // the six boundaries here (four cards plus three spacers) — 48px
+            // the width arithmetic below knows nothing about, which is what
+            // pushed the ProBalance card off the right edge.
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let card_w = (ui.available_width() - spacing * 3.0) / 4.0;
 
             // CPU
             let cpu_detail = match cpu_temp {
@@ -117,7 +123,10 @@ impl OverviewTab {
                 .inner_margin(egui::Margin::same(8))
                 .corner_radius(egui::CornerRadius::same(4))
                 .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width() - 24.0);
+                    // available_width() here is already the frame's content
+                    // width — the inner margin is outside it — so no further
+                    // compensation belongs on this line.
+                    ui.set_min_width(ui.available_width());
                     let head = ui.horizontal(|ui| {
                         ui.label(th::bold(ui, "CPU history", tokens::FONT_HEADING));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -211,9 +220,10 @@ impl OverviewTab {
 
         // ── Disk + Network I/O graphs ────────────────────────────────────────
         ui.horizontal_top(|ui| {
-            // -8: the frame margins are outside the width we hand each card,
-            // so without it the pair overflows the panel and clips on the right.
-            let half_w = (ui.available_width() - spacing) / 2.0 - 8.0;
+            // Same as the KPI row: only the explicit add_space should separate
+            // the two panels. dual_io_graph subtracts its own frame margin.
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let half_w = (ui.available_width() - spacing) / 2.0;
             dual_io_graph(
                 ui,
                 "Disk I/O",
@@ -408,6 +418,9 @@ fn read_load_avg() -> Option<(f32, f32, f32)> {
 
 /// Small two-line rate graph (e.g. disk read/write, net rx/tx) with
 /// autoscaled Y axis and current-value labels.
+///
+/// `outer_width` is the full slot the panel occupies, borders included; the
+/// 8px inner margins are subtracted here so callers never restate them.
 #[allow(clippy::too_many_arguments)]
 fn dual_io_graph(
     ui: &mut egui::Ui,
@@ -415,16 +428,22 @@ fn dual_io_graph(
     history: &VecDeque<(f32, f32)>,
     (label_a, color_a): (&str, Color32),
     (label_b, color_b): (&str, Color32),
-    width: f32,
+    outer_width: f32,
     border_color: Color32,
 ) {
+    const PANEL_CHROME: f32 = 16.0;
     egui::Frame::new()
         .fill(crate::gui::theme::card_fill(ui))
         .stroke(egui::Stroke::new(1.0_f32, border_color))
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
-            ui.set_min_width(width - 16.0);
-            ui.set_max_width(width - 16.0);
+            // The row zeroes item_spacing.x so its own arithmetic is exact,
+            // and child uis inherit that — which would run "0.2" and "MB/s"
+            // together. Restore the theme default for the card's contents.
+            ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            let content_w = (outer_width - PANEL_CHROME).max(0.0);
+            ui.set_min_width(content_w);
+            ui.set_max_width(content_w);
             let (cur_a, cur_b) = history.back().copied().unwrap_or((0.0, 0.0));
             let head = ui.horizontal(|ui| {
                 ui.label(crate::gui::theme::bold(
