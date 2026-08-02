@@ -13,6 +13,7 @@ mod mem_bench;
 mod monitor;
 mod probalance;
 mod rules;
+mod updater;
 mod utils;
 mod wayland_opacity;
 
