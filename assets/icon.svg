@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Argus-Lasso</title>
+  <defs>
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#434B54"/>
+      <stop offset="0.55" stop-color="#23282D"/>
+      <stop offset="1" stop-color="#14171A"/>
+    </linearGradient>
+    <linearGradient id="die" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3B424A"/>
+      <stop offset="1" stop-color="#252A30"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#79838E"/>
+      <stop offset="1" stop-color="#4C545C"/>
+    </linearGradient>
+    <linearGradient id="rope" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#6FC8F5"/>
+      <stop offset="0.5" stop-color="#3DAEE9"/>
+      <stop offset="1" stop-color="#2980B9"/>
+    </linearGradient>
+    <linearGradient id="coreHot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5FC2F2"/>
+      <stop offset="1" stop-color="#3DAEE9"/>
+    </linearGradient>
+    <linearGradient id="coreMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3A93C9"/>
+      <stop offset="1" stop-color="#2980B9"/>
+    </linearGradient>
+    <linearGradient id="coreOff" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C3238"/>
+      <stop offset="1" stop-color="#1F2429"/>
+    </linearGradient>
+  </defs>
+
+  <!-- badge -->
+  <circle cx="128" cy="128" r="119" fill="url(#badge)"/>
+  <circle cx="128" cy="128" r="117.5" fill="none" stroke="#5A636D" stroke-width="3" opacity="0.55"/>
+  <circle cx="128" cy="128" r="110" fill="none" stroke="#0E1113" stroke-width="2" opacity="0.4"/>
+
+  <!-- chip pins -->
+  <g fill="url(#pin)">
+    <rect x="90"    y="65" width="6" height="16" rx="3"/>
+    <rect x="109.6" y="65" width="6" height="16" rx="3"/>
+    <rect x="125"   y="65" width="6" height="16" rx="3"/>
+    <rect x="140.4" y="65" width="6" height="16" rx="3"/>
+    <rect x="160"   y="65" width="6" height="16" rx="3"/>
+
+    <rect x="90"    y="175" width="6" height="16" rx="3"/>
+    <rect x="109.6" y="175" width="6" height="16" rx="3"/>
+    <rect x="125"   y="175" width="6" height="16" rx="3"/>
+    <rect x="140.4" y="175" width="6" height="16" rx="3"/>
+    <rect x="160"   y="175" width="6" height="16" rx="3"/>
+
+    <rect x="65" y="90"    width="16" height="6" rx="3"/>
+    <rect x="65" y="109.6" width="16" height="6" rx="3"/>
+    <rect x="65" y="125"   width="16" height="6" rx="3"/>
+    <rect x="65" y="140.4" width="16" height="6" rx="3"/>
+    <rect x="65" y="160"   width="16" height="6" rx="3"/>
+
+    <rect x="175" y="90"    width="16" height="6" rx="3"/>
+    <rect x="175" y="109.6" width="16" height="6" rx="3"/>
+    <rect x="175" y="125"   width="16" height="6" rx="3"/>
+    <rect x="175" y="140.4" width="16" height="6" rx="3"/>
+    <rect x="175" y="160"   width="16" height="6" rx="3"/>
+  </g>
+
+  <!-- die -->
+  <rect x="80" y="80" width="96" height="96" rx="14" fill="url(#die)" stroke="#5D666F" stroke-width="2.5"/>
+
+  <!-- core grid: 3x3, 20px cells, 5px gutter, inset 93..163 -->
+  <g>
+    <rect x="93"  y="93"  width="20" height="20" rx="4.5" fill="url(#coreOff)"/>
+    <rect x="118" y="93"  width="20" height="20" rx="4.5" fill="url(#coreMid)"/>
+    <rect x="143" y="93"  width="20" height="20" rx="4.5" fill="url(#coreHot)"/>
+
+    <rect x="93"  y="118" width="20" height="20" rx="4.5" fill="url(#coreHot)"/>
+    <rect x="118" y="118" width="20" height="20" rx="4.5" fill="url(#coreMid)"/>
+    <rect x="143" y="118" width="20" height="20" rx="4.5" fill="url(#coreOff)"/>
+
+    <rect x="93"  y="143" width="20" height="20" rx="4.5" fill="url(#coreOff)"/>
+    <rect x="118" y="143" width="20" height="20" rx="4.5" fill="url(#coreHot)"/>
+    <rect x="143" y="143" width="20" height="20" rx="4.5" fill="url(#coreMid)"/>
+  </g>
+
+  <!-- lasso: dark underlay for separation from the badge, then the rope on top -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M 178,44 A 100,100 0 1 1 52.5,66.5" stroke="#0E1113" stroke-width="15" opacity="0.85"/>
+    <ellipse cx="76" cy="58" rx="30" ry="19" transform="rotate(-32 76 58)" stroke="#0E1113" stroke-width="15" opacity="0.85"/>
+
+    <path d="M 178,44 A 100,100 0 1 1 52.5,66.5" stroke="url(#rope)" stroke-width="9"/>
+    <ellipse cx="76" cy="58" rx="30" ry="19" transform="rotate(-32 76 58)" stroke="url(#rope)" stroke-width="9"/>
+  </g>
+</svg>

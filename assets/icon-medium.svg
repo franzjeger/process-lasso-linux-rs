@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Argus-Lasso</title>
+  <!-- Medium detail: 32-48px. Pins dropped, cores enlarged. -->
+  <defs>
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#434B54"/>
+      <stop offset="0.55" stop-color="#23282D"/>
+      <stop offset="1" stop-color="#14171A"/>
+    </linearGradient>
+    <linearGradient id="die" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3B424A"/>
+      <stop offset="1" stop-color="#252A30"/>
+    </linearGradient>
+    <linearGradient id="rope" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#6FC8F5"/>
+      <stop offset="0.5" stop-color="#3DAEE9"/>
+      <stop offset="1" stop-color="#2980B9"/>
+    </linearGradient>
+    <linearGradient id="coreHot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5FC2F2"/>
+      <stop offset="1" stop-color="#3DAEE9"/>
+    </linearGradient>
+    <linearGradient id="coreMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3A93C9"/>
+      <stop offset="1" stop-color="#2980B9"/>
+    </linearGradient>
+    <linearGradient id="coreOff" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2E343A"/>
+      <stop offset="1" stop-color="#20252A"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="128" cy="128" r="119" fill="url(#badge)"/>
+  <circle cx="128" cy="128" r="117" fill="none" stroke="#5A636D" stroke-width="4" opacity="0.5"/>
+
+  <!-- die -->
+  <rect x="74" y="74" width="108" height="108" rx="16" fill="url(#die)" stroke="#626B75" stroke-width="3"/>
+
+  <!-- core grid: 3x3, 26px cells, 7px gutter, inset 88..168 -->
+  <g>
+    <rect x="88"  y="88"  width="26" height="26" rx="6" fill="url(#coreOff)"/>
+    <rect x="121" y="88"  width="26" height="26" rx="6" fill="url(#coreMid)"/>
+    <rect x="154" y="88"  width="26" height="26" rx="6" fill="url(#coreHot)"/>
+
+    <rect x="88"  y="121" width="26" height="26" rx="6" fill="url(#coreHot)"/>
+    <rect x="121" y="121" width="26" height="26" rx="6" fill="url(#coreMid)"/>
+    <rect x="154" y="121" width="26" height="26" rx="6" fill="url(#coreOff)"/>
+
+    <rect x="88"  y="154" width="26" height="26" rx="6" fill="url(#coreOff)"/>
+    <rect x="121" y="154" width="26" height="26" rx="6" fill="url(#coreHot)"/>
+    <rect x="154" y="154" width="26" height="26" rx="6" fill="url(#coreMid)"/>
+  </g>
+
+  <!-- lasso -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M 178,44 A 100,100 0 1 1 52.5,66.5" stroke="#0E1113" stroke-width="20" opacity="0.9"/>
+    <ellipse cx="76" cy="58" rx="30" ry="19" transform="rotate(-32 76 58)" stroke="#0E1113" stroke-width="20" opacity="0.9"/>
+
+    <path d="M 178,44 A 100,100 0 1 1 52.5,66.5" stroke="url(#rope)" stroke-width="13"/>
+    <ellipse cx="76" cy="58" rx="30" ry="19" transform="rotate(-32 76 58)" stroke="url(#rope)" stroke-width="13"/>
+  </g>
+</svg>

@@ -2,8 +2,8 @@ fn main() {
     let icon_path = "assets/icon.png";
     println!("cargo:rerun-if-changed={icon_path}");
 
-    let file =
-        std::fs::File::open(icon_path).expect("assets/icon.png not found — run rsvg-convert first");
+    let file = std::fs::File::open(icon_path)
+        .expect("assets/icon.png not found — regenerate it with `make icon`");
     let decoder = png::Decoder::new(file);
     let mut reader = decoder
         .read_info()
@@ -23,10 +23,19 @@ fn main() {
     };
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    let out_path = std::path::Path::new(&out_dir).join("icon_rgba.bin");
-    std::fs::write(&out_path, &rgba).expect("failed to write icon_rgba.bin");
+    let out = std::path::Path::new(&out_dir);
+    std::fs::write(out.join("icon_rgba.bin"), &rgba).expect("failed to write icon_rgba.bin");
 
-    // Emit width/height as env vars for main.rs
-    println!("cargo:rustc-env=ICON_W={}", info.width);
-    println!("cargo:rustc-env=ICON_H={}", info.height);
+    // Emit the dimensions as source rather than env vars so src/icon.rs can pick
+    // them up with include!. Keeping them tied to the PNG means assets/icon.png
+    // can be re-rendered at any resolution without touching Rust code — the old
+    // hard-coded 64x64 silently mismatched the buffer the moment it changed.
+    std::fs::write(
+        out.join("icon_dims.rs"),
+        format!(
+            "pub const W: u32 = {};\npub const H: u32 = {};\n",
+            info.width, info.height
+        ),
+    )
+    .expect("failed to write icon_dims.rs");
 }
