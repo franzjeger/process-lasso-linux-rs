@@ -636,10 +636,17 @@ impl GamingModeTab {
                 {
                     self.show_log = !self.show_log;
                 }
-                let reset = egui::Button::new(RichText::new("↩  Reset all").color(s.negative))
-                    .stroke(egui::Stroke::new(1.0_f32, s.negative));
+                // Not a third peer of the two collapsing panels: it is a
+                // rarely-used escape hatch, so it gets its own smaller,
+                // right-aligned row below them rather than matching width.
+                let reset = egui::Button::new(
+                    RichText::new("↩  Reset all")
+                        .size(tokens::FONT_HELP)
+                        .color(s.negative),
+                )
+                .stroke(egui::Stroke::new(1.0_f32, s.negative));
                 if ui
-                    .add_sized([w, 26.0], reset)
+                    .add(reset)
                     .on_hover_text(
                         "Restores all per-process CPU affinities and unparks any parked CPUs.",
                     )

@@ -976,7 +976,17 @@ impl eframe::App for ArgusLassoApp {
                 }
                 if !self.cpu_model.is_empty() {
                     ui.separator();
-                    ui.label(egui::RichText::new(&self.cpu_model).weak());
+                    // Core count moved here from the Overview CPU card: it is
+                    // a static machine fact, and it belongs next to the model
+                    // rather than in a tile showing live load.
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  ·  {} cores",
+                            self.cpu_model,
+                            utils::get_cpu_count()
+                        ))
+                        .weak(),
+                    );
                 }
                 ui.separator();
                 if gaming_active {

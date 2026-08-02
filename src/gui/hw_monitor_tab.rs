@@ -410,6 +410,14 @@ fn sensor_row(
 
     // Numeric cells — monospace, right aligned
     let mut rx = row_rect.min.x + col_name;
+    // Idle clock rows in full strength turned the frequency section into a
+    // solid grey mass; a core sitting at its floor is not information worth
+    // that much weight.
+    let now_color = if sensor.unit == "MHz" && is_idle_clock(sensor) {
+        weak
+    } else {
+        now_color
+    };
     let cells: [(f32, Color32, f32); 4] = [
         (sensor.value, now_color, tokens::FONT_HELP),
         (sensor.min_display(), weak, tokens::FONT_LABEL),
@@ -435,7 +443,15 @@ fn sensor_row(
             egui::pos2(rx + 2.0, row_rect.min.y + 3.0),
             Vec2::new(sparkline_w - 6.0, row_h - 6.0),
         );
-        draw_sparkline(ui, spark_rect, &sensor.history, now_color);
+        // 60% alpha: at full strength a column of sparklines competes with
+        // the values it is meant to annotate, and for units with no ramp
+        // (MHz, RPM, V) the plain white line was the loudest thing in the row.
+        draw_sparkline(
+            ui,
+            spark_rect,
+            &sensor.history,
+            now_color.gamma_multiply(0.6),
+        );
     }
 }
 
@@ -480,6 +496,15 @@ fn value_color(ui: &Ui, v: f32, unit: &str) -> Color32 {
         "W" => theme::load_color(ui, (v / 300.0 * 100.0).clamp(0.0, 100.0)),
         _ => ui.visuals().text_color(),
     }
+}
+
+/// True when a clock sensor is sitting near the bottom of its observed range.
+///
+/// Relative to what this machine has actually shown rather than an absolute
+/// MHz threshold, which would be wrong on any CPU with a different floor.
+fn is_idle_clock(sensor: &crate::hw_monitor::Sensor) -> bool {
+    let span = sensor.max - sensor.min;
+    span > 1.0 && sensor.value <= sensor.min + span * 0.25
 }
 
 /// Map a temperature onto the 0–100 load ramp: 40 °C → cool, 100 °C → critical.

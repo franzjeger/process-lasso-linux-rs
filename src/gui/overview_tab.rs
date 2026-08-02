@@ -41,8 +41,10 @@ impl OverviewTab {
 
             // CPU
             let cpu_detail = match cpu_temp {
-                Some(t) => format!("{t:.0} °C · {} cores", crate::utils::get_cpu_count()),
-                None => format!("{} cores", crate::utils::get_cpu_count()),
+                // Core count is a static machine fact and lives in the status
+                // bar; the KPI card is for what is changing right now.
+                Some(t) => format!("{t:.0} °C"),
+                None => String::new(),
             };
             th::kpi_card(
                 ui,
@@ -375,7 +377,12 @@ impl OverviewTab {
                         Vec2::new(bar_col_w - bar_margin * 2.0, row_h - bar_margin * 2.0),
                     );
                     ui.painter()
-                        .rect_filled(bar_rect, 2.0, ui.visuals().extreme_bg_color);
+                        // The track was extreme_bg_color, which is also the
+                        // even rows' background — so it vanished on every
+                        // other row and low-value rows looked like they had
+                        // no bar at all. A tint off the text colour reads on
+                        // both zebra shades.
+                        .rect_filled(bar_rect, 2.0, th::tint(ui.visuals().weak_text_color(), 40));
                     let fill_w = (bar_rect.width() * (cpu_pct / 100.0).clamp(0.0, 1.0)).max(0.0);
                     let fill = egui::Rect::from_min_size(
                         bar_rect.min,
