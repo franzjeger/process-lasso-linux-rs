@@ -1096,8 +1096,8 @@ impl eframe::App for ArgusLassoApp {
                 pick(ui, "Gaming Mode", Tab::GamingMode, None, &mut clicked_tab);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Right-to-left: gear first (rightmost), then Tools menu.
-                    pick(ui, "⚙", Tab::Settings, None, &mut clicked_tab);
+                    // Right-to-left: Settings first (rightmost), then Tools menu.
+                    pick(ui, "⚙  Settings", Tab::Settings, None, &mut clicked_tab);
                     let tools_active =
                         matches!(active_now, Tab::HwMonitor | Tab::Benchmark | Tab::Log);
                     let tools_label = if tools_active {
