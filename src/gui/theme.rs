@@ -645,8 +645,12 @@ pub fn plot_card(
         .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            // Both bounds, not just the minimum. Content that sizes itself
+            // from available_height() — the CPU history plot does — otherwise
+            // reads the whole remaining panel height and swallows everything
+            // below the card.
             ui.set_min_size(egui::vec2(inner_w, inner_h));
-            ui.set_max_width(inner_w);
+            ui.set_max_size(egui::vec2(inner_w, inner_h));
             add_contents(ui);
         });
 }
