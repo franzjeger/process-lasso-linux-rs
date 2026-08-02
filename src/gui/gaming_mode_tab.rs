@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::{Config, GamingProfile};
 use crate::cpu_park::{
-    self, detect_topology, get_smt_siblings_of, is_helper_current, is_helper_installed,
-    is_sudoers_installed, park_cpus, unpark_all, CpuTopology,
+    self, detect_topology, get_smt_siblings_of, is_helper_authorized, is_helper_current,
+    is_helper_installed, park_cpus, unpark_all, CpuTopology,
 };
 use crate::utils::{get_offline_cpus, get_online_cpus};
 
@@ -70,7 +70,6 @@ pub struct GamingModeTab {
     pub selected_profile: String,
 
     // Dialogs
-    pub install_password: String,
     pub show_install_dialog: bool,
     /// "current: <governor> / <epp>" display next to the power-profile buttons
     power_status_text: String,
@@ -108,7 +107,7 @@ impl GamingModeTab {
         }
 
         let parked = !offline.is_empty();
-        let helper_ok = is_helper_current() && is_sudoers_installed();
+        let helper_ok = is_helper_current() && is_helper_authorized();
 
         let mut tab = Self {
             config,
@@ -133,7 +132,6 @@ impl GamingModeTab {
             watch_status: String::new(),
             last_poll: std::time::Instant::now(),
             selected_profile: String::new(),
-            install_password: String::new(),
             show_install_dialog: false,
             power_status_text: String::new(),
             power_governor: String::new(),
@@ -160,7 +158,7 @@ impl GamingModeTab {
     }
 
     fn refresh_helper_status(&mut self) {
-        let sudoers_ok = is_sudoers_installed();
+        let sudoers_ok = is_helper_authorized();
         self.helper_ok = is_helper_current() && sudoers_ok;
         self.helper_outdated = !self.helper_ok && is_helper_installed() && sudoers_ok;
         self.helper_status_text = if self.helper_ok {
@@ -831,59 +829,55 @@ impl GamingModeTab {
                 .collapsible(false)
                 .show(ctx, |ui| {
                     let pkexec = cpu_park::is_pkexec_available();
-                    if pkexec {
-                        ui.label(
-                            "Install the privileged sysfs helper via the system \
-                             authentication dialog (polkit):",
-                        );
-                        ui.horizontal(|ui| {
-                            let installing = self.install_result_rx.is_some();
-                            if ui
-                                .add_enabled(
-                                    !installing,
-                                    egui::Button::new("Install (system authentication)"),
-                                )
-                                .clicked()
-                            {
-                                self.show_install_dialog = false;
-                                self.append_log("Installing privileged helper via pkexec…".into());
-                                let (tx, rx) = std::sync::mpsc::channel();
-                                self.install_result_rx = Some(rx);
-                                std::thread::spawn(move || {
-                                    let (_ok, msg) = cpu_park::install_helper_via_pkexec("");
-                                    let _ = tx.send(msg);
-                                });
-                            }
-                            if ui.button("Cancel").clicked() {
-                                self.install_password.clear();
-                                self.show_install_dialog = false;
-                            }
-                        });
+                    ui.label(
+                        "Argus-Lasso installs three small root-owned helpers — CPU parking, \
+                         power profile, and process priority — each authorised separately \
+                         through the system's polkit policy.",
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Priority changes are restricted to your own processes.",
+                        )
+                        .weak(),
+                    );
+                    if cpu_park::legacy_install_present() {
                         ui.add_space(6.0);
-                        ui.separator();
-                        ui.label(
-                            egui::RichText::new("Fallback — root password (only if polkit fails):")
-                                .weak(),
+                        ui.colored_label(
+                            crate::gui::theme::Breeze::WARNING,
+                            "This replaces the older single helper and its passwordless \
+                             sudoers rule, which granted root for every operation. Both \
+                             are removed during install.",
                         );
-                    } else {
-                        ui.label("Enter root password to install the privileged sysfs helper:");
                     }
-                    ui.add(egui::TextEdit::singleline(&mut self.install_password).password(true));
+                    if !pkexec {
+                        ui.add_space(6.0);
+                        ui.colored_label(
+                            crate::gui::theme::Breeze::WARNING,
+                            "pkexec was not found. Install polkit first — without it the \
+                             helpers cannot be authorised.",
+                        );
+                    }
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Install with root password").clicked() {
-                            let password = self.install_password.clone();
-                            self.install_password.clear();
+                        let installing = self.install_result_rx.is_some();
+                        if ui
+                            .add_enabled(
+                                pkexec && !installing,
+                                egui::Button::new("Install (system authentication)"),
+                            )
+                            .clicked()
+                        {
                             self.show_install_dialog = false;
-                            self.append_log("Installing privileged helper…".into());
+                            self.append_log("Installing privileged helpers via pkexec…".into());
                             let (tx, rx) = std::sync::mpsc::channel();
                             self.install_result_rx = Some(rx);
                             std::thread::spawn(move || {
-                                let (_ok, msg) = cpu_park::install_helper_as_root("", &password);
+                                let (_ok, msg) = cpu_park::install_helper_via_pkexec();
                                 let _ = tx.send(msg);
                             });
                         }
-                        if !pkexec && ui.button("Cancel").clicked() {
-                            self.install_password.clear();
+                        if ui.button("Cancel").clicked() {
                             self.show_install_dialog = false;
                         }
                     });

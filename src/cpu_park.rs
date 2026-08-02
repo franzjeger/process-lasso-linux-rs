@@ -15,19 +15,45 @@ use crate::utils::{cpuset_to_cpulist, get_offline_cpus, read_cpulist_file};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-pub const HELPER: &str = "/usr/local/bin/argus-lasso-sysfs";
-pub const SUDOERS_FILE: &str = "/etc/sudoers.d/argus-lasso";
+// ── Privileged helpers ────────────────────────────────────────────────────────
+//
+// One executable per privileged operation, each with its own polkit action.
+// pkexec keys authorisation on the *executable path*, not on arguments, so a
+// single helper taking a subcommand can only ever have one policy covering
+// all of them — which is what the previous sudoers rule granted: passwordless
+// root for every subcommand, including reniceing any PID on the system.
 
-pub const HELPER_CONTENT: &str = r#"#!/bin/bash
-# Argus-Lasso privileged sysfs helper — managed by argus-lasso.
+pub const HELPER_DIR: &str = "/usr/local/lib/argus-lasso";
+pub const POLICY_PATH: &str = "/usr/share/polkit-1/actions/io.github.franzjeger.argus-lasso.policy";
+
+/// Predecessor install: a single helper plus a blanket NOPASSWD sudoers rule.
+/// Removed when the polkit helpers are installed.
+pub const LEGACY_HELPER: &str = "/usr/local/bin/argus-lasso-sysfs";
+pub const LEGACY_SUDOERS: &str = "/etc/sudoers.d/argus-lasso";
+
+/// Bumped whenever a helper script changes, so the app can tell an outdated
+/// install from a missing one. Substring-matched in the installed files.
+const HELPER_VERSION: &str = "argus-lasso-helper v2";
+
+/// The three privileged operations, and the file each one lives in.
+const OP_PARK: &str = "cpu-park";
+const OP_POWER: &str = "power-profile";
+const OP_RENICE: &str = "renice";
+
+fn helper_path(op: &str) -> String {
+    format!("{HELPER_DIR}/{op}")
+}
+
+const PARK_SCRIPT: &str = r#"#!/bin/bash
+# argus-lasso-helper v2 — CPU parking. Managed by argus-lasso; do not edit.
 set -euo pipefail
-case "$1" in
-    cpu-online)
-        [[ "$2" =~ ^[0-9]+$ ]] || exit 1
-        [[ "$3" =~ ^[01]$   ]] || exit 1
+case "${1-}" in
+    online)
+        [[ "${2-}" =~ ^[0-9]+$ ]] || exit 2
+        [[ "${3-}" =~ ^[01]$   ]] || exit 2
         echo "$3" > "/sys/devices/system/cpu/cpu$2/online"
         ;;
-    cpu-unpark-all)
+    unpark-all)
         offline=$(cat /sys/devices/system/cpu/offline 2>/dev/null || true)
         [ -z "$offline" ] && exit 0
         for part in $(echo "$offline" | tr ',' ' '); do
@@ -41,31 +67,108 @@ case "$1" in
             fi
         done
         ;;
-    --check-only)
-        # Used by is_sudoers_installed to verify the NOPASSWD rule works.
-        exit 0
-        ;;
-    renice-pid)
-        [[ "$2" =~ ^-?[0-9]+$ ]] || exit 1
-        [[ "$3" =~ ^[0-9]+$ ]]   || exit 1
-        renice -n "$2" -p "$3"
-        ;;
-    cpu-governor)
-        [[ "$2" =~ ^[a-z_-]+$ ]] || exit 1
+    --check)
+        exit 0 ;;
+    *)
+        echo "usage: cpu-park online <cpu> <0|1> | unpark-all" >&2; exit 2 ;;
+esac
+"#;
+
+const POWER_SCRIPT: &str = r#"#!/bin/bash
+# argus-lasso-helper v2 — CPU governor and energy preference.
+set -euo pipefail
+case "${1-}" in
+    governor)
+        [[ "${2-}" =~ ^[a-z_-]+$ ]] || exit 2
         for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
             echo "$2" > "$f" 2>/dev/null || true
         done
         ;;
-    cpu-epp)
-        [[ "$2" =~ ^[a-z_-]+$ ]] || exit 1
+    epp)
+        [[ "${2-}" =~ ^[a-z_-]+$ ]] || exit 2
         for f in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
             echo "$2" > "$f" 2>/dev/null || true
         done
         ;;
     *)
-        echo "Unknown command: $1" >&2; exit 1 ;;
+        echo "usage: power-profile governor <name> | epp <name>" >&2; exit 2 ;;
 esac
 "#;
+
+/// Negative nice needs CAP_SYS_NICE, which is why this runs privileged — but
+/// it must never reach a process the caller does not own. pkexec exports
+/// PKEXEC_UID; without it we are not being invoked through polkit and refuse
+/// rather than guess who is asking.
+const RENICE_SCRIPT: &str = r#"#!/bin/bash
+# argus-lasso-helper v2 — renice, restricted to the caller's own processes.
+set -euo pipefail
+[[ "${1-}" =~ ^-?[0-9]+$ ]] || exit 2
+[[ "${2-}" =~ ^[0-9]+$   ]] || exit 2
+nice_val=$1
+pid=$2
+if [ -z "${PKEXEC_UID-}" ]; then
+    echo "refusing: not invoked through pkexec" >&2
+    exit 2
+fi
+owner=$(stat -c %u "/proc/$pid" 2>/dev/null) || { echo "no such process: $pid" >&2; exit 1; }
+if [ "$owner" != "$PKEXEC_UID" ]; then
+    echo "refusing: PID $pid belongs to uid $owner, not $PKEXEC_UID" >&2
+    exit 1
+fi
+renice -n "$nice_val" -p "$pid" >/dev/null
+"#;
+
+/// Three separate actions so an administrator can tighten one without losing
+/// the others. All default to `allow_active=yes` — no prompt for the user at
+/// the physical seat — which matches what the sudoers rule did, except the
+/// grant is now per operation and renice is confined to the caller's own
+/// processes by the helper itself.
+fn policy_xml() -> String {
+    let action = |id: &str, desc: &str, msg: &str, path: String| {
+        format!(
+            r#"  <action id="io.github.franzjeger.argus-lasso.{id}">
+    <description>{desc}</description>
+    <message>{msg}</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">{path}</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+"#
+        )
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Argus-Lasso</vendor>
+  <vendor_url>https://github.com/franzjeger/process-lasso-linux-rs</vendor_url>
+{}{}{}</policyconfig>
+"#,
+        action(
+            OP_PARK,
+            "Take CPU cores offline or bring them back online",
+            "Authentication is required to park CPU cores",
+            helper_path(OP_PARK)
+        ),
+        action(
+            OP_POWER,
+            "Set the CPU scaling governor and energy performance preference",
+            "Authentication is required to change the CPU power profile",
+            helper_path(OP_POWER)
+        ),
+        action(
+            OP_RENICE,
+            "Raise the scheduling priority of one of your own processes",
+            "Authentication is required to change process priority",
+            helper_path(OP_RENICE)
+        ),
+    )
+}
 
 // ── Topology ──────────────────────────────────────────────────────────────────
 
@@ -403,53 +506,77 @@ pub fn get_smt_siblings_of(cpus: &HashSet<u32>) -> HashSet<u32> {
 // ── Helper check ─────────────────────────────────────────────────────────────
 
 pub fn is_helper_installed() -> bool {
-    std::path::Path::new(HELPER).exists()
-        && std::fs::metadata(HELPER)
-            .ok()
-            .map(|m| {
-                use std::os::unix::fs::PermissionsExt;
-                m.permissions().mode() & 0o111 != 0
-            })
+    use std::os::unix::fs::PermissionsExt;
+    let executable = |p: String| {
+        fs::metadata(&p)
+            .map(|m| m.permissions().mode() & 0o111 != 0)
             .unwrap_or(false)
+    };
+    executable(helper_path(OP_PARK))
+        && executable(helper_path(OP_POWER))
+        && executable(helper_path(OP_RENICE))
+        && std::path::Path::new(POLICY_PATH).exists()
 }
 
 pub fn is_helper_current() -> bool {
-    if !is_helper_installed() {
-        return false;
-    }
-    fs::read_to_string(HELPER)
-        .map(|s| s.contains("cpu-governor") && s.contains("--check-only"))
-        .unwrap_or(false)
+    is_helper_installed()
+        && fs::read_to_string(helper_path(OP_PARK))
+            .map(|s| s.contains(HELPER_VERSION))
+            .unwrap_or(false)
 }
 
-/// Check whether the sudoers NOPASSWD rule is in place by doing a dry-run sudo.
-pub fn is_sudoers_installed() -> bool {
+/// True while the superseded single-helper-plus-sudoers install is still on
+/// disk. Surfaced so the user is told the blanket NOPASSWD rule is gone
+/// rather than left wondering why a file they remember disappeared.
+pub fn legacy_install_present() -> bool {
+    std::path::Path::new(LEGACY_SUDOERS).exists() || std::path::Path::new(LEGACY_HELPER).exists()
+}
+
+/// Whether polkit will currently authorise us, asked without prompting.
+///
+/// `pkcheck` without `--allow-user-interaction` answers from policy alone, so
+/// this never raises a dialog as a side effect of drawing the tab. If pkcheck
+/// is missing we fall back to "the files are installed", which is the best
+/// that can be said without asking.
+pub fn is_helper_authorized() -> bool {
     if !is_helper_installed() {
         return false;
     }
-    // Only exit code 0 counts: the helper's --check-only case exits 0, while
-    // sudo refusing for lack of a NOPASSWD rule exits 1 — treating 1 as
-    // success used to report "installed" on machines with no sudoers rule.
-    Command::new("sudo")
-        .args(["-n", HELPER, "--check-only"])
+    let pid = std::process::id().to_string();
+    match Command::new("pkcheck")
+        .args([
+            "--action-id",
+            "io.github.franzjeger.argus-lasso.cpu-park",
+            "--process",
+            &pid,
+        ])
         .output()
-        .map(|o| o.status.code() == Some(0))
-        .unwrap_or(false)
+    {
+        Ok(o) => o.status.success(),
+        Err(_) => true,
+    }
 }
 
 // ── Park / Unpark ─────────────────────────────────────────────────────────────
 
-fn run_helper(args: &[&str]) -> (bool, String) {
+/// Run one privileged operation through pkexec.
+fn run_helper(op: &str, args: &[&str]) -> (bool, String) {
     if !is_helper_installed() {
         return (false, "Helper not installed. Run install first.".into());
     }
-    let mut cmd = Command::new("sudo");
-    cmd.arg(HELPER);
+    let mut cmd = Command::new("pkexec");
+    cmd.arg(helper_path(op));
     for a in args {
         cmd.arg(a);
     }
     match cmd.output() {
         Ok(o) if o.status.success() => (true, String::new()),
+        // 126/127 are pkexec's own codes for "dismissed" and "not authorised",
+        // distinct from anything the helper scripts return.
+        Ok(o) if matches!(o.status.code(), Some(126) | Some(127)) => (
+            false,
+            "Not authorised by polkit (dialog dismissed, or no polkit agent running).".into(),
+        ),
         Ok(o) => {
             let msg = String::from_utf8_lossy(&o.stderr).trim().to_string();
             (
@@ -478,7 +605,7 @@ pub fn park_cpus(cpus: &HashSet<u32>, log_cb: impl Fn(String)) -> bool {
             log_cb("[Park] Skipping CPU 0 (bootstrap processor, cannot offline)".to_string());
             continue;
         }
-        let (success, msg) = run_helper(&["cpu-online", &cpu.to_string(), "0"]);
+        let (success, msg) = run_helper(OP_PARK, &["online", &cpu.to_string(), "0"]);
         if success {
             log_cb(format!("[Park] CPU {cpu} → offline"));
         } else {
@@ -497,7 +624,7 @@ pub fn unpark_all(log_cb: impl Fn(String)) -> bool {
         log_cb("[Park] No offline CPUs to restore.".into());
         return true;
     }
-    let (success, msg) = run_helper(&["cpu-unpark-all"]);
+    let (success, msg) = run_helper(OP_PARK, &["unpark-all"]);
     if success {
         log_cb(format!("[Park] CPUs {:?} restored online.", {
             let mut v: Vec<u32> = offline.iter().copied().collect();
@@ -512,20 +639,20 @@ pub fn unpark_all(log_cb: impl Fn(String)) -> bool {
     }
 }
 
-/// Set process nice value via privileged helper (required for negative nice).
+/// Raise a process's scheduling priority. The helper refuses any PID the
+/// calling user does not own, so this can only ever affect our own processes.
 pub fn set_process_nice_via_helper(pid: u32, nice: i32) -> bool {
-    let (ok, msg) = run_helper(&["renice-pid", &nice.to_string(), &pid.to_string()]);
+    let (ok, msg) = run_helper(OP_RENICE, &[&nice.to_string(), &pid.to_string()]);
     if !ok {
-        log::warn!("renice-pid pid={pid} nice={nice} failed: {msg}");
+        log::warn!("renice pid={pid} nice={nice} failed: {msg}");
     }
     ok
 }
 
 // ── Helper installation ───────────────────────────────────────────────────────
 
-/// True if polkit's pkexec is available — the preferred install path, since
-/// authentication happens in the system dialog and no password ever passes
-/// through this process.
+/// True if polkit's pkexec is available. Without it the helpers cannot be
+/// authorised at all, so installing them would leave dead files on disk.
 pub fn is_pkexec_available() -> bool {
     Command::new("which")
         .arg("pkexec")
@@ -534,54 +661,46 @@ pub fn is_pkexec_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Validate the username, stage the helper script in the user's private config
-/// dir, and build the root shell command that installs helper + sudoers rule.
-/// Returns (command, staged_path) — the caller removes the staged file after
-/// the privileged command finishes.
-fn stage_install(username: &str) -> Result<(String, std::path::PathBuf), String> {
-    let username = if username.is_empty() {
-        std::env::var("USER").unwrap_or_default()
-    } else {
-        username.to_string()
-    };
-    if username.is_empty() {
-        return Err("Could not determine current username.".into());
-    }
-    // The username is interpolated into a root shell command and a sudoers
-    // file — reject anything outside the safe POSIX username charset so a
-    // crafted value can't break out of the quoting or corrupt sudoers.
-    if !username
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        || username.starts_with('-')
-    {
-        return Err(format!("Invalid username: {username:?}"));
-    }
+/// Stage the helper scripts and the polkit policy in the user's own config
+/// directory, and build the root command that installs them.
+///
+/// Staging in a private directory rather than a fixed /tmp path matters: a
+/// world-writable staging path could be swapped between our write and root's
+/// copy, which is a straight local-root escalation.
+fn stage_install() -> Result<(String, std::path::PathBuf), String> {
+    let stage = crate::config::config_dir().join("helper-stage");
+    let _ = fs::remove_dir_all(&stage);
+    fs::create_dir_all(&stage).map_err(|e| format!("Failed to create staging dir: {e}"))?;
 
-    let sudoers_line = format!("{username} ALL=(root) NOPASSWD: {HELPER}");
-
-    // Stage the helper in the user's private config dir — NOT a fixed
-    // world-writable /tmp path, which another local user could swap between
-    // our write and root's cp (a straight local-root escalation).
-    let stage_dir = crate::config::config_dir();
-    fs::create_dir_all(&stage_dir).map_err(|e| format!("Failed to create staging dir: {e}"))?;
-    let tmp_path = stage_dir.join("pl-sysfs.staged");
-    let tmp = match tmp_path.to_str() {
+    let dir = match stage.to_str() {
         Some(s) if !s.contains('\'') && !s.contains(char::is_whitespace) => s.to_string(),
         _ => return Err("Staging path contains unsafe characters.".into()),
     };
-    fs::write(&tmp_path, HELPER_CONTENT)
-        .map_err(|e| format!("Failed to write staged helper: {e}"))?;
 
+    for (name, body) in [
+        (OP_PARK, PARK_SCRIPT),
+        (OP_POWER, POWER_SCRIPT),
+        (OP_RENICE, RENICE_SCRIPT),
+    ] {
+        fs::write(stage.join(name), body).map_err(|e| format!("Failed to stage {name}: {e}"))?;
+    }
+    fs::write(stage.join("policy.xml"), policy_xml())
+        .map_err(|e| format!("Failed to stage the polkit policy: {e}"))?;
+
+    // Removing the predecessor is part of the install, not a separate step:
+    // leaving the old NOPASSWD sudoers rule in place would keep the very hole
+    // this replaces open.
     let cmd = format!(
-        "cp {tmp} {HELPER} && \
-         chmod 755 {HELPER} && \
-         chown root:root {HELPER} && \
-         printf '%s\\n' '{sudoers_line}' > {SUDOERS_FILE} && \
-         chmod 440 {SUDOERS_FILE} && \
+        "set -e && \
+         install -d -m 755 -o root -g root {HELPER_DIR} && \
+         install -m 755 -o root -g root {dir}/{OP_PARK} {HELPER_DIR}/{OP_PARK} && \
+         install -m 755 -o root -g root {dir}/{OP_POWER} {HELPER_DIR}/{OP_POWER} && \
+         install -m 755 -o root -g root {dir}/{OP_RENICE} {HELPER_DIR}/{OP_RENICE} && \
+         install -D -m 644 -o root -g root {dir}/policy.xml {POLICY_PATH} && \
+         rm -f {LEGACY_SUDOERS} {LEGACY_HELPER} && \
          echo INSTALL_OK"
     );
-    Ok((cmd, tmp_path))
+    Ok((cmd, stage))
 }
 
 fn install_outcome(o: &std::process::Output) -> (bool, String) {
@@ -589,7 +708,10 @@ fn install_outcome(o: &std::process::Output) -> (bool, String) {
     let err = String::from_utf8_lossy(&o.stderr);
     let combined = format!("{out}{err}");
     if combined.contains("INSTALL_OK") {
-        (true, "Helper and sudoers rule installed.".into())
+        (
+            true,
+            "Helpers and polkit policy installed; the old sudoers rule was removed.".into(),
+        )
     } else {
         let tail: String = {
             let t: Vec<char> = combined.trim().chars().collect();
@@ -602,63 +724,35 @@ fn install_outcome(o: &std::process::Output) -> (bool, String) {
     }
 }
 
-/// Install helper + sudoers rule via polkit (pkexec). Authentication is
-/// handled by the desktop's polkit agent — no password touches this process.
-pub fn install_helper_via_pkexec(username: &str) -> (bool, String) {
-    let (cmd, tmp_path) = match stage_install(username) {
+/// Install the helpers and the polkit policy. Authentication is handled by
+/// the desktop's polkit agent — no password passes through this process.
+///
+/// There is deliberately no root-password fallback any more. The helpers are
+/// authorised by polkit, so on a system without it they would be installed
+/// and then permanently unusable.
+pub fn install_helper_via_pkexec() -> (bool, String) {
+    if !is_pkexec_available() {
+        return (
+            false,
+            "pkexec was not found. Argus-Lasso authorises its privileged \
+             helpers through polkit, so install polkit first."
+                .into(),
+        );
+    }
+    let (cmd, stage) = match stage_install() {
         Ok(v) => v,
         Err(e) => return (false, e),
     };
     let result = Command::new("pkexec")
         .args(["/bin/sh", "-c", &cmd])
         .output();
-    let _ = fs::remove_file(&tmp_path);
+    let _ = fs::remove_dir_all(&stage);
     match result {
-        Ok(o) if o.status.code() == Some(126) || o.status.code() == Some(127) => {
-            // 126 = auth dialog dismissed, 127 = auth failed / no agent
+        Ok(o) if matches!(o.status.code(), Some(126) | Some(127)) => {
             (false, "Authentication cancelled or failed.".into())
         }
         Ok(o) => install_outcome(&o),
         Err(e) => (false, format!("pkexec spawn failed: {e}")),
-    }
-}
-
-/// Fallback install path via `su root -c`, feeding the root password on stdin.
-/// Used only when pkexec/polkit is unavailable.
-pub fn install_helper_as_root(username: &str, password: &str) -> (bool, String) {
-    use std::io::Write;
-
-    if password.is_empty() {
-        return (false, "No root password provided.".into());
-    }
-    let (cmd, tmp_path) = match stage_install(username) {
-        Ok(v) => v,
-        Err(e) => return (false, e),
-    };
-
-    let output = Command::new("su")
-        .args(["root", "-c", &cmd])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    match output {
-        Ok(mut child) => {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = writeln!(stdin, "{password}");
-            }
-            let result = child.wait_with_output();
-            let _ = fs::remove_file(&tmp_path);
-            match result {
-                Ok(o) => install_outcome(&o),
-                Err(e) => (false, format!("su wait failed: {e}")),
-            }
-        }
-        Err(e) => {
-            let _ = fs::remove_file(&tmp_path);
-            (false, format!("su spawn failed: {e}"))
-        }
     }
 }
 
@@ -742,13 +836,13 @@ pub fn apply_power_profile(profile: PowerProfile) -> (bool, String) {
             ),
         );
     };
-    let (gov_ok, gov_msg) = run_helper(&["cpu-governor", &governor]);
+    let (gov_ok, gov_msg) = run_helper(OP_POWER, &["governor", &governor]);
     if !gov_ok {
         return (false, format!("[Power] governor change failed: {gov_msg}"));
     }
     let epp_note = if epp_supported {
         let epp = profile.epp();
-        let _ = run_helper(&["cpu-epp", epp]);
+        let _ = run_helper(OP_POWER, &["epp", epp]);
         format!(", EPP={epp}")
     } else {
         String::new()
@@ -774,4 +868,128 @@ pub fn current_epp() -> Option<String> {
     fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
         .ok()
         .map(|s| s.trim().to_string())
+}
+
+/// Set the scaling governor on every CPU through the privileged helper.
+/// Used as a fallback when a direct sysfs write is refused.
+pub fn set_governor_via_helper(governor: &str) -> Result<(), String> {
+    match run_helper(OP_POWER, &["governor", governor]) {
+        (true, _) => Ok(()),
+        (false, msg) => Err(msg),
+    }
+}
+
+/// Set the energy performance preference on every CPU through the helper.
+pub fn set_epp_via_helper(epp: &str) -> Result<(), String> {
+    match run_helper(OP_POWER, &["epp", epp]) {
+        (true, _) => Ok(()),
+        (false, msg) => Err(msg),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stage_script(name: &str, body: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("argus-{name}-{}", std::process::id()));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// Run the script through `bash` rather than exec'ing the file.
+    ///
+    /// Tests run in parallel, and a sibling that spawns a process between our
+    /// open-for-write and close leaves that child holding a writable
+    /// descriptor to it — exec'ing the file then fails with ETXTBSY until the
+    /// child exits. Handing the path to bash only ever opens it for reading,
+    /// so the race cannot happen, and the file needs no exec bit.
+    fn run(script: &std::path::Path, args: &[&str], pkexec_uid: Option<&str>) -> i32 {
+        let mut cmd = Command::new("bash");
+        cmd.arg(script).args(args).env_remove("PKEXEC_UID");
+        if let Some(uid) = pkexec_uid {
+            cmd.env("PKEXEC_UID", uid);
+        }
+        cmd.output().unwrap().status.code().unwrap_or(-1)
+    }
+
+    /// The whole point of splitting the helper: renice must not be reachable
+    /// for a process the caller does not own. Previously one NOPASSWD sudoers
+    /// rule let any local process renice PID 1.
+    #[test]
+    fn renice_refuses_a_process_the_caller_does_not_own() {
+        let script = stage_script("renice", RENICE_SCRIPT);
+        // PID 1 is root's. Claim to be some other uid and it must be refused.
+        let code = run(&script, &["-5", "1"], Some("4242"));
+        assert_eq!(code, 1, "renice must refuse a PID owned by another uid");
+        fs::remove_file(&script).ok();
+    }
+
+    /// Without PKEXEC_UID we cannot know who is asking, so the script must
+    /// refuse rather than fall back to trusting the caller.
+    #[test]
+    fn renice_refuses_when_not_invoked_through_pkexec() {
+        let script = stage_script("renice-nopk", RENICE_SCRIPT);
+        let code = run(&script, &["-5", "1"], None);
+        assert_eq!(code, 2, "renice must refuse outside pkexec");
+        fs::remove_file(&script).ok();
+    }
+
+    #[test]
+    fn renice_rejects_malformed_arguments() {
+        let script = stage_script("renice-args", RENICE_SCRIPT);
+        for args in [
+            vec!["notanumber", "1"],
+            vec!["-5", "notapid"],
+            vec!["-5"],
+            vec![],
+        ] {
+            assert_eq!(
+                run(&script, &args, Some("0")),
+                2,
+                "expected rejection for {args:?}"
+            );
+        }
+        fs::remove_file(&script).ok();
+    }
+
+    #[test]
+    fn park_helper_rejects_out_of_range_arguments() {
+        let script = stage_script("park", PARK_SCRIPT);
+        for args in [
+            vec!["online", "abc", "0"],
+            vec!["online", "3", "2"],
+            vec!["bogus"],
+        ] {
+            assert_eq!(
+                run(&script, &args, Some("0")),
+                2,
+                "expected rejection for {args:?}"
+            );
+        }
+        fs::remove_file(&script).ok();
+    }
+
+    /// A policy that does not name every helper would leave one operation
+    /// unauthorised, which surfaces only when a user tries it.
+    #[test]
+    fn policy_covers_every_helper() {
+        let xml = policy_xml();
+        for op in [OP_PARK, OP_POWER, OP_RENICE] {
+            assert!(
+                xml.contains(&format!("io.github.franzjeger.argus-lasso.{op}")),
+                "no action for {op}"
+            );
+            assert!(xml.contains(&helper_path(op)), "no exec.path for {op}");
+        }
+        // allow_any=yes would hand the operation to remote sessions too.
+        assert!(!xml.contains("<allow_any>yes"));
+    }
+
+    #[test]
+    fn every_helper_carries_the_version_marker() {
+        for body in [PARK_SCRIPT, POWER_SCRIPT, RENICE_SCRIPT] {
+            assert!(body.contains(HELPER_VERSION), "missing version marker");
+        }
+    }
 }
