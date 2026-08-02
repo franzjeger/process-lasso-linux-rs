@@ -186,7 +186,10 @@ impl CpuHistoryWidget {
             return;
         }
 
-        let h = 48.0;
+        // Fill the card rather than a fixed 48px: the graph shares a row with
+        // the core grid and the two are framed as a pair, so a short plot
+        // inside a tall card reads as a rendering fault.
+        let h = ui.available_height().max(48.0);
         let avail_w = ui.available_width();
         let (resp, painter) = ui.allocate_painter(Vec2::new(avail_w, h), egui::Sense::hover());
         let rect = resp.rect;

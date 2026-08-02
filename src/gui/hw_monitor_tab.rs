@@ -68,10 +68,13 @@ impl HwMonitorTab {
     fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let w = (ui.available_width() * 0.28).clamp(120.0, 240.0);
+            // Same field styling as the Processes filter: a frameless edit
+            // floats in the toolbar with nothing marking it as an input.
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
                     .desired_width(w)
-                    .hint_text("Search sensors…"),
+                    .frame(true)
+                    .hint_text("🔍  Search sensors…"),
             );
             if !self.filter.is_empty() && ui.small_button("✕").clicked() {
                 self.filter.clear();

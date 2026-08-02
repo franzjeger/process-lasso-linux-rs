@@ -771,14 +771,21 @@ impl GamingModeTab {
             if self.helper_ok {
                 ui.add_space(tokens::SPACE_S);
                 ui.horizontal(|ui| {
-                    ui.colored_label(s.ok, &self.helper_status_text);
-                    if ui
-                        .small_button("Reinstall helper…")
-                        .on_hover_text("Reinstall or update the privileged sysfs helper")
-                        .clicked()
-                    {
-                        self.show_install_dialog = true;
-                    }
+                    // A whole line in accent-adjacent green reads as a link.
+                    // The dot carries the "good" state; the text stays normal
+                    // body colour so nothing here looks clickable but the
+                    // button.
+                    ui.colored_label(s.ok, "●");
+                    ui.label(&self.helper_status_text);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("Reinstall helper…")
+                            .on_hover_text("Reinstall or update the privileged sysfs helper")
+                            .clicked()
+                        {
+                            self.show_install_dialog = true;
+                        }
+                    });
                 });
             }
 

@@ -290,22 +290,31 @@ impl ProcessTab {
         // CPU history chart and the per-core grid side by side — stacking them
         // cost ~90px of vertical space that the table wants.
         ui.horizontal_top(|ui| {
+            // Only the explicit gap should separate the two; the default
+            // item_spacing would be added on top of the width arithmetic.
+            ui.spacing_mut().item_spacing.x = 0.0;
             let total = ui.available_width();
             // The grid is sized to its content — two columns of cells — so it
             // stays a compact block instead of stretching across half the row.
-            let cores = crate::utils::get_cpu_count().max(1);
-            let grid_cols = if cores <= 4 { 2 } else { 4 };
-            let grid_w = (grid_cols as f32 * 66.0).min(total * 0.30);
+            // Size the grid by the row count we want, not by a fixed column
+            // count: 32 cores in 4 columns is 8 rows, which made the grid
+            // twice the height of the graph beside it. Picking columns to
+            // land on GRID_ROWS keeps the pair the same height on any core
+            // count. 66 = the widget's 62px minimum cell plus its 3px gap.
+            const GRID_ROWS: usize = 4;
+            const CELL_H: f32 = 23.0; // 20px cell + 3px gap, per CpuBarsWidget
+            let cores = crate::utils::get_cpu_count().max(1) as usize;
+            let grid_cols = cores.div_ceil(GRID_ROWS).max(2);
+            let grid_w = (grid_cols as f32 * 66.0).min(total * 0.45);
             let hist_w = (total - grid_w - theme::tokens::SPACE_S).max(240.0);
-            ui.allocate_ui(egui::vec2(hist_w, 74.0), |ui| {
-                ui.set_width(hist_w);
-                self.history.show(ui);
-            });
+            // Both get the same card frame and the same height. The grid used
+            // to sit bare against the window edge while the graph had no
+            // frame either, so the row read as two loose fragments rather
+            // than a pair — and the grid ended up the taller of the two.
+            let row_h = GRID_ROWS as f32 * CELL_H + 16.0;
+            theme::plot_card(ui, hist_w, row_h, |ui| self.history.show(ui));
             ui.add_space(theme::tokens::SPACE_S);
-            ui.allocate_ui(egui::vec2(grid_w, 74.0), |ui| {
-                ui.set_width(grid_w);
-                self.bars.show(ui);
-            });
+            theme::plot_card(ui, grid_w, row_h, |ui| self.bars.show(ui));
         });
         ui.add_space(theme::tokens::SPACE_S);
 

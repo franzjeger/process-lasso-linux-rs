@@ -621,6 +621,36 @@ pub fn group_heading(ui: &mut egui::Ui, title: &str, note: &str) {
     ui.add_space(tokens::SPACE_XS);
 }
 
+/// Card frame around a plot or a grid of cells, sized to an outer box.
+///
+/// Takes the *outer* width and height and subtracts its own chrome, so
+/// callers divide up the row without restating the margin — the same
+/// contract as `kpi_card`.
+pub fn plot_card(
+    ui: &mut egui::Ui,
+    outer_w: f32,
+    outer_h: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    const CHROME: f32 = 16.0; // 8px inner margin on both sides
+    let inner_w = (outer_w - CHROME).max(0.0);
+    let inner_h = (outer_h - CHROME).max(0.0);
+    egui::Frame::new()
+        .fill(card_fill(ui))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(egui::CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            ui.set_min_size(egui::vec2(inner_w, inner_h));
+            ui.set_max_width(inner_w);
+            add_contents(ui);
+        });
+}
+
 /// Column-header label: weak, small — never accent blue, which reads as
 /// "interactive/selected". Only the active sort column gets strong text.
 pub fn header_text(ui: &egui::Ui, label: &str, active: bool) -> egui::RichText {
