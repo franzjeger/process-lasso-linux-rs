@@ -118,35 +118,75 @@ impl RulesTab {
         ui.add_space(tokens::SPACE_XS);
 
         // ── Empty state with a call to action ──────────────────────────────
+        // Mockup 4a: icon, title, one paragraph capped at ~420px, and two
+        // actions — centred in the panel's remaining height rather than
+        // stacked under the toolbar with dead space below.
         if rules.is_empty() {
             let s = theme::sem(ui);
-            ui.add_space(28.0);
+            const BODY_W: f32 = 420.0;
+            // Centre vertically in what is left of the panel. The block is
+            // roughly 150px tall; half the slack above it puts it on the
+            // optical centre without measuring twice.
+            let slack = (ui.available_height() - 150.0).max(0.0);
+            ui.add_space(slack * 0.5);
             ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new("☰")
+                        .size(30.0)
+                        .color(ui.visuals().weak_text_color().gamma_multiply(0.6)),
+                );
+                ui.add_space(tokens::SPACE_XS);
                 ui.label(theme::bold(ui, "No rules yet", tokens::FONT_HEADING));
                 ui.add_space(tokens::SPACE_XS);
-                ui.label(
-                    RichText::new(
-                        "Right-click a process in the Processes tab and choose \"Add rule\", \
-                         start from a template, or create one from scratch.",
-                    )
-                    .size(tokens::FONT_HELP)
-                    .color(ui.visuals().weak_text_color()),
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(BODY_W, 0.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            RichText::new(
+                                "Rules set affinity, nice and I/O priority automatically on \
+                                 processes matching a pattern. Right-click a process in the \
+                                 Processes tab and choose \"Add rule\", or start from a template.",
+                            )
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                        );
+                    },
                 );
                 ui.add_space(tokens::SPACE_M);
-                ui.horizontal(|ui| {
-                    // Centre the two buttons inside the centred vertical layout.
-                    let btn =
-                        egui::Button::new(RichText::new("+ New rule").color(s.on_accent).strong())
+                // vertical_centered centres each child *allocation*, so the
+                // row has to be allocated at exactly its own width. A plain
+                // horizontal row — or a Frame wrapping one — takes the full
+                // width and lands hard left, and a guessed fixed width leaves
+                // slack that shows up as an offset. So measure the two labels.
+                const NEW: &str = "+ New rule";
+                const BROWSE: &str = "Browse templates";
+                let row_w = {
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    let text_w = |t: &str| {
+                        ui.painter()
+                            .layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE)
+                            .size()
+                            .x
+                    };
+                    let pad = ui.spacing().button_padding.x * 2.0;
+                    text_w(NEW) + text_w(BROWSE) + pad * 2.0 + ui.spacing().item_spacing.x
+                };
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(row_w, 0.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        let btn = egui::Button::new(RichText::new(NEW).color(s.on_accent).strong())
                             .fill(s.accent);
-                    if ui.add(btn).clicked() {
-                        self.open_add_dialog(None);
-                    }
-                    if ui.button("Templates ▾").clicked() {
-                        self.presets_dialog = Some(RulePresetsDialog::new());
-                    }
-                });
+                        if ui.add(btn).clicked() {
+                            self.open_add_dialog(None);
+                        }
+                        if ui.button(BROWSE).clicked() {
+                            self.presets_dialog = Some(RulePresetsDialog::new());
+                        }
+                    },
+                );
             });
-            ui.add_space(tokens::SPACE_M);
         } else {
             // ── Rule table ─────────────────────────────────────────────────
             let border_color = ui.visuals().widgets.noninteractive.bg_stroke.color;

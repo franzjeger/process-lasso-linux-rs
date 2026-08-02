@@ -594,6 +594,14 @@ impl ProcessTab {
         const ROW_H: f32 = theme::tokens::ROW_H;
         const HEADER_H: f32 = 24.0;
         const PAD: f32 = 4.0;
+        /// Extra breathing room on the right of a right-aligned numeric cell.
+        /// Without it NICE's value butts straight up against AFFINITY's, which
+        /// read as one cramped field ("-12 0-31") in the design review.
+        const NUM_INSET: f32 = 8.0;
+        /// Fixed width for the CPU% sparkline. Sizing it as a fraction of the
+        /// column made the value's indent shift per column width, which is
+        /// what made the column look restless.
+        const SPARK_W: f32 = 36.0;
 
         // Visible columns, in table order. Name (index 1) can never be hidden.
         let visible: Vec<usize> = (0..COLS.len())
@@ -922,20 +930,18 @@ impl ProcessTab {
                                 for &ci in &visible {
                                     let cw = col_widths[ci];
                                     let x_off = if ci == 1 { indent } else { 0.0 };
-                                    // For CPU% column (ci==2): draw sparkline on left, shift text right
-                                    let text_x_off = if ci == 2 { cw * 0.45 } else { 0.0 };
-
                                     // Numeric columns are right-aligned (§2) so
                                     // live values don't jitter; text columns
-                                    // stay left-aligned.
-                                    let numeric = matches!(ci, 0 | 3 | 4 | 5);
+                                    // stay left-aligned. CPU% is numeric too —
+                                    // it used to be left-aligned at 45% of the
+                                    // column, so its indent moved with the
+                                    // width and could collide with the
+                                    // sparkline.
+                                    let numeric = matches!(ci, 0 | 2 | 3 | 4 | 5);
                                     let text_pos = if numeric {
-                                        egui::pos2(x + cw - PAD, row_rect.center().y)
+                                        egui::pos2(x + cw - PAD - NUM_INSET, row_rect.center().y)
                                     } else {
-                                        egui::pos2(
-                                            x + PAD + x_off + text_x_off,
-                                            row_rect.center().y,
-                                        )
+                                        egui::pos2(x + PAD + x_off, row_rect.center().y)
                                     };
                                     let align = if numeric {
                                         egui::Align2::RIGHT_CENTER
@@ -965,7 +971,7 @@ impl ProcessTab {
                                     if ci == 2 {
                                         if let Some(hist) = proc_cpu_history.get(&pid) {
                                             if hist.len() >= 2 {
-                                                let spark_w = cw * 0.42;
+                                                let spark_w = SPARK_W.min(cw * 0.42);
                                                 let spark_rect = egui::Rect::from_min_size(
                                                     egui::pos2(x + 1.0, row_rect.min.y + 2.0),
                                                     egui::vec2(spark_w, ROW_H - 4.0),

@@ -1199,6 +1199,17 @@ impl eframe::App for ArgusLassoApp {
                     } else {
                         RichText::new("Tools ▾")
                     };
+                    // menu_button paints a full button frame, which read as
+                    // "this control is pressed" next to the frameless tabs —
+                    // the design review flagged it as looking active with the
+                    // menu closed. Strip the frame so it sits in the bar like
+                    // the tabs do; the accent text still marks a Tools tab.
+                    let w = &mut ui.visuals_mut().widgets;
+                    w.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                    w.inactive.bg_stroke = egui::Stroke::NONE;
+                    w.hovered.bg_stroke = egui::Stroke::NONE;
+                    w.active.bg_stroke = egui::Stroke::NONE;
+                    w.open.bg_stroke = egui::Stroke::NONE;
                     ui.menu_button(tools_label, |ui| {
                         for (label, tab) in [
                             ("HW Monitor", Tab::HwMonitor),

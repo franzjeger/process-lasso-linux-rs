@@ -88,6 +88,13 @@ const SETTLE_FRAMES: u32 = 10;
 /// explanation of where it stopped.
 const CAPTURE_TIMEOUT_FRAMES: u32 = 240;
 
+/// Frames to wait for the daemon's first snapshot before giving up on it.
+///
+/// Bounded on purpose: an unbounded wait turned a machine where the snapshot
+/// never arrived into a tour that hung with an empty output directory and no
+/// explanation.
+const WARMUP_TIMEOUT_FRAMES: u32 = 600;
+
 pub struct Tour {
     dir: PathBuf,
     idx: usize,
@@ -101,6 +108,8 @@ pub struct Tour {
     warmed_up: bool,
     /// Frames spent waiting for the current capture.
     waited: u32,
+    /// Frames spent waiting for the daemon's first snapshot.
+    warmup_waited: u32,
     pub failures: Vec<String>,
 }
 
@@ -115,6 +124,7 @@ impl Tour {
             awaiting: false,
             warmed_up: false,
             waited: 0,
+            warmup_waited: 0,
             failures: Vec::new(),
         })
     }
@@ -140,13 +150,24 @@ impl Tour {
         }
 
         // Immediate mode only redraws on demand; a tour that waited for the
-        // normal repaint cadence would take minutes.
+        // normal repaint cadence would take minutes. This has to be the
+        // unconditional form — request_repaint_after() let the app fall back
+        // to its idle cadence and the tour stopped advancing altogether.
         ctx.request_repaint();
 
-        if !has_data && !self.warmed_up {
-            return false;
+        if !self.warmed_up {
+            if has_data {
+                self.warmed_up = true;
+            } else {
+                self.warmup_waited += 1;
+                if self.warmup_waited < WARMUP_TIMEOUT_FRAMES {
+                    return false;
+                }
+                self.failures
+                    .push("daemon published no snapshot; screens may be empty".into());
+                self.warmed_up = true;
+            }
         }
-        self.warmed_up = true;
 
         let step = self.current().expect("checked above");
 
