@@ -584,15 +584,9 @@ fn set_governor(governor: &str) -> Result<(), String> {
         }
     }
     if errors == cpu_count as usize {
-        // Fall back to privileged helper
-        let output = std::process::Command::new("sudo")
-            .args([crate::cpu_park::HELPER, "cpu-governor", governor])
-            .output();
-        match output {
-            Ok(o) if o.status.success() => Ok(()),
-            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
-            Err(e) => Err(format!("Helper failed: {e}")),
-        }
+        // Every direct sysfs write was refused — fall back to the polkit
+        // helper, which owns the privileged path now.
+        crate::cpu_park::set_governor_via_helper(governor)
     } else {
         Ok(())
     }
@@ -623,15 +617,7 @@ fn set_epp(epp: &str) -> Result<(), String> {
         }
     }
     if errors == cpu_count as usize {
-        // Fall back to privileged helper
-        let output = std::process::Command::new("sudo")
-            .args([crate::cpu_park::HELPER, "cpu-epp", epp])
-            .output();
-        match output {
-            Ok(o) if o.status.success() => Ok(()),
-            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
-            Err(e) => Err(format!("Helper failed: {e}")),
-        }
+        crate::cpu_park::set_epp_via_helper(epp)
     } else {
         Ok(())
     }

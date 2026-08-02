@@ -12,7 +12,7 @@ license=(MIT)
 depends=(gcc-libs libxkbcommon wayland)
 makedepends=(cargo)
 optdepends=(
-  'polkit: password-less privileged helper install'
+  'polkit: required for the privileged helpers (CPU parking, power profile, renice)'
   'zenity: file dialogs on GNOME'
   'kdialog: file dialogs on KDE'
 )

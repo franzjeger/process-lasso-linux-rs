@@ -257,16 +257,38 @@ Existing configs from `~/.config/process-lasso-rs/` are automatically migrated o
 
 ---
 
-## Gaming Mode — Privileged Helper
+## Privileged helpers
 
-Parking/unparking CPUs requires writing to `/sys/devices/system/cpu/cpuN/online`, which needs root.
-Argus-Lasso ships a small helper script (`argus-lasso-sysfs`) installed from the Gaming Mode tab.
-Installation prefers **polkit (`pkexec`)** — authentication happens in the system dialog and no
-password ever passes through the app; a root-password fallback exists for systems without a
-polkit agent.
+Three operations need root, and each gets its own root-owned helper under
+`/usr/local/lib/argus-lasso/` with its own **polkit action**:
 
-This is the only operation requiring elevated privileges. The main application runs entirely
-as a normal user (the cgroup ProBalance method is likewise rootless via `systemctl --user`).
+| Helper | Operation | Why it needs root |
+|--------|-----------|-------------------|
+| `cpu-park` | Take CPUs offline / bring them back | writes `/sys/devices/system/cpu/cpuN/online` |
+| `power-profile` | Scaling governor and energy preference | writes `cpufreq` sysfs |
+| `renice` | Raise a process's priority | negative nice needs `CAP_SYS_NICE` |
+
+They are installed from the Gaming Mode tab. Authentication happens in the desktop's
+polkit dialog — no password passes through the app, and there is no root-password
+fallback: the helpers are authorised by polkit, so on a system without it they would
+be installed and then permanently unusable.
+
+**`renice` only ever touches your own processes.** It reads `PKEXEC_UID`, compares it
+against the owner of the target PID, and refuses anything else — including if it is
+somehow invoked outside pkexec, where it cannot tell who is asking.
+
+Everything else runs as a normal user, including the cgroup ProBalance method
+(rootless via `systemctl --user`).
+
+### Replacing the old sudoers rule
+
+Earlier versions installed one helper covering every operation plus a
+`NOPASSWD` rule in `/etc/sudoers.d/argus-lasso`. Because `pkexec` keys
+authorisation on the executable path rather than on arguments, a single helper
+can only have one policy covering all of its subcommands — so that grant gave
+any process running as you passwordless root for all of them, including
+`renice-pid` against **any** PID on the system. Installing the new helpers
+removes both the old helper and the sudoers file.
 
 ---
 
