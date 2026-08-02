@@ -100,18 +100,7 @@ impl ksni::Tray for ArgusLassoTray {
                     // Ask the daemon to restore everything (nices, throttles,
                     // parked CPUs), then wait for its completion flag instead
                     // of sleeping a fixed interval.
-                    let _ = tray.cmd_tx.send(monitor::DaemonCmd::Shutdown);
-                    for _ in 0..30 {
-                        let done = tray
-                            .state
-                            .lock()
-                            .map(|s| s.shutdown_complete)
-                            .unwrap_or(true);
-                        if done {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
+                    monitor::shutdown_and_wait(&tray.state, &tray.cmd_tx);
                     std::process::exit(0);
                 }),
                 ..Default::default()

@@ -58,7 +58,17 @@ pub struct Job {
 impl Job {
     /// Non-blocking poll. Returns `None` while the work is still running.
     pub fn poll(&self) -> Option<Status> {
-        self.rx.try_recv().ok()
+        use std::sync::mpsc::TryRecvError;
+        match self.rx.try_recv() {
+            Ok(status) => Some(status),
+            Err(TryRecvError::Empty) => None,
+            // The worker died without sending. Reporting it as an error is
+            // what clears `busy`; treating it as "still running" would wedge
+            // the UI, since both entry points refuse to start while busy.
+            Err(TryRecvError::Disconnected) => Some(Status::Error(
+                "the update worker stopped unexpectedly — try again".into(),
+            )),
+        }
     }
 }
 
@@ -272,16 +282,26 @@ fn sha256_hex(bytes: &[u8]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Pull the `argus-lasso` binary out of the release tarball.
+/// Release tarballs unpack to a single `argus-lasso-<version>-<arch>-linux/`
+/// directory, so the binary always sits exactly one level down.
 ///
-/// Shells out to `tar` rather than taking a tar+gzip dependency: it is
-/// present on every target system, and the archive is our own.
-fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
+/// `--no-wildcards-match-slash` matters: tar's `*` spans `/` by default, so a
+/// bare `*/argus-lasso` would match at any depth. Pinning it to one level,
+/// plus the member count check in `extract_binary`, keeps a stray second
+/// match from being concatenated onto the real binary.
+const BINARY_MEMBER: &str = "*/argus-lasso";
+const TAR_MATCH_FLAGS: [&str; 2] = ["--wildcards", "--no-wildcards-match-slash"];
+
+/// Run `tar` with the tarball on stdin and return its stdout.
+///
+/// Shells out rather than taking a tar+gzip dependency: tar is present on
+/// every target system, and the archive is our own.
+fn run_tar(args: &[&str], tarball: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new("tar")
-        .args(["-xzO", "--wildcards", "*/argus-lasso"])
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -305,10 +325,45 @@ fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    if out.stdout.is_empty() {
+    Ok(out.stdout)
+}
+
+/// Pull the `argus-lasso` binary out of the release tarball.
+fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
+    // List first: `tar -xO` concatenates every match into one stream, so an
+    // archive carrying two `*/argus-lasso` entries would yield a spliced file
+    // that we would then mark executable. Refuse anything but a single match.
+    let listing = run_tar(
+        &["-tz", TAR_MATCH_FLAGS[0], TAR_MATCH_FLAGS[1], BINARY_MEMBER],
+        tarball,
+    )?;
+    let matches = String::from_utf8_lossy(&listing)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    match matches {
+        0 => return Err("the release archive contained no argus-lasso binary".into()),
+        1 => {}
+        n => {
+            return Err(format!(
+                "the release archive contained {n} argus-lasso entries; refusing to install"
+            ))
+        }
+    }
+
+    let binary = run_tar(
+        &[
+            "-xzO",
+            TAR_MATCH_FLAGS[0],
+            TAR_MATCH_FLAGS[1],
+            BINARY_MEMBER,
+        ],
+        tarball,
+    )?;
+    if binary.is_empty() {
         return Err("the release archive contained no argus-lasso binary".into());
     }
-    Ok(out.stdout)
+    Ok(binary)
 }
 
 fn set_executable(path: &Path) -> Result<(), String> {
@@ -321,6 +376,14 @@ fn set_executable(path: &Path) -> Result<(), String> {
 ///
 /// `exec` keeps the same PID and never returns on success, so there is no
 /// window where neither the old nor the new process is running.
+///
+/// It also means nothing unwinds: no destructors, and eframe's `on_exit`
+/// never runs. The caller MUST have driven the daemon shutdown first (see
+/// `monitor::shutdown_and_wait`), or parked CPUs stay offline and throttled
+/// processes keep their raised nice — the originals live only in this
+/// process's memory and are gone the moment the image is replaced. Callers
+/// set `UpdateState::restart_requested` rather than calling this directly, so
+/// that ordering lives in exactly one place.
 pub fn restart() -> String {
     use std::os::unix::process::CommandExt;
     let exe = match install_target() {
@@ -414,6 +477,61 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `tar -xO` concatenates every match, so two entries would splice into
+    /// one file that we would mark executable. It must be refused instead.
+    #[test]
+    fn extract_binary_rejects_two_matching_entries() {
+        let dir = std::env::temp_dir().join(format!("argus-dup-{}", std::process::id()));
+        for pkg in [
+            "argus-lasso-9.9.9-x86_64-linux",
+            "argus-lasso-9.9.8-x86_64-linux",
+        ] {
+            let p = dir.join(pkg);
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("argus-lasso"), b"payload").unwrap();
+        }
+        let out = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(dir.join("r.tar.gz"))
+            .arg("-C")
+            .arg(&dir)
+            .arg("argus-lasso-9.9.9-x86_64-linux")
+            .arg("argus-lasso-9.9.8-x86_64-linux")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "tar -czf failed");
+
+        let tarball = std::fs::read(dir.join("r.tar.gz")).unwrap();
+        let err = extract_binary(&tarball).expect_err("two entries must be refused");
+        assert!(err.contains('2'), "error should name the count: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A nested path must not match: tar's `*` spans `/` unless told not to,
+    /// and a deep entry is not the release layout we publish.
+    #[test]
+    fn extract_binary_ignores_a_nested_match() {
+        let dir = std::env::temp_dir().join(format!("argus-nested-{}", std::process::id()));
+        let deep = dir.join("argus-lasso-9.9.9-x86_64-linux").join("dist");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("argus-lasso"), b"not the real one").unwrap();
+        let out = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(dir.join("r.tar.gz"))
+            .arg("-C")
+            .arg(&dir)
+            .arg("argus-lasso-9.9.9-x86_64-linux")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "tar -czf failed");
+
+        let tarball = std::fs::read(dir.join("r.tar.gz")).unwrap();
+        assert!(extract_binary(&tarball).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn prerelease_does_not_outrank_its_release() {
         // "1.1.0-rc1" parses as 1.1.0.0 — equal to 1.1.0 on the first three
@@ -439,6 +557,10 @@ pub struct UpdateState {
     pub installed: bool,
     /// The user closed the banner for this release.
     pub banner_dismissed: bool,
+    /// The user asked to restart into the new binary. Handled centrally by
+    /// the app at the end of the frame, which shuts the daemon down before
+    /// `restart()` replaces the process image — see that function's contract.
+    pub restart_requested: bool,
 }
 
 impl UpdateState {

@@ -704,18 +704,7 @@ impl eframe::App for ArgusLassoApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Closing the window exits the whole process (daemon included) — ask
         // the daemon to restore nices/throttles/parked CPUs and wait briefly.
-        let _ = self.cmd_tx.send(DaemonCmd::Shutdown);
-        for _ in 0..30 {
-            let done = self
-                .state
-                .lock()
-                .map(|s| s.shutdown_complete)
-                .unwrap_or(true);
-            if done {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+        crate::monitor::shutdown_and_wait(&self.state, &self.cmd_tx);
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
@@ -1162,8 +1151,7 @@ impl eframe::App for ArgusLassoApp {
                         && !self.updates.busy
                     {
                         if self.updates.installed {
-                            // exec() replaces this process and does not return.
-                            self.updates.message = crate::updater::restart();
+                            self.updates.restart_requested = true;
                         } else {
                             self.updates.start_install();
                         }
@@ -1413,6 +1401,24 @@ impl eframe::App for ArgusLassoApp {
                 }
             }
         });
+
+        // ── Restart into a freshly installed update ─────────────────────────
+        // Both the banner and the Settings card only set the flag; the exec
+        // happens here, after the daemon has restored nices, throttles and
+        // parked CPUs. exec() replaces the process image outright, so on_exit
+        // never runs — without this, updating with Gaming Mode active would
+        // leave CPUs offline and no way to learn what the original nice
+        // values were. restart() only returns when it failed.
+        if self.updates.restart_requested {
+            self.updates.restart_requested = false;
+            crate::monitor::shutdown_and_wait(&self.state, &self.cmd_tx);
+            // The daemon has stopped for good by now, so a failed exec leaves
+            // the window up but no longer monitoring — say so plainly.
+            self.updates.message = format!(
+                "{} — monitoring has stopped, please quit and start Argus-Lasso again.",
+                crate::updater::restart()
+            );
+        }
 
         // Repaint when next display refresh is due — avoids continuous 60fps rendering.
         // While a kill countdown is pending, repaint fast enough that the

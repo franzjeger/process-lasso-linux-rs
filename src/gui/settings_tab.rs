@@ -478,7 +478,7 @@ impl SettingsTab {
                                 )
                                 .fill(s.accent);
                                 if ui.add(btn).clicked() {
-                                    updates.message = crate::updater::restart();
+                                    updates.restart_requested = true;
                                 }
                             } else {
                                 let btn = egui::Button::new(

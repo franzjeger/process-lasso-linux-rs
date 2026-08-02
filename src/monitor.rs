@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 
 use crate::config::Config;
 use crate::cpu_park;
@@ -178,6 +178,26 @@ fn chrono_ts() -> String {
 }
 
 // ── Daemon thread ─────────────────────────────────────────────────────────────
+
+/// Ask the daemon to restore everything it changed (nices, throttles, parked
+/// CPUs) and wait briefly for it to report back.
+///
+/// Every path that ends this process image must go through here — window
+/// close, tray Quit, and the updater's `exec` restart. Skipping it leaves
+/// parked CPUs offline and throttled processes at a raised nice, with the
+/// original values lost: they live only in this process's memory.
+pub fn shutdown_and_wait(state: &Arc<Mutex<AppState>>, cmd_tx: &Sender<DaemonCmd>) {
+    let _ = cmd_tx.send(DaemonCmd::Shutdown);
+    for _ in 0..30 {
+        // A poisoned lock means the daemon is already gone; don't hang on it.
+        let done = state.lock().map(|s| s.shutdown_complete).unwrap_or(true);
+        if done {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    log::warn!("daemon did not confirm shutdown within 3s; continuing anyway");
+}
 
 pub fn spawn(
     state: Arc<Mutex<AppState>>,
