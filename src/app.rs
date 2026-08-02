@@ -1319,12 +1319,15 @@ impl eframe::App for ArgusLassoApp {
                     let mut rules_changed = false;
                     let mut profiles_changed = false;
                     let mut rule_profiles = config.rule_profiles.clone();
+                    // Process names for the rule dialog's live match count.
+                    let proc_names: Vec<String> = snapshot.iter().map(|p| p.name.clone()).collect();
                     self.rules_tab.show(
                         ui,
                         ctx,
                         &self.rule_engine,
                         &mut rules_changed,
                         self.opacity,
+                        &proc_names,
                         &mut rule_profiles,
                         &mut profiles_changed,
                     );

@@ -265,6 +265,9 @@ pub mod tokens {
     pub const ROW_H_DENSE: f32 = 22.0;
     /// Left label column width in settings forms
     pub const FORM_LABEL_W: f32 = 220.0;
+    /// Label column inside dialogs — narrower than the settings pane's, which
+    /// would take a third of a 560px dialog.
+    pub const DIALOG_LABEL_W: f32 = 130.0;
 }
 
 // ── Component primitives ──────────────────────────────────────────────────────
@@ -566,6 +569,56 @@ pub fn apply_bar(ui: &mut egui::Ui, dirty: bool) -> (bool, bool) {
         });
     });
     (discard, apply)
+}
+
+/// Two-column form row: fixed-width left-aligned label, then the control.
+///
+/// `label_w` is explicit because the 220px column that suits the full-width
+/// Settings pane eats a third of a 560px dialog. What carries across the app
+/// is that labels share a column edge, not the specific number.
+pub fn form_row_w(
+    ui: &mut egui::Ui,
+    label_w: f32,
+    label: &str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        let h = ui.spacing().interact_size.y;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(label_w, h), egui::Sense::hover());
+        ui.painter().text(
+            egui::pos2(rect.left(), rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(tokens::FONT_BODY),
+            ui.visuals().text_color(),
+        );
+        add_contents(ui);
+    });
+    ui.add_space(tokens::SPACE_XS);
+}
+
+/// Group heading inside a form: small caps-ish weak title with an optional
+/// plain-weight note after it, over a separator.
+pub fn group_heading(ui: &mut egui::Ui, title: &str, note: &str) {
+    ui.add_space(tokens::SPACE_XS);
+    ui.separator();
+    ui.add_space(tokens::SPACE_XS);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(
+            egui::RichText::new(title.to_uppercase())
+                .font(bold_font(tokens::FONT_LABEL))
+                .color(ui.visuals().weak_text_color()),
+        );
+        if !note.is_empty() {
+            ui.label(
+                egui::RichText::new(note)
+                    .size(tokens::FONT_LABEL)
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
+    });
+    ui.add_space(tokens::SPACE_XS);
 }
 
 /// Column-header label: weak, small — never accent blue, which reads as

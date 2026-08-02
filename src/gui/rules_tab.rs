@@ -68,6 +68,7 @@ impl RulesTab {
         rule_engine: &Arc<Mutex<RuleEngine>>,
         on_rules_changed: &mut bool,
         opacity: f32,
+        proc_names: &[String],
         rule_profiles: &mut std::collections::HashMap<String, Vec<crate::config::RuleConfig>>,
         on_profiles_changed: &mut bool,
     ) {
@@ -484,7 +485,7 @@ impl RulesTab {
 
         // ── Dialogs ────────────────────────────────────────────────────────
         if let Some(ref mut dlg) = self.edit_dialog {
-            if let Some(result) = dlg.show(ctx, opacity) {
+            if let Some(result) = dlg.show(ctx, opacity, proc_names) {
                 self.edit_dialog = None;
                 if let Some(rule) = result {
                     if let Ok(mut re) = rule_engine.lock() {
