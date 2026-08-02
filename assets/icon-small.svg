@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Argus-Lasso</title>
+  <!-- Minimal detail: 16-24px. Ring + 2x2 cores only; everything else vanishes at this scale. -->
+  <defs>
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3E454D"/>
+      <stop offset="1" stop-color="#16191C"/>
+    </linearGradient>
+    <linearGradient id="rope" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#6FC8F5"/>
+      <stop offset="1" stop-color="#2980B9"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="128" cy="128" r="122" fill="url(#badge)"/>
+
+  <!-- lasso ring: the strongest identity cue, so it survives to 16px -->
+  <circle cx="128" cy="128" r="96" fill="none" stroke="#0E1113" stroke-width="34" opacity="0.9"/>
+  <circle cx="128" cy="128" r="96" fill="none" stroke="url(#rope)" stroke-width="24"/>
+
+  <!-- 2x2 cores: 46px cells, 12px gutter, centred on 128 (76..180) -->
+  <g>
+    <rect x="76"  y="76"  width="46" height="46" rx="11" fill="#3DAEE9"/>
+    <rect x="134" y="76"  width="46" height="46" rx="11" fill="#2980B9"/>
+    <rect x="76"  y="134" width="46" height="46" rx="11" fill="#2980B9"/>
+    <rect x="134" y="134" width="46" height="46" rx="11" fill="#3DAEE9"/>
+  </g>
+</svg>

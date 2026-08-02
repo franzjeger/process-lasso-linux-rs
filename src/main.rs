@@ -23,8 +23,6 @@ use clap::Parser;
 // ── App icon (embedded at compile time from assets/icon.png via build.rs) ─────
 
 const ICON_RGBA_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/icon_rgba.bin"));
-const ICON_W: u32 = 64;
-const ICON_H: u32 = 64;
 
 fn make_icon_rgba() -> Vec<u8> {
     ICON_RGBA_BYTES.to_vec()
@@ -339,8 +337,8 @@ fn main() {
     // does not support wp_alpha_modifier_v1.
     let window_icon = egui::IconData {
         rgba: icon_rgba,
-        width: ICON_W,
-        height: ICON_H,
+        width: crate::icon::W,
+        height: crate::icon::H,
     };
 
     let native_options = eframe::NativeOptions {
