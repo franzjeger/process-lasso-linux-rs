@@ -62,11 +62,39 @@ jobs:
         run: |
           version="${RELEASE_TAG#v}"
           pkg="argus-lasso-${version}-${{ matrix.arch }}-linux"
-          mkdir -p "${pkg}"
+          mkdir -p "${pkg}/assets"
           cp target/release/argus-lasso "${pkg}/"
-          cp -r dist LICENSE README.md Makefile assets/icon.png "${pkg}/"
+          cp -r dist LICENSE README.md Makefile "${pkg}/"
+          # Keep the icon masters under assets/ rather than flattened into the
+          # package root: the bundled Makefile looks for them there, and the
+          # in-app updater renders the small sizes from the tiered masters
+          # when it refreshes an existing icon install.
+          cp assets/icon.svg assets/icon-medium.svg assets/icon-small.svg \
+             assets/icon.png "${pkg}/assets/"
           tar czf "${pkg}.tar.gz" "${pkg}"
           sha256sum "${pkg}.tar.gz" > "${pkg}.tar.gz.sha256"
+
+      - name: Sign tarball
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [ -z "${MINISIGN_SECRET_KEY}" ]; then
+            echo "::error::MINISIGN_SECRET_KEY is not set — the release would" \
+                 "be unsigned and the in-app updater would refuse to install it."
+            exit 1
+          fi
+          sudo apt-get install -y --no-install-recommends minisign
+          version="${RELEASE_TAG#v}"
+          pkg="argus-lasso-${version}-${{ matrix.arch }}-linux"
+          umask 077
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > minisign.key
+          printf '%s\n' "${MINISIGN_PASSWORD}" \
+            | minisign -S -s minisign.key -m "${pkg}.tar.gz"
+          shred -u minisign.key
+          # Fail here rather than publishing something clients will reject.
+          minisign -Vm "${pkg}.tar.gz" -p dist/argus-lasso.pub
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -75,6 +103,7 @@ jobs:
           files: |
             argus-lasso-*.tar.gz
             argus-lasso-*.tar.gz.sha256
+            argus-lasso-*.tar.gz.minisig
           # Notes are written by the release-notes job below — generating them
           # here would append one copy per matrix job / re-run.
           generate_release_notes: false
