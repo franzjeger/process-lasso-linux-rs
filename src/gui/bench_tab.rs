@@ -116,17 +116,50 @@ impl BenchTab {
                 } else {
                     &[("Run test", true)]
                 };
+                let has_results = self.last.complete;
                 let clicked = bench_card(ui, "Memory Latency Benchmark", lat_buttons, |ui| {
+                    // Duration is information, not a warning — the orange text
+                    // read as something being wrong. It belongs on the same
+                    // help line as the method description.
                     ui.label(
                         RichText::new(
                             "Random pointer-chasing, one cache-line per hop — identical method to \
                              AIDA64 Cache & Memory Benchmark, so the prefetcher cannot hide true \
-                             hardware latency.",
+                             hardware latency. Takes ~15–60 s and fully loads one CPU core.",
                         )
                         .size(tokens::FONT_HELP)
                         .color(ui.visuals().weak_text_color()),
                     );
                     ui.add_space(tokens::SPACE_S);
+
+                    if !has_results {
+                        // Mockup 4c: four level cards reading "—" tell the user
+                        // nothing except that they are empty. Before a run,
+                        // say what a run would produce and what was detected.
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(tokens::SPACE_M);
+                            ui.label(
+                                RichText::new(
+                                    "No results yet — run the test to measure L1 / L2 / L3 / DRAM latency",
+                                )
+                                .size(tokens::FONT_HELP)
+                                .color(ui.visuals().weak_text_color()),
+                            );
+                            ui.add_space(tokens::SPACE_XS);
+                            ui.label(
+                                RichText::new(format!(
+                                    "Detected: L1 {} · L2 {} · L3 {}",
+                                    fmt_size(self.cache.l1d),
+                                    fmt_size(self.cache.l2),
+                                    fmt_size(self.cache.l3),
+                                ))
+                                .size(tokens::FONT_HELP)
+                                .color(ui.visuals().weak_text_color().gamma_multiply(0.8)),
+                            );
+                            ui.add_space(tokens::SPACE_M);
+                        });
+                        return;
+                    }
 
                     // Cache topology + latest latency, merged into four level cards.
                     let stats = region_latencies(&self.last.points, &self.cache);
@@ -145,13 +178,6 @@ impl BenchTab {
                             level_card(ui, outer, labels[i], &sizes[i], stats[i], cols[i]);
                         }
                     });
-
-                    ui.add_space(tokens::SPACE_S);
-                    ui.label(
-                        RichText::new("Takes ~15–60 s and fully loads one CPU core.")
-                            .size(tokens::FONT_HELP)
-                            .color(theme::sem(ui).warning),
-                    );
                 });
                 match clicked {
                     Some(0) => self.bench.start(),
@@ -177,7 +203,10 @@ impl BenchTab {
                 } else if self.last_bw.complete {
                     &[("Run again", false)]
                 } else {
-                    &[("Run test", false)]
+                    // Filled accent before the first run: with no results on
+                    // the card, running the test is the only thing to do here.
+                    // After a run it degrades to an outlined "Run again".
+                    &[("Run test", true)]
                 };
                 let clicked = bench_card(ui, "Memory Bandwidth Benchmark", bw_buttons, |ui| {
                     ui.label(
@@ -240,6 +269,18 @@ impl BenchTab {
                                     .color(ui.visuals().weak_text_color()),
                             );
                         }
+                    } else {
+                        // Mockup 4c: say the card is waiting for a run rather
+                        // than rendering nothing at all.
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(tokens::SPACE_M);
+                            ui.label(
+                                RichText::new("No results yet")
+                                    .size(tokens::FONT_HELP)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                            ui.add_space(tokens::SPACE_M);
+                        });
                     }
 
                     if !self.csv_status.is_empty() {

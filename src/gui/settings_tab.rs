@@ -454,6 +454,17 @@ impl SettingsTab {
                             egui::RichText::new(format!("v{}", crate::updater::current_version()))
                                 .font(theme::num_font(tokens::FONT_BODY)),
                         );
+                        // The outcome qualifies the version, so it sits beside
+                        // it as weak subtext. As a loose line under the whole
+                        // group it read as an unrelated status message.
+                        if !updates.message.is_empty() {
+                            ui.add_space(tokens::SPACE_XS);
+                            ui.label(
+                                egui::RichText::new(&updates.message)
+                                    .size(tokens::FONT_HELP)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        }
                         ui.add_space(tokens::SPACE_S);
                         let label = if updates.busy {
                             "Working…"
@@ -499,15 +510,6 @@ impl SettingsTab {
                     form_row(ui, "Check on startup", |ui| {
                         ui.checkbox(&mut self.config.ui.check_updates_on_start, "Enabled");
                     });
-
-                    if !updates.message.is_empty() {
-                        ui.add_space(tokens::SPACE_XS);
-                        ui.label(
-                            egui::RichText::new(&updates.message)
-                                .size(tokens::FONT_HELP)
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                    }
                 });
 
                 if !self.status.is_empty() {
