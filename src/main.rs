@@ -13,6 +13,7 @@ mod mem_bench;
 mod monitor;
 mod probalance;
 mod rules;
+mod ui_tour;
 mod updater;
 mod utils;
 mod wayland_opacity;
@@ -100,18 +101,7 @@ impl ksni::Tray for ArgusLassoTray {
                     // Ask the daemon to restore everything (nices, throttles,
                     // parked CPUs), then wait for its completion flag instead
                     // of sleeping a fixed interval.
-                    let _ = tray.cmd_tx.send(monitor::DaemonCmd::Shutdown);
-                    for _ in 0..30 {
-                        let done = tray
-                            .state
-                            .lock()
-                            .map(|s| s.shutdown_complete)
-                            .unwrap_or(true);
-                        if done {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
+                    monitor::shutdown_and_wait(&tray.state, &tray.cmd_tx);
                     std::process::exit(0);
                 }),
                 ..Default::default()
@@ -155,6 +145,11 @@ struct Args {
     /// Disable system tray icon
     #[arg(long, default_value_t = false)]
     no_tray: bool,
+
+    /// Developer aid: walk every screen, write a PNG of each to DIR, and
+    /// exit. Used to regenerate the README screenshots consistently.
+    #[arg(long, value_name = "DIR", hide = true)]
+    ui_tour: Option<std::path::PathBuf>,
 
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -264,11 +259,18 @@ fn main() {
     // Prevents a second instance (e.g. launched from the app menu while the
     // tray service runs) from clobbering config.toml. Held for the whole
     // process lifetime; released automatically on exit.
-    let _instance_lock = match acquire_single_instance_lock() {
-        Some(lock) => lock,
-        None => {
-            eprintln!("Argus-Lasso is already running; exiting this instance.");
-            return;
+    // --ui-tour is a throwaway render pass that never writes config, so it
+    // is exempt: requiring the lock would mean stopping the running instance
+    // just to re-take screenshots.
+    let _instance_lock = if args.ui_tour.is_some() {
+        None
+    } else {
+        match acquire_single_instance_lock() {
+            Some(lock) => Some(lock),
+            None => {
+                eprintln!("Argus-Lasso is already running; exiting this instance.");
+                return;
+            }
         }
     };
 
@@ -311,7 +313,7 @@ fn main() {
 
     // System tray via D-Bus StatusNotifierItem (KDE/freedesktop, no libxdo).
     // Spawned after state + cmd_tx exist so the menu can read/toggle gaming mode.
-    let _tray_handle = if !args.no_tray {
+    let _tray_handle = if !args.no_tray && args.ui_tour.is_none() {
         use ksni::blocking::TrayMethods;
         match (ArgusLassoTray {
             state: Arc::clone(&state),
@@ -348,7 +350,13 @@ fn main() {
             // app_id must match the .desktop filename (argus-lasso.desktop)
             // so KDE/KWin resolves Icon=argus-lasso from that file.
             .with_app_id("argus-lasso")
-            .with_inner_size([1100.0, 700.0])
+            // The tour pins a size so successive runs produce directly
+            // comparable images instead of whatever the compositor last used.
+            .with_inner_size(if args.ui_tour.is_some() {
+                [1400.0, 900.0]
+            } else {
+                [1100.0, 700.0]
+            })
             .with_min_inner_size([800.0, 500.0])
             .with_transparent(true)
             .with_visible(!args.minimized)
@@ -360,13 +368,14 @@ fn main() {
     let re_gui = Arc::clone(&rule_engine);
     let cfg_gui = cfg.clone();
     let cmd_tx_gui = cmd_tx.clone();
+    let tour_dir = args.ui_tour.clone();
 
     eframe::run_native(
         "Argus-Lasso",
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(app::ArgusLassoApp::new(
-                cc, state_gui, cmd_tx_gui, re_gui, cfg_gui,
+                cc, state_gui, cmd_tx_gui, re_gui, cfg_gui, tour_dir,
             )))
         }),
     )

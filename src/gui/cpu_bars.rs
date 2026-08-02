@@ -183,15 +183,33 @@ impl CpuHistoryWidget {
 
     pub fn show(&self, ui: &mut Ui) {
         if self.history.len() < 2 {
+            // Still claim the space and draw the frame: collapsing to nothing
+            // for the first two samples left a card-shaped hole beside the
+            // core grid every time the app started.
+            let h = ui.available_height().max(48.0);
+            let (resp, painter) =
+                ui.allocate_painter(Vec2::new(ui.available_width(), h), egui::Sense::hover());
+            painter.rect_filled(
+                resp.rect,
+                CornerRadius::ZERO,
+                crate::gui::theme::plot_fill(ui),
+            );
+            axis_labels(ui, &painter, resp.rect);
             return;
         }
 
-        let h = 48.0;
+        // Fill the card rather than a fixed 48px: the graph shares a row with
+        // the core grid and the two are framed as a pair, so a short plot
+        // inside a tall card reads as a rendering fault.
+        let h = ui.available_height().max(48.0);
         let avail_w = ui.available_width();
         let (resp, painter) = ui.allocate_painter(Vec2::new(avail_w, h), egui::Sense::hover());
         let rect = resp.rect;
 
         painter.rect_filled(rect, CornerRadius::ZERO, crate::gui::theme::plot_fill(ui));
+        // Without a scale the curve says "something moved", not how much —
+        // the Overview graph has carried these labels all along.
+        axis_labels(ui, &painter, rect);
 
         let n = self.history.len();
         let slot_w = avail_w / self.max_samples as f32;
@@ -246,4 +264,25 @@ impl CpuHistoryWidget {
             egui::StrokeKind::Middle,
         );
     }
+}
+
+/// 0 / 100 % markers on a CPU history plot, drawn inside its top and bottom
+/// edges so they never collide with the curve's extremes.
+fn axis_labels(ui: &Ui, painter: &egui::Painter, rect: egui::Rect) {
+    let col = ui.visuals().weak_text_color();
+    let font = egui::FontId::proportional(crate::gui::theme::tokens::FONT_SMALL);
+    painter.text(
+        rect.left_top() + Vec2::new(4.0, 1.0),
+        egui::Align2::LEFT_TOP,
+        "100%",
+        font.clone(),
+        col,
+    );
+    painter.text(
+        rect.left_bottom() + Vec2::new(4.0, -1.0),
+        egui::Align2::LEFT_BOTTOM,
+        "0%",
+        font,
+        col,
+    );
 }

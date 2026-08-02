@@ -36,6 +36,8 @@ pub struct Update {
     pub page_url: String,
     tarball_url: String,
     sha256_url: String,
+    /// `None` on releases published before signing existed.
+    signature_url: Option<String>,
 }
 
 /// Progress and results from the background worker.
@@ -58,7 +60,17 @@ pub struct Job {
 impl Job {
     /// Non-blocking poll. Returns `None` while the work is still running.
     pub fn poll(&self) -> Option<Status> {
-        self.rx.try_recv().ok()
+        use std::sync::mpsc::TryRecvError;
+        match self.rx.try_recv() {
+            Ok(status) => Some(status),
+            Err(TryRecvError::Empty) => None,
+            // The worker died without sending. Reporting it as an error is
+            // what clears `busy`; treating it as "still running" would wedge
+            // the UI, since both entry points refuse to start while busy.
+            Err(TryRecvError::Disconnected) => Some(Status::Error(
+                "the update worker stopped unexpectedly — try again".into(),
+            )),
+        }
     }
 }
 
@@ -146,6 +158,10 @@ fn latest_release() -> Result<Option<Update>, String> {
         find(&want).ok_or_else(|| format!("release {tag} has no build for {arch}"))?;
     let sha256_url = find(&format!("{want}.sha256"))
         .ok_or_else(|| format!("release {tag} has no checksum for {arch}"))?;
+    // Absent on releases cut before signing existed. Missing it is not an
+    // error here: the user should still learn a new version is out and get a
+    // link to it. Only the self-install refuses, in install_blocking.
+    let signature_url = find(&format!("{want}.minisig"));
 
     Ok(Some(Update {
         tag,
@@ -153,7 +169,47 @@ fn latest_release() -> Result<Option<Update>, String> {
         page_url: json["html_url"].as_str().unwrap_or_default().to_string(),
         tarball_url,
         sha256_url,
+        signature_url,
     }))
+}
+
+// ── Signature ─────────────────────────────────────────────────────────────
+
+/// The minisign public key releases are signed with. Public by definition;
+/// the matching secret key exists only in the release workflow's secret
+/// store, which is what makes the signature mean more than the checksum.
+const PUBLIC_KEY: &str = include_str!("../dist/argus-lasso.pub");
+
+/// Marker in the committed placeholder key. A build that still carries it
+/// cannot verify anything, so it refuses to self-install rather than falling
+/// back to the checksum — which anyone who could swap the tarball could
+/// recompute.
+const PUBLIC_KEY_PLACEHOLDER: &str = "NOT-YET-CONFIGURED";
+
+/// Verify `tarball` against `signature_text` using `public_key_text`.
+///
+/// `allow_legacy` is true because it selects minisign's non-prehashed mode,
+/// not a weaker one: both variants are Ed25519 over the same key, the
+/// prehashed form exists for streaming. Accepting both keeps verification
+/// working whichever minisign version the release runner has.
+fn verify_signature(
+    public_key_text: &str,
+    tarball: &[u8],
+    signature_text: &str,
+) -> Result<(), String> {
+    use minisign_verify::{PublicKey, Signature};
+
+    if public_key_text.contains(PUBLIC_KEY_PLACEHOLDER) {
+        return Err("this build has no release signing key compiled in, so the \
+                    download cannot be verified. Install the update manually."
+            .into());
+    }
+    let key = PublicKey::decode(public_key_text.trim())
+        .map_err(|e| format!("the built-in signing key is unusable: {e}"))?;
+    let signature = Signature::decode(signature_text.trim())
+        .map_err(|e| format!("the release signature is malformed: {e}"))?;
+    key.verify(tarball, &signature, true)
+        .map_err(|e| format!("signature check failed: {e}. The download was not installed."))
 }
 
 /// Compare dotted numeric versions. Non-numeric parts sort as 0, so a
@@ -214,8 +270,19 @@ fn install_blocking(update: &Update) -> Result<(), String> {
         ));
     }
 
+    // Refuse before spending a download on a release we could not trust.
+    let Some(signature_url) = update.signature_url.as_deref() else {
+        return Err(format!(
+            "release {} is not signed, so it cannot be verified. \
+             Download it manually from {}",
+            update.tag, update.page_url
+        ));
+    };
+
     let tarball = fetch(&update.tarball_url)?;
 
+    // Checksum first: it is the same cost and tells a truncated download
+    // apart from a tampered one, which a signature failure alone would not.
     // The checksum file is "<hex>  <filename>"; take the first field.
     let sha_text = String::from_utf8(fetch(&update.sha256_url)?)
         .map_err(|_| "checksum file is not valid text".to_string())?;
@@ -232,6 +299,12 @@ fn install_blocking(update: &Update) -> Result<(), String> {
         ));
     }
 
+    // Then the signature, which is the check that actually establishes the
+    // tarball came from whoever holds the release key.
+    let signature_text = String::from_utf8(fetch(signature_url)?)
+        .map_err(|_| "signature file is not valid text".to_string())?;
+    verify_signature(PUBLIC_KEY, &tarball, &signature_text)?;
+
     let binary = extract_binary(&tarball)?;
 
     // Write beside the target and rename: rename is atomic, and it works
@@ -245,6 +318,13 @@ fn install_blocking(update: &Update) -> Result<(), String> {
         let _ = std::fs::remove_file(&staged);
         format!("could not replace the binary: {e}")
     })?;
+
+    // Best-effort, and deliberately after the rename: the update has already
+    // succeeded by this point, so a desktop file we could not rewrite is a
+    // log line, not a failed install.
+    for note in refresh_support_files(&tarball, &target) {
+        log::info!("update: {note}");
+    }
     Ok(())
 }
 
@@ -272,16 +352,26 @@ fn sha256_hex(bytes: &[u8]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Pull the `argus-lasso` binary out of the release tarball.
+/// Release tarballs unpack to a single `argus-lasso-<version>-<arch>-linux/`
+/// directory, so the binary always sits exactly one level down.
 ///
-/// Shells out to `tar` rather than taking a tar+gzip dependency: it is
-/// present on every target system, and the archive is our own.
-fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
+/// `--no-wildcards-match-slash` matters: tar's `*` spans `/` by default, so a
+/// bare `*/argus-lasso` would match at any depth. Pinning it to one level,
+/// plus the member count check in `extract_binary`, keeps a stray second
+/// match from being concatenated onto the real binary.
+const BINARY_MEMBER: &str = "*/argus-lasso";
+const TAR_MATCH_FLAGS: [&str; 2] = ["--wildcards", "--no-wildcards-match-slash"];
+
+/// Run `tar` with the tarball on stdin and return its stdout.
+///
+/// Shells out rather than taking a tar+gzip dependency: tar is present on
+/// every target system, and the archive is our own.
+fn run_tar(args: &[&str], tarball: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new("tar")
-        .args(["-xzO", "--wildcards", "*/argus-lasso"])
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -305,10 +395,200 @@ fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    if out.stdout.is_empty() {
+    Ok(out.stdout)
+}
+
+/// Pull the `argus-lasso` binary out of the release tarball.
+fn extract_binary(tarball: &[u8]) -> Result<Vec<u8>, String> {
+    // List first: `tar -xO` concatenates every match into one stream, so an
+    // archive carrying two `*/argus-lasso` entries would yield a spliced file
+    // that we would then mark executable. Refuse anything but a single match.
+    let listing = run_tar(
+        &["-tz", TAR_MATCH_FLAGS[0], TAR_MATCH_FLAGS[1], BINARY_MEMBER],
+        tarball,
+    )?;
+    let matches = String::from_utf8_lossy(&listing)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    match matches {
+        0 => return Err("the release archive contained no argus-lasso binary".into()),
+        1 => {}
+        n => {
+            return Err(format!(
+                "the release archive contained {n} argus-lasso entries; refusing to install"
+            ))
+        }
+    }
+
+    let binary = run_tar(
+        &[
+            "-xzO",
+            TAR_MATCH_FLAGS[0],
+            TAR_MATCH_FLAGS[1],
+            BINARY_MEMBER,
+        ],
+        tarball,
+    )?;
+    if binary.is_empty() {
         return Err("the release archive contained no argus-lasso binary".into());
     }
-    Ok(out.stdout)
+    Ok(binary)
+}
+
+// ── Support files ─────────────────────────────────────────────────────────
+
+/// Pull one member out of the tarball, or `None` if it is not there.
+fn extract_member(tarball: &[u8], member: &str) -> Option<Vec<u8>> {
+    let out = run_tar(
+        &["-xzO", TAR_MATCH_FLAGS[0], TAR_MATCH_FLAGS[1], member],
+        tarball,
+    )
+    .ok()?;
+    (!out.is_empty()).then_some(out)
+}
+
+/// Rewrite `path` with `contents` when it already exists and differs.
+/// Returns a note for the log when something changed.
+fn refresh_if_present(path: &Path, contents: &[u8], label: &str) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    if std::fs::read(path).is_ok_and(|old| old == contents) {
+        return None;
+    }
+    match std::fs::write(path, contents) {
+        Ok(()) => Some(format!("refreshed {label}")),
+        Err(e) => Some(format!("could not refresh {label}: {e}")),
+    }
+}
+
+/// Refresh the user-local files `make install` puts alongside the binary.
+///
+/// Swapping the binary alone leaves the desktop entry, the systemd user unit
+/// and the icons frozen at whatever version first installed them, so a
+/// release that changes any of them silently does not take effect.
+///
+/// Only files that already exist are rewritten. Creating missing ones would
+/// guess at a layout the user may not have — a distro package, a different
+/// XDG root, or a deliberate choice not to install a unit at all.
+fn refresh_support_files(tarball: &[u8], target: &Path) -> Vec<String> {
+    let Ok(home) = std::env::var("HOME") else {
+        return vec!["HOME is unset; left the desktop and icon files alone".into()];
+    };
+    let home = PathBuf::from(home);
+    let exe = target.display().to_string();
+    let mut notes = Vec::new();
+
+    // .desktop — Exec= is rewritten to the real binary path, the same
+    // substitution the Makefile does at install time.
+    if let Some(raw) = extract_member(tarball, "*/dist/argus-lasso.desktop") {
+        if let Ok(text) = String::from_utf8(raw) {
+            let patched = text.replace("Exec=argus-lasso", &format!("Exec={exe}"));
+            notes.extend(refresh_if_present(
+                &home.join(".local/share/applications/argus-lasso.desktop"),
+                patched.as_bytes(),
+                "desktop entry",
+            ));
+        }
+    }
+
+    // systemd user unit — ExecStart carries an absolute path plus flags, so
+    // swap only the path and keep whatever arguments the release ships.
+    if let Some(raw) = extract_member(tarball, "*/dist/argus-lasso.service") {
+        if let Ok(text) = String::from_utf8(raw) {
+            let patched = text.replace("%h/.local/bin/argus-lasso", &exe);
+            let unit = home.join(".config/systemd/user/argus-lasso.service");
+            if let Some(note) = refresh_if_present(&unit, patched.as_bytes(), "systemd user unit") {
+                notes.push(note);
+                // A rewritten unit is inert until systemd re-reads it.
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "daemon-reload"])
+                    .output();
+            }
+        }
+    }
+
+    notes.extend(refresh_icons(tarball, &home));
+    notes
+}
+
+/// Refresh installed icons from the tarball's vector masters.
+///
+/// Mirrors the Makefile's tiering: below 48px the full artwork turns to
+/// mush, so small sizes render from their own master. Only sizes already
+/// present are touched, and PNG sizes are skipped entirely when the host has
+/// no renderer — a stale icon beats a blurry one.
+fn refresh_icons(tarball: &[u8], home: &Path) -> Vec<String> {
+    let hicolor = home.join(".local/share/icons/hicolor");
+    if !hicolor.is_dir() {
+        return Vec::new();
+    }
+    let mut notes = Vec::new();
+
+    // The scalable master is a plain copy — no renderer needed.
+    if let Some(svg) = extract_member(tarball, "*/assets/icon.svg") {
+        notes.extend(refresh_if_present(
+            &hicolor.join("scalable/apps/argus-lasso.svg"),
+            &svg,
+            "scalable icon",
+        ));
+    }
+
+    let renderer = ["rsvg-convert", "magick"]
+        .into_iter()
+        .find(|bin| which(bin));
+    let Some(renderer) = renderer else {
+        notes.push("no rsvg-convert or magick; left the raster icons alone".into());
+        return notes;
+    };
+
+    let masters = [
+        ("*/assets/icon-small.svg", [16, 22, 24, 32].as_slice()),
+        ("*/assets/icon-medium.svg", [48].as_slice()),
+        ("*/assets/icon.svg", [64, 128, 256].as_slice()),
+    ];
+    let tmp = std::env::temp_dir().join(format!("argus-icon-{}.svg", std::process::id()));
+    for (member, sizes) in masters {
+        let Some(svg) = extract_member(tarball, member) else {
+            continue;
+        };
+        if std::fs::write(&tmp, &svg).is_err() {
+            continue;
+        }
+        for &size in sizes {
+            let dest = hicolor.join(format!("{size}x{size}/apps/argus-lasso.png"));
+            if !dest.exists() {
+                continue;
+            }
+            if render_icon(renderer, &tmp, size, &dest) {
+                notes.push(format!("refreshed {size}px icon"));
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    notes
+}
+
+fn which(bin: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(bin)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn render_icon(renderer: &str, svg: &Path, size: u32, dest: &Path) -> bool {
+    let n = size.to_string();
+    let mut cmd = std::process::Command::new(renderer);
+    if renderer == "rsvg-convert" {
+        cmd.args(["-w", &n, "-h", &n]).arg(svg).arg("-o").arg(dest);
+    } else {
+        cmd.args(["-background", "none"])
+            .arg(svg)
+            .args(["-resize", &format!("{n}x{n}")])
+            .arg(dest);
+    }
+    cmd.output().is_ok_and(|o| o.status.success())
 }
 
 fn set_executable(path: &Path) -> Result<(), String> {
@@ -321,6 +601,14 @@ fn set_executable(path: &Path) -> Result<(), String> {
 ///
 /// `exec` keeps the same PID and never returns on success, so there is no
 /// window where neither the old nor the new process is running.
+///
+/// It also means nothing unwinds: no destructors, and eframe's `on_exit`
+/// never runs. The caller MUST have driven the daemon shutdown first (see
+/// `monitor::shutdown_and_wait`), or parked CPUs stay offline and throttled
+/// processes keep their raised nice — the originals live only in this
+/// process's memory and are gone the moment the image is replaced. Callers
+/// set `UpdateState::restart_requested` rather than calling this directly, so
+/// that ordering lives in exactly one place.
 pub fn restart() -> String {
     use std::os::unix::process::CommandExt;
     let exe = match install_target() {
@@ -336,7 +624,7 @@ pub fn restart() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_binary, is_newer, sha256_hex};
+    use super::{extract_binary, is_newer, sha256_hex, verify_signature};
 
     #[test]
     fn newer_patch_minor_and_major() {
@@ -414,6 +702,113 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `tar -xO` concatenates every match, so two entries would splice into
+    /// one file that we would mark executable. It must be refused instead.
+    #[test]
+    fn extract_binary_rejects_two_matching_entries() {
+        let dir = std::env::temp_dir().join(format!("argus-dup-{}", std::process::id()));
+        for pkg in [
+            "argus-lasso-9.9.9-x86_64-linux",
+            "argus-lasso-9.9.8-x86_64-linux",
+        ] {
+            let p = dir.join(pkg);
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("argus-lasso"), b"payload").unwrap();
+        }
+        let out = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(dir.join("r.tar.gz"))
+            .arg("-C")
+            .arg(&dir)
+            .arg("argus-lasso-9.9.9-x86_64-linux")
+            .arg("argus-lasso-9.9.8-x86_64-linux")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "tar -czf failed");
+
+        let tarball = std::fs::read(dir.join("r.tar.gz")).unwrap();
+        let err = extract_binary(&tarball).expect_err("two entries must be refused");
+        assert!(err.contains('2'), "error should name the count: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A nested path must not match: tar's `*` spans `/` unless told not to,
+    /// and a deep entry is not the release layout we publish.
+    #[test]
+    fn extract_binary_ignores_a_nested_match() {
+        let dir = std::env::temp_dir().join(format!("argus-nested-{}", std::process::id()));
+        let deep = dir.join("argus-lasso-9.9.9-x86_64-linux").join("dist");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("argus-lasso"), b"not the real one").unwrap();
+        let out = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(dir.join("r.tar.gz"))
+            .arg("-C")
+            .arg(&dir)
+            .arg("argus-lasso-9.9.9-x86_64-linux")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "tar -czf failed");
+
+        let tarball = std::fs::read(dir.join("r.tar.gz")).unwrap();
+        assert!(extract_binary(&tarball).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // A published minisign test vector, so the wrapper is exercised without a
+    // key of our own. Payload is the four bytes "test".
+    const TEST_PUB: &str = "untrusted comment: minisign public key E7620F1842B4E81F
+RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+    const TEST_SIG: &str = "untrusted comment: signature from minisign secret key
+RWQf6LRCGA9i59SLOFxz6NxvASXDJeRtuZykwQepbDEGt87ig1BNpWaVWuNrm73YiIiJbq71Wi+dP9eKL8OC351vwIasSSbXxwA=
+trusted comment: timestamp:1555779966\tfile:test
+QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfNQUaOAA==";
+
+    #[test]
+    fn signature_accepts_the_payload_it_covers() {
+        verify_signature(TEST_PUB, b"test", TEST_SIG).expect("valid signature must verify");
+    }
+
+    #[test]
+    fn signature_rejects_a_modified_payload() {
+        let err = verify_signature(TEST_PUB, b"Test", TEST_SIG)
+            .expect_err("a changed payload must not verify");
+        assert!(err.contains("not installed"), "unhelpful message: {err}");
+    }
+
+    /// The committed placeholder must fail closed. Falling back to the
+    /// checksum would be worse than useless — anyone able to swap the
+    /// tarball could recompute it.
+    #[test]
+    fn unconfigured_key_refuses_to_verify() {
+        let placeholder = super::PUBLIC_KEY_PLACEHOLDER;
+        let err = verify_signature(
+            &format!("untrusted comment: x\n{placeholder}\n"),
+            b"test",
+            TEST_SIG,
+        )
+        .expect_err("placeholder key must not verify anything");
+        assert!(err.contains("no release signing key"), "wrong error: {err}");
+    }
+
+    /// Guards the bootstrap state: until a real key is committed, the shipped
+    /// build must be the refusing one rather than silently trusting.
+    #[test]
+    fn shipped_key_is_either_real_or_recognisably_absent() {
+        let key = super::PUBLIC_KEY;
+        if key.contains(super::PUBLIC_KEY_PLACEHOLDER) {
+            assert!(
+                verify_signature(key, b"test", TEST_SIG).is_err(),
+                "placeholder key must refuse"
+            );
+        } else {
+            minisign_verify::PublicKey::decode(key.trim())
+                .expect("committed public key must be a valid minisign key");
+        }
+    }
+
     #[test]
     fn prerelease_does_not_outrank_its_release() {
         // "1.1.0-rc1" parses as 1.1.0.0 — equal to 1.1.0 on the first three
@@ -439,6 +834,10 @@ pub struct UpdateState {
     pub installed: bool,
     /// The user closed the banner for this release.
     pub banner_dismissed: bool,
+    /// The user asked to restart into the new binary. Handled centrally by
+    /// the app at the end of the frame, which shuts the daemon down before
+    /// `restart()` replaces the process image — see that function's contract.
+    pub restart_requested: bool,
 }
 
 impl UpdateState {

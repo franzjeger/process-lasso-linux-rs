@@ -749,7 +749,13 @@ impl RuleEditDialog {
         }
     }
 
-    pub fn show(&mut self, ctx: &Context, opacity: f32) -> Option<Option<Rule>> {
+    /// `proc_names` feeds the live match count under the pattern field.
+    pub fn show(
+        &mut self,
+        ctx: &Context,
+        opacity: f32,
+        proc_names: &[String],
+    ) -> Option<Option<Rule>> {
         if !self.open {
             return self.result.clone();
         }
@@ -758,7 +764,7 @@ impl RuleEditDialog {
 
         {
             let title_str = if self.rule.name.is_empty() {
-                "Add Rule".to_string()
+                "New rule".to_string()
             } else {
                 format!("Edit Rule — {}", self.rule.name)
             };
@@ -778,7 +784,8 @@ impl RuleEditDialog {
                         width: crate::icon::W,
                         height: crate::icon::H,
                     })
-                    .with_min_inner_size([540.0, 520.0])
+                    .with_inner_size([560.0, 400.0])
+                    .with_min_inner_size([560.0, 320.0])
                     .with_transparent(true)
                     .with_resizable(true),
                 |ctx, _class| {
@@ -786,92 +793,138 @@ impl RuleEditDialog {
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_as = Some(false);
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        egui::Grid::new("rule_form").num_columns(2).show(ui, |ui| {
-                            ui.label("Name:");
-                            ui.add(egui::TextEdit::singleline(&mut rule.name).desired_width(260.0));
-                            ui.end_row();
+                    use crate::gui::theme::{self as th, tokens};
+                    const LW: f32 = tokens::DIALOG_LABEL_W;
 
-                            ui.label("Pattern:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut rule.pattern).desired_width(260.0),
-                            );
-                            ui.end_row();
-
-                            ui.label("Match type:");
-                            egui::ComboBox::from_id_salt("match_type")
-                                .selected_text(&rule.match_type)
-                                .show_ui(ui, |ui| {
-                                    for mt in ["contains", "exact", "regex"] {
-                                        ui.selectable_value(
-                                            &mut rule.match_type,
-                                            mt.to_string(),
-                                            mt,
-                                        );
-                                    }
-                                });
-                            ui.end_row();
-
-                            ui.label("Nice:");
-                            ui.horizontal(|ui| {
-                                ui.checkbox(nice_enabled, "Enable");
-                                let nice = rule.nice.get_or_insert(0);
-                                ui.add_enabled(
-                                    *nice_enabled,
-                                    egui::DragValue::new(nice).range(-20..=19),
-                                );
-                            });
-                            ui.end_row();
-
-                            ui.label("I/O Priority:");
-                            ui.horizontal(|ui| {
-                                ui.checkbox(ionice_enabled, "Enable");
-                                let class = rule.ionice_class.get_or_insert(2);
-                                ui.add_enabled(
-                                    *ionice_enabled,
-                                    egui::DragValue::new(class).range(0..=3),
-                                );
-                                ui.label("class, level:");
-                                let level = rule.ionice_level.get_or_insert(4);
-                                ui.add_enabled(
-                                    *ionice_enabled,
-                                    egui::DragValue::new(level).range(0..=7),
-                                );
-                            });
-                            ui.end_row();
-
-                            ui.label("Enabled:");
-                            ui.checkbox(&mut rule.enabled, "Rule active");
-                            ui.end_row();
-                        });
-
-                        ui.add_space(6.0);
+                    // Action bar first: a bottom panel keeps Cancel/Save
+                    // pinned to the dialog's edge instead of floating after
+                    // however tall the form happened to be.
+                    egui::TopBottomPanel::bottom("rule_actions").show(ctx, |ui| {
+                        let s = th::sem(ui);
+                        ui.add_space(tokens::SPACE_XS);
                         ui.horizontal(|ui| {
-                            ui.checkbox(affinity_enabled, "CPU Affinity");
-                            if *affinity_enabled {
+                            ui.checkbox(&mut rule.enabled, "Rule active");
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let save = egui::Button::new(
+                                        egui::RichText::new("Save rule")
+                                            .color(s.on_accent)
+                                            .strong(),
+                                    )
+                                    .fill(s.accent);
+                                    // A rule with no pattern matches nothing,
+                                    // so saving one is never what was meant.
+                                    if ui.add_enabled(!rule.pattern.is_empty(), save).clicked() {
+                                        close_as = Some(true);
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        close_as = Some(false);
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                },
+                            );
+                        });
+                        ui.add_space(tokens::SPACE_XS);
+                    });
+
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let s = th::sem(ui);
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            th::form_row_w(ui, LW, "Name", |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut rule.name)
+                                        .hint_text("e.g. Steam games → V-Cache")
+                                        .desired_width(ui.available_width()),
+                                );
+                            });
+
+                            // Match type sits inline with the pattern: it
+                            // qualifies that field and reads as a stray third
+                            // question on its own row.
+                            th::form_row_w(ui, LW, "Pattern", |ui| {
+                                egui::ComboBox::from_id_salt("match_type")
+                                    .selected_text(&rule.match_type)
+                                    .width(90.0)
+                                    .show_ui(ui, |ui| {
+                                        for mt in ["contains", "exact", "regex"] {
+                                            ui.selectable_value(
+                                                &mut rule.match_type,
+                                                mt.to_string(),
+                                                mt,
+                                            );
+                                        }
+                                    });
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut rule.pattern)
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_width(ui.available_width()),
+                                );
+                            });
+
+                            // Live match count, directly under the field it
+                            // describes — the whole point of the pattern is
+                            // what it currently catches.
+                            th::form_row_w(ui, LW, "", |ui| {
+                                let (msg, color) = match_summary(rule, proc_names, s.ok, ui);
                                 ui.label(
-                                    egui::RichText::new("(select cores below)")
+                                    egui::RichText::new(msg)
+                                        .size(tokens::FONT_HELP)
+                                        .color(color),
+                                );
+                            });
+
+                            th::group_heading(
+                                ui,
+                                "Actions",
+                                "— turn on the ones this rule should set",
+                            );
+
+                            // The checkbox sits on the action's own name; an
+                            // unchecked row goes weak, so what the rule does
+                            // is readable without parsing a column of
+                            // identical "Enable" boxes.
+                            action_row(ui, LW, affinity_enabled, "Affinity", |ui, on| {
+                                let cpulist = picker.cpulist();
+                                let shown = if cpulist.is_empty() {
+                                    "all CPUs".to_string()
+                                } else {
+                                    cpulist
+                                };
+                                ui.add_enabled(
+                                    on,
+                                    egui::Label::new(
+                                        egui::RichText::new(shown)
+                                            .family(egui::FontFamily::Monospace)
+                                            .size(tokens::FONT_HELP),
+                                    ),
+                                );
+                            });
+                            if *affinity_enabled {
+                                ui.indent("aff_picker", |ui| {
+                                    ui.set_max_width(ui.available_width());
+                                    picker.show(ui);
+                                });
+                                ui.add_space(tokens::SPACE_XS);
+                            }
+
+                            action_row(ui, LW, nice_enabled, "Nice", |ui, on| {
+                                let nice = rule.nice.get_or_insert(0);
+                                ui.add_enabled(on, egui::DragValue::new(nice).range(-20..=19));
+                            });
+
+                            action_row(ui, LW, ionice_enabled, "I/O priority", |ui, on| {
+                                let class = rule.ionice_class.get_or_insert(2);
+                                ui.add_enabled(on, egui::DragValue::new(class).range(0..=3));
+                                ui.label(
+                                    egui::RichText::new("class, level")
+                                        .size(tokens::FONT_HELP)
                                         .color(ui.visuals().weak_text_color()),
                                 );
-                            }
-                        });
-                        if *affinity_enabled {
-                            ui.group(|ui| {
-                                ui.set_min_width(ui.available_width());
-                                picker.show(ui);
+                                let level = rule.ionice_level.get_or_insert(4);
+                                ui.add_enabled(on, egui::DragValue::new(level).range(0..=7));
                             });
-                        }
-
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            if ui.button("OK").clicked() && !rule.pattern.is_empty() {
-                                close_as = Some(true);
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
-                            if ui.button("Cancel").clicked() {
-                                close_as = Some(false);
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
                         });
                     });
                     crate::gui::theme::pop_viewport_opacity(ctx, _opacity_saved);
@@ -909,6 +962,75 @@ impl RuleEditDialog {
         }
         None
     }
+}
+
+/// One "Actions" row: the checkbox carries the action's name, and the row's
+/// controls go weak when it is off.
+fn action_row(
+    ui: &mut egui::Ui,
+    label_w: f32,
+    enabled: &mut bool,
+    label: &str,
+    add_contents: impl FnOnce(&mut egui::Ui, bool),
+) {
+    ui.horizontal(|ui| {
+        let h = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(
+            egui::vec2(label_w, h),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.checkbox(enabled, label);
+            },
+        );
+        add_contents(ui, *enabled);
+    });
+    ui.add_space(crate::gui::theme::tokens::SPACE_XS);
+}
+
+/// Describe what the pattern currently catches, for the line under the field.
+///
+/// Counting against live process names is the only way to tell "this pattern
+/// is wrong" from "nothing is running yet" before the rule is saved.
+fn match_summary(
+    rule: &Rule,
+    proc_names: &[String],
+    ok_color: egui::Color32,
+    ui: &egui::Ui,
+) -> (String, egui::Color32) {
+    if rule.pattern.is_empty() {
+        return (
+            "Enter a pattern to see what it matches".into(),
+            ui.visuals().weak_text_color(),
+        );
+    }
+    // Match against a probe rule so the live count uses exactly the same
+    // logic the engine will, including an invalid regex matching nothing.
+    let mut probe = rule.clone();
+    probe.enabled = true;
+    probe.refresh_regex();
+    let hits: Vec<&String> = proc_names.iter().filter(|n| probe.matches(n)).collect();
+    if hits.is_empty() {
+        return (
+            "Matches no running process".into(),
+            ui.visuals().weak_text_color(),
+        );
+    }
+    let mut sample: Vec<&str> = hits.iter().map(|s| s.as_str()).take(3).collect();
+    sample.dedup();
+    let more = if hits.len() > sample.len() {
+        " …"
+    } else {
+        ""
+    };
+    (
+        format!(
+            "✓ Matches {} running process{}: {}{more}",
+            hits.len(),
+            if hits.len() == 1 { "" } else { "es" },
+            sample.join(", ")
+        ),
+        ok_color,
+    )
 }
 
 // ── RulePresetsDialog ─────────────────────────────────────────────────────────
@@ -1082,79 +1204,141 @@ impl RulePresetsDialog {
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_as = Some(false);
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        ui.label("Select a preset to create a pre-filled rule:");
-                        ui.add_space(4.0);
-                        // Header row
-                        let hdr_bg = ui.visuals().widgets.noninteractive.bg_fill;
-                        let hdr_col = crate::gui::theme::strong_color(ui);
-                        egui::Frame::new().fill(hdr_bg).show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            egui::Grid::new("preset_hdr")
-                                .num_columns(4)
-                                .min_col_width(60.0)
-                                .spacing([16.0, 2.0])
-                                .show(ui, |ui| {
-                                    for label in ["NAME", "PATTERN", "MATCH", "AFFINITY"] {
-                                        ui.label(
-                                            egui::RichText::new(label).strong().color(hdr_col),
-                                        );
-                                    }
-                                    ui.end_row();
-                                });
-                        });
-                        let presets = rule_presets();
-                        egui::ScrollArea::vertical()
-                            .max_height(240.0)
-                            .show(ui, |ui| {
-                                for (i, (name, pat, match_type, ref aff, _nice, _ioc, _iol)) in
-                                    presets.iter().enumerate()
-                                {
-                                    let is_sel = *selected == Some(i);
-                                    let bg = if is_sel {
-                                        ui.visuals().selection.bg_fill
-                                    } else if i % 2 == 1 {
-                                        ui.visuals().faint_bg_color
-                                    } else {
-                                        ui.visuals().extreme_bg_color
-                                    };
-                                    egui::Frame::new().fill(bg).show(ui, |ui| {
-                                        ui.set_min_width(ui.available_width());
-                                        let resp = egui::Grid::new(("preset_row", i))
-                                            .num_columns(4)
-                                            .min_col_width(60.0)
-                                            .spacing([16.0, 2.0])
-                                            .show(ui, |ui| {
-                                                ui.label(*name);
-                                                ui.label(*pat);
-                                                ui.label(*match_type);
-                                                ui.label(aff.as_deref().unwrap_or(""));
-                                                ui.end_row();
-                                            })
-                                            .response;
-                                        if resp.clicked() {
-                                            *selected = Some(i);
-                                        }
-                                        if resp.double_clicked() {
-                                            *selected = Some(i);
-                                            close_as = Some(true);
-                                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                        }
-                                    });
-                                }
-                            });
-                        ui.separator();
+                    use crate::gui::theme::{self as th, tokens};
+
+                    // Actions in a bottom panel, pinned to the dialog edge —
+                    // same shape as the rule editor, so the two dialogs do not
+                    // put the same controls in different places.
+                    egui::TopBottomPanel::bottom("preset_actions").show(ctx, |ui| {
+                        let s = th::sem(ui);
+                        ui.add_space(tokens::SPACE_XS);
                         ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(selected.is_some(), egui::Button::new("Use Preset"))
-                                .clicked()
-                            {
-                                close_as = Some(true);
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            ui.label(
+                                egui::RichText::new("Double-click a template to use it")
+                                    .size(tokens::FONT_HELP)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let use_btn = egui::Button::new(
+                                        egui::RichText::new("Use template")
+                                            .color(s.on_accent)
+                                            .strong(),
+                                    )
+                                    .fill(s.accent);
+                                    if ui.add_enabled(selected.is_some(), use_btn).clicked() {
+                                        close_as = Some(true);
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        close_as = Some(false);
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                },
+                            );
+                        });
+                        ui.add_space(tokens::SPACE_XS);
+                    });
+
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "Templates pre-fill a rule; you can edit it before saving.",
+                            )
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                        );
+                        ui.add_space(tokens::SPACE_XS);
+
+                        // Fixed column widths, one shared set for the header
+                        // and every row. A Grid per row — which is what this
+                        // was — sizes each row's columns independently, so
+                        // nothing lined up down the table.
+                        const ROW_H: f32 = tokens::ROW_H;
+                        const PAD: f32 = 6.0;
+                        let total = ui.available_width();
+                        let w_match = 80.0;
+                        let w_aff = 110.0;
+                        let w_name = ((total - w_match - w_aff) * 0.42).max(110.0);
+                        let w_pat = (total - w_match - w_aff - w_name).max(90.0);
+                        let cols = [w_name, w_pat, w_match, w_aff];
+
+                        let draw_row = |ui: &mut egui::Ui,
+                                        cells: [&str; 4],
+                                        bg: Option<egui::Color32>,
+                                        strong: bool|
+                         -> egui::Response {
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(total, ROW_H),
+                                egui::Sense::click(),
+                            );
+                            if let Some(c) = bg {
+                                ui.painter().rect_filled(rect, 0.0, c);
                             }
-                            if ui.button("Cancel").clicked() {
-                                close_as = Some(false);
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            let mut x = rect.left();
+                            for (i, text) in cells.iter().enumerate() {
+                                let col = if strong {
+                                    ui.visuals().weak_text_color()
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                let font = if i == 1 {
+                                    egui::FontId::monospace(tokens::FONT_HELP)
+                                } else {
+                                    egui::FontId::proportional(tokens::FONT_HELP)
+                                };
+                                ui.painter_at(egui::Rect::from_min_size(
+                                    egui::pos2(x, rect.top()),
+                                    egui::vec2(cols[i], ROW_H),
+                                ))
+                                .text(
+                                    egui::pos2(x + PAD, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    text,
+                                    font,
+                                    col,
+                                );
+                                x += cols[i];
+                            }
+                            resp
+                        };
+
+                        let hdr_bg = ui.visuals().widgets.noninteractive.bg_fill;
+                        draw_row(
+                            ui,
+                            ["NAME", "PATTERN", "MATCH", "AFFINITY"],
+                            Some(hdr_bg),
+                            true,
+                        );
+
+                        let presets = rule_presets();
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for (i, (name, pat, match_type, ref aff, _nice, _ioc, _iol)) in
+                                presets.iter().enumerate()
+                            {
+                                let is_sel = *selected == Some(i);
+                                let bg = if is_sel {
+                                    ui.visuals().selection.bg_fill
+                                } else if i % 2 == 1 {
+                                    ui.visuals().faint_bg_color
+                                } else {
+                                    ui.visuals().extreme_bg_color
+                                };
+                                let resp = draw_row(
+                                    ui,
+                                    [name, pat, match_type, aff.as_deref().unwrap_or("—")],
+                                    Some(bg),
+                                    false,
+                                );
+                                if resp.clicked() {
+                                    *selected = Some(i);
+                                }
+                                if resp.double_clicked() {
+                                    *selected = Some(i);
+                                    close_as = Some(true);
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
                             }
                         });
                     });

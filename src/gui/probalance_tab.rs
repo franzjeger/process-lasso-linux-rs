@@ -44,6 +44,18 @@ impl ProBalanceTab {
         const LABEL_W: f32 = tokens::FORM_LABEL_W;
         let s = th::sem(ui);
 
+        // The apply bar has to sit on the panel's bottom edge, the same as
+        // Settings — floating it after however tall the content happened to
+        // be put the same control in a different place on each tab. Reserving
+        // the bar's height and scrolling the body is what pins it.
+        let bar_h = 44.0;
+        let body_h = (ui.available_height() - bar_h).max(120.0);
+        egui::ScrollArea::vertical()
+            .id_salt("probalance_body")
+            .max_height(body_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+
         // ── Status card: state, plain-language summary, live count ────────
         card_untitled(ui, |ui| {
             ui.horizontal(|ui| {
@@ -64,6 +76,20 @@ impl ProBalanceTab {
                             .size(tokens::FONT_HELP)
                             .color(ui.visuals().weak_text_color()),
                     );
+                    // When nothing is throttled the fact belongs here, under
+                    // the state it qualifies — as its own grey strip below a
+                    // card it read as an unrelated warning.
+                    if throttle_infos.is_empty() {
+                        ui.label(
+                            RichText::new(if self.cfg.enabled {
+                                "Nothing is being throttled right now"
+                            } else {
+                                "Nothing is being throttled"
+                            })
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                        );
+                    }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let n = throttle_infos.len();
@@ -76,77 +102,69 @@ impl ProBalanceTab {
         ui.add_space(tokens::SPACE_M);
 
         // ── Live throttle view ────────────────────────────────────────────
-        card_untitled(ui, |ui| {
-            if throttle_infos.is_empty() {
-                ui.label(
-                    RichText::new(if self.cfg.enabled {
-                        "No processes are being throttled right now."
-                    } else {
-                        "ProBalance is off — nothing is being throttled."
-                    })
-                    .size(tokens::FONT_HELP)
-                    .color(ui.visuals().weak_text_color()),
-                );
-                return;
-            }
+        // Hidden entirely when empty: an empty table card is a panel-sized
+        // reminder that there is nothing to show. The status card above
+        // already says so in one line.
+        if !throttle_infos.is_empty() {
+            card_untitled(ui, |ui| {
+                egui::Grid::new("pb_throttle_rows")
+                    .num_columns(5)
+                    .min_row_height(tokens::ROW_H_DENSE)
+                    .spacing([tokens::SPACE_M, 2.0])
+                    .show(ui, |ui| {
+                        for h in ["PID", "NAME", "CPU%", "THROTTLE", "RESTORE IN"] {
+                            ui.label(th::header_text(ui, h, false));
+                        }
+                        ui.end_row();
 
-            egui::Grid::new("pb_throttle_rows")
-                .num_columns(5)
-                .min_row_height(tokens::ROW_H_DENSE)
-                .spacing([tokens::SPACE_M, 2.0])
-                .show(ui, |ui| {
-                    for h in ["PID", "NAME", "CPU%", "THROTTLE", "RESTORE IN"] {
-                        ui.label(th::header_text(ui, h, false));
-                    }
-                    ui.end_row();
+                        let cpu_map: std::collections::HashMap<u32, f32> =
+                            snapshot.iter().map(|p| (p.pid, p.cpu_percent)).collect();
 
-                    let cpu_map: std::collections::HashMap<u32, f32> =
-                        snapshot.iter().map(|p| (p.pid, p.cpu_percent)).collect();
+                        for info in throttle_infos {
+                            let cpu = cpu_map.get(&info.pid).copied().unwrap_or(info.cpu_percent);
 
-                    for info in throttle_infos {
-                        let cpu = cpu_map.get(&info.pid).copied().unwrap_or(info.cpu_percent);
-
-                        ui.label(
-                            RichText::new(info.pid.to_string())
-                                .font(th::num_font(tokens::FONT_BODY))
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                        ui.label(RichText::new(&info.name).color(s.warning));
-                        ui.label(
-                            RichText::new(format!("{cpu:.1}"))
-                                .font(th::num_font(tokens::FONT_BODY))
-                                .color(th::load_color(ui, cpu)),
-                        );
-                        match &info.unit {
-                            Some(unit) => {
-                                ui.label(
-                                    RichText::new(format!("unit {unit}"))
+                            ui.label(
+                                RichText::new(info.pid.to_string())
+                                    .font(th::num_font(tokens::FONT_BODY))
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                            ui.label(RichText::new(&info.name).color(s.warning));
+                            ui.label(
+                                RichText::new(format!("{cpu:.1}"))
+                                    .font(th::num_font(tokens::FONT_BODY))
+                                    .color(th::load_color(ui, cpu)),
+                            );
+                            match &info.unit {
+                                Some(unit) => {
+                                    ui.label(
+                                        RichText::new(format!("unit {unit}"))
+                                            .size(tokens::FONT_HELP)
+                                            .color(ui.visuals().weak_text_color()),
+                                    );
+                                }
+                                None => {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "nice {} → {}",
+                                            info.original_nice, info.throttle_nice
+                                        ))
                                         .size(tokens::FONT_HELP)
                                         .color(ui.visuals().weak_text_color()),
-                                );
+                                    );
+                                }
                             }
-                            None => {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "nice {} → {}",
-                                        info.original_nice, info.throttle_nice
-                                    ))
-                                    .size(tokens::FONT_HELP)
-                                    .color(ui.visuals().weak_text_color()),
-                                );
-                            }
+                            restore_progress(
+                                ui,
+                                info.consecutive_low,
+                                info.restore_hysteresis,
+                                s.warning,
+                            );
+                            ui.end_row();
                         }
-                        restore_progress(
-                            ui,
-                            info.consecutive_low,
-                            info.restore_hysteresis,
-                            s.warning,
-                        );
-                        ui.end_row();
-                    }
-                });
-        });
-        ui.add_space(tokens::SPACE_M);
+                    });
+            });
+            ui.add_space(tokens::SPACE_M);
+        }
 
         // ── Throttling and restore ────────────────────────────────────────
         th::card(ui, "Throttling and restore", |ui| {
@@ -287,6 +305,8 @@ impl ProBalanceTab {
             if let Some(i) = remove {
                 self.cfg.exempt_patterns.remove(i);
             }
+        });
+
         });
 
         // ── Apply bar ─────────────────────────────────────────────────────

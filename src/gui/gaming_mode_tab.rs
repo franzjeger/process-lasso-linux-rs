@@ -636,10 +636,17 @@ impl GamingModeTab {
                 {
                     self.show_log = !self.show_log;
                 }
-                let reset = egui::Button::new(RichText::new("↩  Reset all").color(s.negative))
-                    .stroke(egui::Stroke::new(1.0_f32, s.negative));
+                // Not a third peer of the two collapsing panels: it is a
+                // rarely-used escape hatch, so it gets its own smaller,
+                // right-aligned row below them rather than matching width.
+                let reset = egui::Button::new(
+                    RichText::new("↩  Reset all")
+                        .size(tokens::FONT_HELP)
+                        .color(s.negative),
+                )
+                .stroke(egui::Stroke::new(1.0_f32, s.negative));
                 if ui
-                    .add_sized([w, 26.0], reset)
+                    .add(reset)
                     .on_hover_text(
                         "Restores all per-process CPU affinities and unparks any parked CPUs.",
                     )
@@ -696,8 +703,11 @@ impl GamingModeTab {
                         }
                     });
 
-                    ui.horizontal(|ui| {
-                        ui.label("Game");
+                    // The two launcher fields sat on bare horizontal rows, so
+                    // their inputs started at different x — the same label
+                    // grid the rest of the app uses lines them up.
+                    let lw = tokens::FORM_LABEL_W;
+                    th::form_row_w(ui, lw, "Game", |ui| {
                         ui.text_edit_singleline(&mut self.game_name);
                         if ui.button("Steam…").clicked() {
                             self.steam_picker =
@@ -709,8 +719,7 @@ impl GamingModeTab {
                         }
                     });
 
-                    ui.horizontal(|ui| {
-                        ui.label("Command");
+                    th::form_row_w(ui, lw, "Command", |ui| {
                         ui.text_edit_singleline(&mut self.command);
                     });
 
@@ -771,14 +780,21 @@ impl GamingModeTab {
             if self.helper_ok {
                 ui.add_space(tokens::SPACE_S);
                 ui.horizontal(|ui| {
-                    ui.colored_label(s.ok, &self.helper_status_text);
-                    if ui
-                        .small_button("Reinstall helper…")
-                        .on_hover_text("Reinstall or update the privileged sysfs helper")
-                        .clicked()
-                    {
-                        self.show_install_dialog = true;
-                    }
+                    // A whole line in accent-adjacent green reads as a link.
+                    // The dot carries the "good" state; the text stays normal
+                    // body colour so nothing here looks clickable but the
+                    // button.
+                    ui.colored_label(s.ok, "●");
+                    ui.label(&self.helper_status_text);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("Reinstall helper…")
+                            .on_hover_text("Reinstall or update the privileged sysfs helper")
+                            .clicked()
+                        {
+                            self.show_install_dialog = true;
+                        }
+                    });
                 });
             }
 

@@ -174,6 +174,9 @@ pub struct ArgusLassoApp {
     events_seen: usize,
     // CPU model string for status bar
     cpu_model: String,
+    /// Set only by --ui-tour: drives the app through every screen, capturing
+    /// each, then exits. None in every normal run.
+    tour: Option<crate::ui_tour::Tour>,
 }
 
 impl ArgusLassoApp {
@@ -183,6 +186,7 @@ impl ArgusLassoApp {
         cmd_tx: Sender<DaemonCmd>,
         rule_engine: Arc<Mutex<RuleEngine>>,
         config: Config,
+        tour_dir: Option<std::path::PathBuf>,
     ) -> Self {
         // native_pixels_per_point is set by the platform integration before new() is called.
         let native_ppp = cc.egui_ctx.pixels_per_point();
@@ -280,6 +284,13 @@ impl ArgusLassoApp {
             detail_pid: None,
             detail_info: None,
             detail_last_gen: 0,
+            tour: tour_dir.map(|d| match crate::ui_tour::Tour::new(d) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("--ui-tour: {e}");
+                    std::process::exit(1);
+                }
+            }),
             events_seen: 0,
             cpu_model,
         }
@@ -698,27 +709,102 @@ impl ArgusLassoApp {
             }
         }
     }
+
+    /// Put the UI into the state the current tour step documents.
+    ///
+    /// Re-applied every frame rather than once on entry: the dialogs close
+    /// themselves when their own `open` flag flips, and a settle period spans
+    /// several frames, so a one-shot setup would photograph an empty screen.
+    fn apply_tour_step(&mut self) {
+        use crate::ui_tour::Step;
+        let Some(step) = self.tour.as_ref().and_then(|t| t.current()) else {
+            return;
+        };
+
+        // Close everything the previous step opened, keeping only what this
+        // step owns. Clearing per-overlay rather than "only on non-dialog
+        // steps" matters: the coarser version left the nice dialog standing
+        // through the ionice step, and the two captures came out identical.
+        // Keeping this step's own overlay alive across the settle frames is
+        // what stops it being rebuilt — and re-running topology detection —
+        // on every frame.
+        self.affinity_dialog = None;
+        self.nice_dialog = None;
+        self.ionice_dialog = None;
+        if !matches!(step, Step::ProcessDetails) {
+            self.detail_pid = None;
+        }
+        if !matches!(step, Step::KillToast) {
+            self.pending_kill = None;
+        }
+        if !matches!(step, Step::RuleOffer) {
+            self.rule_offer = None;
+        }
+
+        // A real PID with real values, so the dialogs are not full of zeroes.
+        // Our own process is always present, which keeps the tour reproducible.
+        let pid = std::process::id();
+
+        match step {
+            Step::Overview => self.active_tab = Tab::Overview,
+            Step::Processes => self.active_tab = Tab::Processes,
+            Step::Rules => self.active_tab = Tab::Rules,
+            Step::ProBalance => self.active_tab = Tab::ProBalance,
+            Step::GamingMode => self.active_tab = Tab::GamingMode,
+            Step::HwMonitor => self.active_tab = Tab::HwMonitor,
+            Step::Benchmark => self.active_tab = Tab::Benchmark,
+            Step::Log => self.active_tab = Tab::Log,
+            Step::Settings => self.active_tab = Tab::Settings,
+
+            Step::ProcessDetails => {
+                self.active_tab = Tab::Processes;
+                if self.detail_pid != Some(pid) {
+                    self.detail_pid = Some(pid);
+                    self.detail_info = utils::read_proc_details(pid);
+                }
+            }
+            Step::KillToast => {
+                self.active_tab = Tab::Processes;
+                // Far enough out that the countdown never reaches zero and
+                // fires a real SIGTERM mid-tour.
+                if self.pending_kill.is_none() {
+                    self.pending_kill = Some(crate::gui::process_tab::PendingKill {
+                        pid,
+                        name: "argus-lasso".into(),
+                        force: false,
+                        deadline: std::time::Instant::now() + std::time::Duration::from_secs(3600),
+                    });
+                }
+            }
+            Step::RuleOffer => {
+                self.active_tab = Tab::Processes;
+                if self.rule_offer.is_none() {
+                    self.rule_offer = Some(RuleOffer {
+                        proc_name: "argus-lasso".into(),
+                        affinity: Some("0-7".into()),
+                        nice: Some(-5),
+                        ionice: Some((2, 4)),
+                    });
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for ArgusLassoApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Closing the window exits the whole process (daemon included) — ask
         // the daemon to restore nices/throttles/parked CPUs and wait briefly.
-        let _ = self.cmd_tx.send(DaemonCmd::Shutdown);
-        for _ in 0..30 {
-            let done = self
-                .state
-                .lock()
-                .map(|s| s.shutdown_complete)
-                .unwrap_or(true);
-            if done {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+        crate::monitor::shutdown_and_wait(&self.state, &self.cmd_tx);
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // --ui-tour drives the UI from a script rather than from the user.
+        // Applied before the frame is built so the capture at the end of it
+        // shows the screen this step is meant to document.
+        if self.tour.is_some() {
+            self.apply_tour_step();
+        }
         // Repaint rate diagnostics — log repaints/sec approximately every 10s
         self.repaint_count += 1;
         let elapsed = self.last_repaint_log.elapsed();
@@ -890,7 +976,17 @@ impl eframe::App for ArgusLassoApp {
                 }
                 if !self.cpu_model.is_empty() {
                     ui.separator();
-                    ui.label(egui::RichText::new(&self.cpu_model).weak());
+                    // Core count moved here from the Overview CPU card: it is
+                    // a static machine fact, and it belongs next to the model
+                    // rather than in a tile showing live load.
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  ·  {} cores",
+                            self.cpu_model,
+                            utils::get_cpu_count()
+                        ))
+                        .weak(),
+                    );
                 }
                 ui.separator();
                 if gaming_active {
@@ -1113,6 +1209,17 @@ impl eframe::App for ArgusLassoApp {
                     } else {
                         RichText::new("Tools ▾")
                     };
+                    // menu_button paints a full button frame, which read as
+                    // "this control is pressed" next to the frameless tabs —
+                    // the design review flagged it as looking active with the
+                    // menu closed. Strip the frame so it sits in the bar like
+                    // the tabs do; the accent text still marks a Tools tab.
+                    let w = &mut ui.visuals_mut().widgets;
+                    w.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                    w.inactive.bg_stroke = egui::Stroke::NONE;
+                    w.hovered.bg_stroke = egui::Stroke::NONE;
+                    w.active.bg_stroke = egui::Stroke::NONE;
+                    w.open.bg_stroke = egui::Stroke::NONE;
                     ui.menu_button(tools_label, |ui| {
                         for (label, tab) in [
                             ("HW Monitor", Tab::HwMonitor),
@@ -1162,8 +1269,7 @@ impl eframe::App for ArgusLassoApp {
                         && !self.updates.busy
                     {
                         if self.updates.installed {
-                            // exec() replaces this process and does not return.
-                            self.updates.message = crate::updater::restart();
+                            self.updates.restart_requested = true;
                         } else {
                             self.updates.start_install();
                         }
@@ -1223,12 +1329,15 @@ impl eframe::App for ArgusLassoApp {
                     let mut rules_changed = false;
                     let mut profiles_changed = false;
                     let mut rule_profiles = config.rule_profiles.clone();
+                    // Process names for the rule dialog's live match count.
+                    let proc_names: Vec<String> = snapshot.iter().map(|p| p.name.clone()).collect();
                     self.rules_tab.show(
                         ui,
                         ctx,
                         &self.rule_engine,
                         &mut rules_changed,
                         self.opacity,
+                        &proc_names,
                         &mut rule_profiles,
                         &mut profiles_changed,
                     );
@@ -1413,6 +1522,50 @@ impl eframe::App for ArgusLassoApp {
                 }
             }
         });
+
+        // ── --ui-tour capture ───────────────────────────────────────────────
+        // Last thing in the frame: the screen is fully laid out by now, so the
+        // framebuffer egui hands back is the one this step is documenting.
+        if let Some(mut tour) = self.tour.take() {
+            let done = tour.tick(ctx, self.proc_count > 0);
+            let dir = tour.dir().display().to_string();
+            // Take the failures only once, at the end: draining them every
+            // frame threw away every skipped step and made a partial run
+            // report as a clean one.
+            let failures = if done {
+                std::mem::take(&mut tour.failures)
+            } else {
+                Vec::new()
+            };
+            self.tour = Some(tour);
+            if done {
+                let wrote = crate::ui_tour::STEPS.len() - failures.len();
+                println!("--ui-tour: wrote {wrote} screens to {dir}");
+                for f in &failures {
+                    eprintln!("--ui-tour: {f}");
+                }
+                crate::monitor::shutdown_and_wait(&self.state, &self.cmd_tx);
+                std::process::exit(if failures.is_empty() { 0 } else { 1 });
+            }
+        }
+
+        // ── Restart into a freshly installed update ─────────────────────────
+        // Both the banner and the Settings card only set the flag; the exec
+        // happens here, after the daemon has restored nices, throttles and
+        // parked CPUs. exec() replaces the process image outright, so on_exit
+        // never runs — without this, updating with Gaming Mode active would
+        // leave CPUs offline and no way to learn what the original nice
+        // values were. restart() only returns when it failed.
+        if self.updates.restart_requested {
+            self.updates.restart_requested = false;
+            crate::monitor::shutdown_and_wait(&self.state, &self.cmd_tx);
+            // The daemon has stopped for good by now, so a failed exec leaves
+            // the window up but no longer monitoring — say so plainly.
+            self.updates.message = format!(
+                "{} — monitoring has stopped, please quit and start Argus-Lasso again.",
+                crate::updater::restart()
+            );
+        }
 
         // Repaint when next display refresh is due — avoids continuous 60fps rendering.
         // While a kill countdown is pending, repaint fast enough that the

@@ -265,6 +265,9 @@ pub mod tokens {
     pub const ROW_H_DENSE: f32 = 22.0;
     /// Left label column width in settings forms
     pub const FORM_LABEL_W: f32 = 220.0;
+    /// Label column inside dialogs — narrower than the settings pane's, which
+    /// would take a third of a 560px dialog.
+    pub const DIALOG_LABEL_W: f32 = 130.0;
 }
 
 // ── Component primitives ──────────────────────────────────────────────────────
@@ -465,11 +468,22 @@ pub fn segmented(ui: &mut egui::Ui, options: &[&str], selected: usize) -> Option
     clicked
 }
 
+/// Horizontal chrome `kpi_card` draws outside the content: its 12px inner
+/// margins on both sides.
+///
+/// Callers divide the available width into whole card slots and the card
+/// subtracts this itself. Having the caller compensate instead is what used
+/// to push the fourth KPI card off the right edge — the margin value was
+/// duplicated as a hand-tuned constant that drifted from the real one.
+const KPI_CARD_CHROME: f32 = 24.0;
+
 /// KPI card: uppercase label, big tabular value, weak detail line, and a
 /// 3px accent stripe down the left edge in `stripe`.
+///
+/// `outer_width` is the full slot the card occupies, borders included.
 pub fn kpi_card(
     ui: &mut egui::Ui,
-    width: f32,
+    outer_width: f32,
     label: &str,
     value: &str,
     detail: &str,
@@ -489,7 +503,11 @@ pub fn kpi_card(
         })
         .corner_radius(CornerRadius::same(4))
         .show(ui, |ui| {
-            ui.set_width(width);
+            // A row laying these out zeroes item_spacing.x to keep its width
+            // arithmetic exact; child uis inherit it, so restore the theme
+            // default for the card's own contents.
+            ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            ui.set_width((outer_width - KPI_CARD_CHROME).max(0.0));
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(label.to_uppercase())
@@ -551,6 +569,90 @@ pub fn apply_bar(ui: &mut egui::Ui, dirty: bool) -> (bool, bool) {
         });
     });
     (discard, apply)
+}
+
+/// Two-column form row: fixed-width left-aligned label, then the control.
+///
+/// `label_w` is explicit because the 220px column that suits the full-width
+/// Settings pane eats a third of a 560px dialog. What carries across the app
+/// is that labels share a column edge, not the specific number.
+pub fn form_row_w(
+    ui: &mut egui::Ui,
+    label_w: f32,
+    label: &str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        let h = ui.spacing().interact_size.y;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(label_w, h), egui::Sense::hover());
+        ui.painter().text(
+            egui::pos2(rect.left(), rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(tokens::FONT_BODY),
+            ui.visuals().text_color(),
+        );
+        add_contents(ui);
+    });
+    ui.add_space(tokens::SPACE_XS);
+}
+
+/// Group heading inside a form: small caps-ish weak title with an optional
+/// plain-weight note after it, over a separator.
+pub fn group_heading(ui: &mut egui::Ui, title: &str, note: &str) {
+    ui.add_space(tokens::SPACE_XS);
+    ui.separator();
+    ui.add_space(tokens::SPACE_XS);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(
+            egui::RichText::new(title.to_uppercase())
+                .font(bold_font(tokens::FONT_LABEL))
+                .color(ui.visuals().weak_text_color()),
+        );
+        if !note.is_empty() {
+            ui.label(
+                egui::RichText::new(note)
+                    .size(tokens::FONT_LABEL)
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
+    });
+    ui.add_space(tokens::SPACE_XS);
+}
+
+/// Card frame around a plot or a grid of cells, sized to an outer box.
+///
+/// Takes the *outer* width and height and subtracts its own chrome, so
+/// callers divide up the row without restating the margin — the same
+/// contract as `kpi_card`.
+pub fn plot_card(
+    ui: &mut egui::Ui,
+    outer_w: f32,
+    outer_h: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    const CHROME: f32 = 16.0; // 8px inner margin on both sides
+    let inner_w = (outer_w - CHROME).max(0.0);
+    let inner_h = (outer_h - CHROME).max(0.0);
+    egui::Frame::new()
+        .fill(card_fill(ui))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .inner_margin(egui::Margin::same(8))
+        .corner_radius(egui::CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            // Both bounds, not just the minimum. Content that sizes itself
+            // from available_height() — the CPU history plot does — otherwise
+            // reads the whole remaining panel height and swallows everything
+            // below the card.
+            ui.set_min_size(egui::vec2(inner_w, inner_h));
+            ui.set_max_size(egui::vec2(inner_w, inner_h));
+            add_contents(ui);
+        });
 }
 
 /// Column-header label: weak, small — never accent blue, which reads as

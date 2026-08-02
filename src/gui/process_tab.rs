@@ -290,22 +290,31 @@ impl ProcessTab {
         // CPU history chart and the per-core grid side by side — stacking them
         // cost ~90px of vertical space that the table wants.
         ui.horizontal_top(|ui| {
+            // Only the explicit gap should separate the two; the default
+            // item_spacing would be added on top of the width arithmetic.
+            ui.spacing_mut().item_spacing.x = 0.0;
             let total = ui.available_width();
             // The grid is sized to its content — two columns of cells — so it
             // stays a compact block instead of stretching across half the row.
-            let cores = crate::utils::get_cpu_count().max(1);
-            let grid_cols = if cores <= 4 { 2 } else { 4 };
-            let grid_w = (grid_cols as f32 * 66.0).min(total * 0.30);
+            // Size the grid by the row count we want, not by a fixed column
+            // count: 32 cores in 4 columns is 8 rows, which made the grid
+            // twice the height of the graph beside it. Picking columns to
+            // land on GRID_ROWS keeps the pair the same height on any core
+            // count. 66 = the widget's 62px minimum cell plus its 3px gap.
+            const GRID_ROWS: usize = 4;
+            const CELL_H: f32 = 23.0; // 20px cell + 3px gap, per CpuBarsWidget
+            let cores = crate::utils::get_cpu_count().max(1) as usize;
+            let grid_cols = cores.div_ceil(GRID_ROWS).max(2);
+            let grid_w = (grid_cols as f32 * 66.0).min(total * 0.45);
             let hist_w = (total - grid_w - theme::tokens::SPACE_S).max(240.0);
-            ui.allocate_ui(egui::vec2(hist_w, 74.0), |ui| {
-                ui.set_width(hist_w);
-                self.history.show(ui);
-            });
+            // Both get the same card frame and the same height. The grid used
+            // to sit bare against the window edge while the graph had no
+            // frame either, so the row read as two loose fragments rather
+            // than a pair — and the grid ended up the taller of the two.
+            let row_h = GRID_ROWS as f32 * CELL_H + 16.0;
+            theme::plot_card(ui, hist_w, row_h, |ui| self.history.show(ui));
             ui.add_space(theme::tokens::SPACE_S);
-            ui.allocate_ui(egui::vec2(grid_w, 74.0), |ui| {
-                ui.set_width(grid_w);
-                self.bars.show(ui);
-            });
+            theme::plot_card(ui, grid_w, row_h, |ui| self.bars.show(ui));
         });
         ui.add_space(theme::tokens::SPACE_S);
 
@@ -594,6 +603,14 @@ impl ProcessTab {
         const ROW_H: f32 = theme::tokens::ROW_H;
         const HEADER_H: f32 = 24.0;
         const PAD: f32 = 4.0;
+        /// Extra breathing room on the right of a right-aligned numeric cell.
+        /// Without it NICE's value butts straight up against AFFINITY's, which
+        /// read as one cramped field ("-12 0-31") in the design review.
+        const NUM_INSET: f32 = 8.0;
+        /// Fixed width for the CPU% sparkline. Sizing it as a fraction of the
+        /// column made the value's indent shift per column width, which is
+        /// what made the column look restless.
+        const SPARK_W: f32 = 36.0;
 
         // Visible columns, in table order. Name (index 1) can never be hidden.
         let visible: Vec<usize> = (0..COLS.len())
@@ -922,20 +939,18 @@ impl ProcessTab {
                                 for &ci in &visible {
                                     let cw = col_widths[ci];
                                     let x_off = if ci == 1 { indent } else { 0.0 };
-                                    // For CPU% column (ci==2): draw sparkline on left, shift text right
-                                    let text_x_off = if ci == 2 { cw * 0.45 } else { 0.0 };
-
                                     // Numeric columns are right-aligned (§2) so
                                     // live values don't jitter; text columns
-                                    // stay left-aligned.
-                                    let numeric = matches!(ci, 0 | 3 | 4 | 5);
+                                    // stay left-aligned. CPU% is numeric too —
+                                    // it used to be left-aligned at 45% of the
+                                    // column, so its indent moved with the
+                                    // width and could collide with the
+                                    // sparkline.
+                                    let numeric = matches!(ci, 0 | 2 | 3 | 4 | 5);
                                     let text_pos = if numeric {
-                                        egui::pos2(x + cw - PAD, row_rect.center().y)
+                                        egui::pos2(x + cw - PAD - NUM_INSET, row_rect.center().y)
                                     } else {
-                                        egui::pos2(
-                                            x + PAD + x_off + text_x_off,
-                                            row_rect.center().y,
-                                        )
+                                        egui::pos2(x + PAD + x_off, row_rect.center().y)
                                     };
                                     let align = if numeric {
                                         egui::Align2::RIGHT_CENTER
@@ -965,7 +980,7 @@ impl ProcessTab {
                                     if ci == 2 {
                                         if let Some(hist) = proc_cpu_history.get(&pid) {
                                             if hist.len() >= 2 {
-                                                let spark_w = cw * 0.42;
+                                                let spark_w = SPARK_W.min(cw * 0.42);
                                                 let spark_rect = egui::Rect::from_min_size(
                                                     egui::pos2(x + 1.0, row_rect.min.y + 2.0),
                                                     egui::vec2(spark_w, ROW_H - 4.0),
