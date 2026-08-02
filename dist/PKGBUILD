@@ -10,7 +10,7 @@ arch=(x86_64 aarch64)
 url="https://github.com/franzjeger/process-lasso-linux-rs"
 license=(MIT)
 depends=(gcc-libs libxkbcommon wayland)
-makedepends=(cargo)
+makedepends=(cargo librsvg)
 optdepends=(
   'polkit: required for the privileged helpers (CPU parking, power profile, renice)'
   'zenity: file dialogs on GNOME'
@@ -36,7 +36,26 @@ package() {
   cd "$_srcdir"
   install -Dm755 "target/release/argus-lasso" "$pkgdir/usr/bin/argus-lasso"
   install -Dm644 dist/argus-lasso.desktop "$pkgdir/usr/share/applications/argus-lasso.desktop"
+  # Tiered icon masters, same split the Makefile uses: the full artwork turns
+  # to mush below ~48px, so the small sizes render from their own master.
+  install -Dm644 assets/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/argus-lasso.svg"
   install -Dm644 assets/icon.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/argus-lasso.png"
-  install -Dm644 dist/argus-lasso.service "$pkgdir/usr/lib/systemd/user/argus-lasso.service"
+  for size in 16 22 24 32 48 64 128; do
+    case $size in
+      16|22|24|32) src=assets/icon-small.svg ;;
+      48)          src=assets/icon-medium.svg ;;
+      *)           src=assets/icon.svg ;;
+    esac
+    rsvg-convert -w $size -h $size "$src" \
+      -o "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/argus-lasso.png"
+  done
+  # The shipped unit points at ~/.local/bin, which is where `make install`
+  # puts the binary. A packaged install puts it in /usr/bin, so rewrite the
+  # path — otherwise the unit references a file that does not exist and the
+  # service fails to start.
+  sed 's|^ExecStart=%h/.local/bin/argus-lasso|ExecStart=/usr/bin/argus-lasso|' \
+    dist/argus-lasso.service > "$srcdir/argus-lasso.service"
+  install -Dm644 "$srcdir/argus-lasso.service" \
+    "$pkgdir/usr/lib/systemd/user/argus-lasso.service"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

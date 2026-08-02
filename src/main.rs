@@ -136,7 +136,11 @@ enum Cmd {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "argus-lasso", about = "Argus-Lasso — Linux process manager")]
+#[command(
+    name = "argus-lasso",
+    version,
+    about = "Argus-Lasso — Linux process manager"
+)]
 struct Args {
     /// Start minimised to system tray
     #[arg(long, default_value_t = false)]

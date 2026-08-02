@@ -85,3 +85,35 @@ jobs:
 
       - name: cargo clippy
         run: cargo clippy --release --all-targets --locked
+
+  msrv:
+    name: minimum supported Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libwayland-dev
+
+      # Pinned to the rust-version in Cargo.toml. Without this the field is
+      # a claim nobody checks — it sat at 1.75 for a tree that needs 1.88.
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      # check, not build: this job answers "does the floor still compile",
+      # and a full release build on a fourth job is minutes for no more signal.
+      - name: cargo check
+        run: cargo check --locked --all-targets
