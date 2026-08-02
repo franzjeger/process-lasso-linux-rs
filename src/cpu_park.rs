@@ -892,16 +892,21 @@ mod tests {
     use super::*;
 
     fn stage_script(name: &str, body: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = std::env::temp_dir().join(format!("argus-{name}-{}", std::process::id()));
         fs::write(&path, body).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
 
+    /// Run the script through `bash` rather than exec'ing the file.
+    ///
+    /// Tests run in parallel, and a sibling that spawns a process between our
+    /// open-for-write and close leaves that child holding a writable
+    /// descriptor to it — exec'ing the file then fails with ETXTBSY until the
+    /// child exits. Handing the path to bash only ever opens it for reading,
+    /// so the race cannot happen, and the file needs no exec bit.
     fn run(script: &std::path::Path, args: &[&str], pkexec_uid: Option<&str>) -> i32 {
-        let mut cmd = Command::new(script);
-        cmd.args(args).env_remove("PKEXEC_UID");
+        let mut cmd = Command::new("bash");
+        cmd.arg(script).args(args).env_remove("PKEXEC_UID");
         if let Some(uid) = pkexec_uid {
             cmd.env("PKEXEC_UID", uid);
         }
