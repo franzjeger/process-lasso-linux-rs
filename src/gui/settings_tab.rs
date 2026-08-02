@@ -202,7 +202,7 @@ impl SettingsTab {
             help_text(ui, &help);
             ui.add_space(tokens::SPACE_S);
 
-            form_row(ui, "Default affinity", |ui| {
+            ui.horizontal(|ui| {
                 ui.checkbox(&mut self.default_affinity_enabled, "Enabled");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.default_affinity_text)
@@ -222,7 +222,10 @@ impl SettingsTab {
                 }
             });
 
-            form_row(ui, "Quick presets", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Quick presets:").color(ui.visuals().weak_text_color()),
+                );
                 let current = self.default_affinity_text.trim().to_string();
                 let on = self.default_affinity_enabled;
                 if self.topo.has_asymmetry() {
@@ -287,15 +290,9 @@ impl SettingsTab {
                     .iter()
                     .position(|ms| *ms == self.config.monitor.display_refresh_interval_ms)
                     .unwrap_or(usize::MAX);
-                if let Some(i) = theme::segmented(ui, &["0.5 s", "1 s", "2 s", "5 s"], sel) {
+                if let Some(i) = theme::segmented(ui, &["0.5s", "1s", "2s", "5s"], sel) {
                     self.config.monitor.display_refresh_interval_ms = PICKS[i];
                 }
-                ui.add_space(tokens::SPACE_S);
-                ui.add(
-                    egui::DragValue::new(&mut self.config.monitor.display_refresh_interval_ms)
-                        .range(500..=10000)
-                        .suffix(" ms"),
-                );
             });
         });
 
