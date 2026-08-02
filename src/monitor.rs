@@ -84,7 +84,11 @@ impl Default for ProcInfo {
 
 #[derive(Debug, Default)]
 pub struct AppState {
-    pub snapshot: Vec<ProcInfo>,
+    /// Behind an Arc so publishing and reading are both pointer copies. It
+    /// used to be deep-cloned twice per display tick — once into this struct
+    /// and once out of it by the GUI — which is four allocations per process,
+    /// per clone, for data neither side mutates.
+    pub snapshot: std::sync::Arc<Vec<ProcInfo>>,
     /// Per-CPU utilisation % (indexed by cpu number, parked CPUs = 0.0)
     pub cpu_percents: Vec<f32>,
     /// Monotonic counter incremented each time cpu_percents is updated by the daemon.
@@ -266,8 +270,9 @@ fn run_loop(
     let mut auto_gaming = false;
     // Consecutive snapshots without a detected game before auto-disabling
     let mut game_absent_snapshots: u32 = 0;
-    // Disk I/O tracking: pid → (read_bytes, write_bytes) at last sample
-    let mut prev_io: HashMap<u32, (u64, u64)> = HashMap::new();
+    // Per-PID caches: immutable metadata, display-only fields, I/O counters.
+    let mut caches = SnapshotCaches::default();
+    let mut last_io_sample = Instant::now();
     // HW alert cooldown: sensor_label → last alert time
     let mut last_alert_times: HashMap<String, Instant> = HashMap::new();
 
@@ -390,15 +395,41 @@ fn run_loop(
 
         let now = Instant::now();
         let enforce_interval = Duration::from_millis(config.monitor.rule_enforce_interval_ms);
-        let needs_snapshot = now.duration_since(last_enforce) >= enforce_interval
+        // With no enabled rules and no default affinity there is nothing for
+        // an enforce pass to do, so it should not be a reason to walk /proc.
+        // On a default install that halves the walks: two a second down to
+        // ProBalance's one. Cheap to recheck — the engine holds a Vec.
+        let enforcing = config.cpu.default_affinity.is_some()
+            || rule_engine
+                .lock()
+                .map(|re| re.get_rules().iter().any(|r| r.enabled))
+                .unwrap_or(false);
+        let needs_snapshot = (enforcing && now.duration_since(last_enforce) >= enforce_interval)
             || now.duration_since(last_snapshot)
                 >= Duration::from_millis(config.monitor.display_refresh_interval_ms)
             || now.duration_since(last_pb) >= Duration::from_secs(1);
 
         // ── Collect process snapshot (only when needed) ─────────────────────
         if needs_snapshot {
-            let (new_snapshot, new_cpu_times, sys_total) =
-                collect_snapshot(&mut prev_cpu_times, prev_sys_total, &mut prev_io);
+            // Affinity, I/O priority and disk rates are rendered by the
+            // process table and nothing else, so only pay for them on the
+            // pass that will actually be published.
+            let detail = now.duration_since(last_snapshot)
+                >= Duration::from_millis(config.monitor.display_refresh_interval_ms);
+            let io_elapsed = if detail {
+                let e = now.duration_since(last_io_sample).as_secs_f32();
+                last_io_sample = now;
+                e
+            } else {
+                0.0
+            };
+            let (new_snapshot, new_cpu_times, sys_total) = collect_snapshot(
+                &mut prev_cpu_times,
+                prev_sys_total,
+                &mut caches,
+                detail,
+                io_elapsed,
+            );
             prev_cpu_times = new_cpu_times;
             prev_sys_total = sys_total;
             raw_snapshot = new_snapshot;
@@ -410,6 +441,7 @@ fn run_loop(
             // process's nice restored onto it when Gaming Mode is disabled.
             original_affinities.retain(|pid, _| current_pids.contains(pid));
             gaming_niced.retain(|pid, _| current_pids.contains(pid));
+            caches.retain_live(&current_pids);
             enforce_nice_failed.retain(|(_, pid)| current_pids.contains(pid));
 
             // ── New PIDs: apply rules or default affinity ───────────────────
@@ -481,7 +513,7 @@ fn run_loop(
         }
 
         // ── Rule enforcement every enforce_interval ─────────────────────────
-        if now.duration_since(last_enforce) >= enforce_interval {
+        if enforcing && now.duration_since(last_enforce) >= enforce_interval {
             // Expire stale manual overrides
             manual_overrides.retain(|_, exp| *exp > now);
             // Clone the rules and enforce WITHOUT holding the engine lock:
@@ -599,7 +631,7 @@ fn run_loop(
             );
 
             if let Ok(mut s) = state.lock() {
-                s.snapshot = raw_snapshot.clone();
+                s.snapshot = std::sync::Arc::new(raw_snapshot.clone());
                 s.cpu_percents = cpu_percents;
                 s.cpu_generation = s.cpu_generation.wrapping_add(1);
                 s.throttled_pids = throttled;
@@ -650,11 +682,12 @@ fn run_loop(
 /// Samples 500ms apart so CPU% deltas are meaningful.
 pub fn oneshot_snapshot() -> Vec<ProcInfo> {
     let mut prev_times: HashMap<u32, u64> = HashMap::new();
-    let mut prev_io: HashMap<u32, (u64, u64)> = HashMap::new();
-    let (_, times, sys_total) = collect_snapshot(&mut prev_times, 0, &mut prev_io);
+    let mut caches = SnapshotCaches::default();
+    // The CLI prints affinity, so both passes ask for detail.
+    let (_, times, sys_total) = collect_snapshot(&mut prev_times, 0, &mut caches, true, 0.0);
     prev_times = times;
     std::thread::sleep(Duration::from_millis(500));
-    let (snap, _, _) = collect_snapshot(&mut prev_times, sys_total, &mut prev_io);
+    let (snap, _, _) = collect_snapshot(&mut prev_times, sys_total, &mut caches, true, 0.5);
     snap
 }
 
@@ -705,16 +738,59 @@ fn park_non_preferred(log_cb: &impl Fn(String)) {
 
 // ── Process collection ────────────────────────────────────────────────────────
 
+/// Per-PID facts that never change while the process lives.
+///
+/// `cmdline` was re-read, re-joined and re-allocated for every process on
+/// every pass — several hundred file reads a second for strings that cannot
+/// have changed. `start_time` guards against PID reuse handing a recycled PID
+/// the previous occupant's name.
+struct ProcMeta {
+    start_time: u64,
+    name: String,
+    cmdline: std::sync::Arc<String>,
+}
+
+/// Caches that let a collection pass skip work the callers do not need.
+#[derive(Default)]
+pub struct SnapshotCaches {
+    meta: HashMap<u32, ProcMeta>,
+    /// pid → (affinity, ionice) — display-only, so refreshed on the display
+    /// cadence rather than the much shorter enforce cadence.
+    display: HashMap<u32, (String, String)>,
+    /// pid → (read_bytes, write_bytes) at the last I/O sample.
+    io: HashMap<u32, (u64, u64)>,
+}
+
+impl SnapshotCaches {
+    /// Drop entries for PIDs that are gone. Called with the live PID set the
+    /// loop already computes, so this costs nothing extra.
+    fn retain_live(&mut self, live: &HashSet<u32>) {
+        self.meta.retain(|pid, _| live.contains(pid));
+        self.display.retain(|pid, _| live.contains(pid));
+        self.io.retain(|pid, _| live.contains(pid));
+    }
+}
+
+/// Collect one pass over `/proc`.
+///
+/// `detail` asks for the display-only fields — affinity, I/O priority and
+/// disk rates. They cost a syscall and two allocations per process each, and
+/// only the process table renders them, so the enforce and ProBalance ticks
+/// pass `false` and reuse whatever the last display pass saw.
+///
+/// `io_elapsed` is the wall time since the last I/O sample; the byte deltas
+/// are divided by it so the rate is per second regardless of cadence.
 fn collect_snapshot(
     prev_times: &mut HashMap<u32, u64>,
     prev_sys_total: u64,
-    prev_io: &mut HashMap<u32, (u64, u64)>,
+    caches: &mut SnapshotCaches,
+    detail: bool,
+    io_elapsed: f32,
 ) -> (Vec<ProcInfo>, HashMap<u32, u64>, u64) {
     use procfs::process::all_processes;
     use procfs::WithCurrentSystemInfo;
 
     let mut new_times: HashMap<u32, u64> = HashMap::new();
-    let mut new_io: HashMap<u32, (u64, u64)> = HashMap::new();
     let mut snapshot: Vec<ProcInfo> = Vec::new();
 
     // Read total system CPU jiffies for CPU% calculation.
@@ -745,9 +821,24 @@ fn collect_snapshot(
         };
 
         let ppid = stat.ppid as u32;
-        let comm = stat.comm.clone();
-        let cmdline: Vec<String> = proc.cmdline().unwrap_or_default();
-        let name = utils::resolve_name(&comm, &cmdline);
+
+        // Name and command line are fixed for this process's lifetime, so
+        // read them once and keep them. start_time distinguishes a reused PID
+        // from the same process still running.
+        let meta = match caches.meta.get(&pid) {
+            Some(m) if m.start_time == stat.starttime => m,
+            _ => {
+                let cmdline: Vec<String> = proc.cmdline().unwrap_or_default();
+                let entry = ProcMeta {
+                    start_time: stat.starttime,
+                    name: utils::resolve_name(&stat.comm, &cmdline),
+                    cmdline: std::sync::Arc::new(cmdline.join(" ")),
+                };
+                caches.meta.entry(pid).insert_entry(entry).into_mut()
+            }
+        };
+        let name = meta.name.clone();
+        let cmdline = std::sync::Arc::clone(&meta.cmdline);
 
         let proc_ticks = stat.utime + stat.stime;
         new_times.insert(pid, proc_ticks);
@@ -763,11 +854,22 @@ fn collect_snapshot(
 
         let mem_rss = stat.rss_bytes().get();
         let nice = stat.nice as i32;
-        let affinity = utils::get_affinity_str(pid);
-        let ionice = read_ionice(pid);
 
-        // Disk I/O — read from /proc/<pid>/io; ignore permission errors
-        let (disk_read_bps, disk_write_bps) = read_proc_io(pid, prev_io, &mut new_io);
+        let (affinity, ionice, disk_read_bps, disk_write_bps) = if detail {
+            let affinity = utils::get_affinity_str(pid);
+            let ionice = read_ionice(pid);
+            let (r, w) = read_proc_io(pid, &mut caches.io, io_elapsed);
+            caches
+                .display
+                .insert(pid, (affinity.clone(), ionice.clone()));
+            (affinity, ionice, r, w)
+        } else {
+            // Reuse the last display pass. A PID first seen on an enforce
+            // tick simply shows blank until the next display tick, which is
+            // sooner than a human can read the row anyway.
+            let (a, i) = caches.display.get(&pid).cloned().unwrap_or_default();
+            (a, i, 0, 0)
+        };
 
         snapshot.push(ProcInfo {
             pid,
@@ -781,19 +883,20 @@ fn collect_snapshot(
             ionice,
             disk_read_bps,
             disk_write_bps,
-            cmdline: std::sync::Arc::new(cmdline.join(" ")),
+            cmdline,
         });
     }
 
-    *prev_io = new_io;
     (snapshot, new_times, sys_total)
 }
 
-fn read_proc_io(
-    pid: u32,
-    prev_io: &HashMap<u32, (u64, u64)>,
-    new_io: &mut HashMap<u32, (u64, u64)>,
-) -> (u64, u64) {
+/// Per-second disk read/write rates for one PID.
+///
+/// The deltas are divided by the elapsed sample time. They used to be
+/// returned raw and labelled "bytes/s", so the figure was wrong by whatever
+/// the sampling cadence happened to be — twice the real rate at the default
+/// 500 ms.
+fn read_proc_io(pid: u32, io_cache: &mut HashMap<u32, (u64, u64)>, elapsed: f32) -> (u64, u64) {
     let text = match std::fs::read_to_string(format!("/proc/{pid}/io")) {
         Ok(t) => t,
         Err(_) => return (0, 0),
@@ -807,14 +910,21 @@ fn read_proc_io(
             write_bytes = v.trim().parse().unwrap_or(0);
         }
     }
-    let (prev_r, prev_w) = prev_io
+    let (prev_r, prev_w) = io_cache
         .get(&pid)
         .copied()
         .unwrap_or((read_bytes, write_bytes));
-    new_io.insert(pid, (read_bytes, write_bytes));
+    io_cache.insert(pid, (read_bytes, write_bytes));
+    let per_sec = |delta: u64| {
+        if elapsed > 0.01 {
+            (delta as f32 / elapsed) as u64
+        } else {
+            0
+        }
+    };
     (
-        read_bytes.saturating_sub(prev_r),
-        write_bytes.saturating_sub(prev_w),
+        per_sec(read_bytes.saturating_sub(prev_r)),
+        per_sec(write_bytes.saturating_sub(prev_w)),
     )
 }
 
