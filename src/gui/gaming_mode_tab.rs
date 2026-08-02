@@ -703,8 +703,11 @@ impl GamingModeTab {
                         }
                     });
 
-                    ui.horizontal(|ui| {
-                        ui.label("Game");
+                    // The two launcher fields sat on bare horizontal rows, so
+                    // their inputs started at different x — the same label
+                    // grid the rest of the app uses lines them up.
+                    let lw = tokens::FORM_LABEL_W;
+                    th::form_row_w(ui, lw, "Game", |ui| {
                         ui.text_edit_singleline(&mut self.game_name);
                         if ui.button("Steam…").clicked() {
                             self.steam_picker =
@@ -716,8 +719,7 @@ impl GamingModeTab {
                         }
                     });
 
-                    ui.horizontal(|ui| {
-                        ui.label("Command");
+                    th::form_row_w(ui, lw, "Command", |ui| {
                         ui.text_edit_singleline(&mut self.command);
                     });
 

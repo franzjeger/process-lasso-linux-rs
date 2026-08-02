@@ -1204,79 +1204,141 @@ impl RulePresetsDialog {
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_as = Some(false);
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        ui.label("Select a preset to create a pre-filled rule:");
-                        ui.add_space(4.0);
-                        // Header row
-                        let hdr_bg = ui.visuals().widgets.noninteractive.bg_fill;
-                        let hdr_col = crate::gui::theme::strong_color(ui);
-                        egui::Frame::new().fill(hdr_bg).show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            egui::Grid::new("preset_hdr")
-                                .num_columns(4)
-                                .min_col_width(60.0)
-                                .spacing([16.0, 2.0])
-                                .show(ui, |ui| {
-                                    for label in ["NAME", "PATTERN", "MATCH", "AFFINITY"] {
-                                        ui.label(
-                                            egui::RichText::new(label).strong().color(hdr_col),
-                                        );
-                                    }
-                                    ui.end_row();
-                                });
-                        });
-                        let presets = rule_presets();
-                        egui::ScrollArea::vertical()
-                            .max_height(240.0)
-                            .show(ui, |ui| {
-                                for (i, (name, pat, match_type, ref aff, _nice, _ioc, _iol)) in
-                                    presets.iter().enumerate()
-                                {
-                                    let is_sel = *selected == Some(i);
-                                    let bg = if is_sel {
-                                        ui.visuals().selection.bg_fill
-                                    } else if i % 2 == 1 {
-                                        ui.visuals().faint_bg_color
-                                    } else {
-                                        ui.visuals().extreme_bg_color
-                                    };
-                                    egui::Frame::new().fill(bg).show(ui, |ui| {
-                                        ui.set_min_width(ui.available_width());
-                                        let resp = egui::Grid::new(("preset_row", i))
-                                            .num_columns(4)
-                                            .min_col_width(60.0)
-                                            .spacing([16.0, 2.0])
-                                            .show(ui, |ui| {
-                                                ui.label(*name);
-                                                ui.label(*pat);
-                                                ui.label(*match_type);
-                                                ui.label(aff.as_deref().unwrap_or(""));
-                                                ui.end_row();
-                                            })
-                                            .response;
-                                        if resp.clicked() {
-                                            *selected = Some(i);
-                                        }
-                                        if resp.double_clicked() {
-                                            *selected = Some(i);
-                                            close_as = Some(true);
-                                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                        }
-                                    });
-                                }
-                            });
-                        ui.separator();
+                    use crate::gui::theme::{self as th, tokens};
+
+                    // Actions in a bottom panel, pinned to the dialog edge —
+                    // same shape as the rule editor, so the two dialogs do not
+                    // put the same controls in different places.
+                    egui::TopBottomPanel::bottom("preset_actions").show(ctx, |ui| {
+                        let s = th::sem(ui);
+                        ui.add_space(tokens::SPACE_XS);
                         ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(selected.is_some(), egui::Button::new("Use Preset"))
-                                .clicked()
-                            {
-                                close_as = Some(true);
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            ui.label(
+                                egui::RichText::new("Double-click a template to use it")
+                                    .size(tokens::FONT_HELP)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let use_btn = egui::Button::new(
+                                        egui::RichText::new("Use template")
+                                            .color(s.on_accent)
+                                            .strong(),
+                                    )
+                                    .fill(s.accent);
+                                    if ui.add_enabled(selected.is_some(), use_btn).clicked() {
+                                        close_as = Some(true);
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        close_as = Some(false);
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                },
+                            );
+                        });
+                        ui.add_space(tokens::SPACE_XS);
+                    });
+
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "Templates pre-fill a rule; you can edit it before saving.",
+                            )
+                            .size(tokens::FONT_HELP)
+                            .color(ui.visuals().weak_text_color()),
+                        );
+                        ui.add_space(tokens::SPACE_XS);
+
+                        // Fixed column widths, one shared set for the header
+                        // and every row. A Grid per row — which is what this
+                        // was — sizes each row's columns independently, so
+                        // nothing lined up down the table.
+                        const ROW_H: f32 = tokens::ROW_H;
+                        const PAD: f32 = 6.0;
+                        let total = ui.available_width();
+                        let w_match = 80.0;
+                        let w_aff = 110.0;
+                        let w_name = ((total - w_match - w_aff) * 0.42).max(110.0);
+                        let w_pat = (total - w_match - w_aff - w_name).max(90.0);
+                        let cols = [w_name, w_pat, w_match, w_aff];
+
+                        let draw_row = |ui: &mut egui::Ui,
+                                        cells: [&str; 4],
+                                        bg: Option<egui::Color32>,
+                                        strong: bool|
+                         -> egui::Response {
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(total, ROW_H),
+                                egui::Sense::click(),
+                            );
+                            if let Some(c) = bg {
+                                ui.painter().rect_filled(rect, 0.0, c);
                             }
-                            if ui.button("Cancel").clicked() {
-                                close_as = Some(false);
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            let mut x = rect.left();
+                            for (i, text) in cells.iter().enumerate() {
+                                let col = if strong {
+                                    ui.visuals().weak_text_color()
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                let font = if i == 1 {
+                                    egui::FontId::monospace(tokens::FONT_HELP)
+                                } else {
+                                    egui::FontId::proportional(tokens::FONT_HELP)
+                                };
+                                ui.painter_at(egui::Rect::from_min_size(
+                                    egui::pos2(x, rect.top()),
+                                    egui::vec2(cols[i], ROW_H),
+                                ))
+                                .text(
+                                    egui::pos2(x + PAD, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    text,
+                                    font,
+                                    col,
+                                );
+                                x += cols[i];
+                            }
+                            resp
+                        };
+
+                        let hdr_bg = ui.visuals().widgets.noninteractive.bg_fill;
+                        draw_row(
+                            ui,
+                            ["NAME", "PATTERN", "MATCH", "AFFINITY"],
+                            Some(hdr_bg),
+                            true,
+                        );
+
+                        let presets = rule_presets();
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for (i, (name, pat, match_type, ref aff, _nice, _ioc, _iol)) in
+                                presets.iter().enumerate()
+                            {
+                                let is_sel = *selected == Some(i);
+                                let bg = if is_sel {
+                                    ui.visuals().selection.bg_fill
+                                } else if i % 2 == 1 {
+                                    ui.visuals().faint_bg_color
+                                } else {
+                                    ui.visuals().extreme_bg_color
+                                };
+                                let resp = draw_row(
+                                    ui,
+                                    [name, pat, match_type, aff.as_deref().unwrap_or("—")],
+                                    Some(bg),
+                                    false,
+                                );
+                                if resp.clicked() {
+                                    *selected = Some(i);
+                                }
+                                if resp.double_clicked() {
+                                    *selected = Some(i);
+                                    close_as = Some(true);
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
                             }
                         });
                     });
