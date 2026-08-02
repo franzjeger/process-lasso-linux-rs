@@ -44,6 +44,18 @@ impl ProBalanceTab {
         const LABEL_W: f32 = tokens::FORM_LABEL_W;
         let s = th::sem(ui);
 
+        // The apply bar has to sit on the panel's bottom edge, the same as
+        // Settings — floating it after however tall the content happened to
+        // be put the same control in a different place on each tab. Reserving
+        // the bar's height and scrolling the body is what pins it.
+        let bar_h = 44.0;
+        let body_h = (ui.available_height() - bar_h).max(120.0);
+        egui::ScrollArea::vertical()
+            .id_salt("probalance_body")
+            .max_height(body_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+
         // ── Status card: state, plain-language summary, live count ────────
         card_untitled(ui, |ui| {
             ui.horizontal(|ui| {
@@ -293,6 +305,8 @@ impl ProBalanceTab {
             if let Some(i) = remove {
                 self.cfg.exempt_patterns.remove(i);
             }
+        });
+
         });
 
         // ── Apply bar ─────────────────────────────────────────────────────
