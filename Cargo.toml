@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 # GUI
 eframe      = { version = "0.33" }  # default-features includes glow (OpenGL); no wgpu
-egui        = "0.33"
+egui        = "0.34"
 egui_extras = "0.33"
 
 # Process enumeration
