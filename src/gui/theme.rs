@@ -906,6 +906,28 @@ pub fn cpu_load_color(pct: f32) -> Color32 {
 
 // ── Theme application ─────────────────────────────────────────────────────────
 
+/// Scroll bars that are visible without hovering them.
+///
+/// egui's `solid()` preset sets `dormant_handle_opacity` to 0.0, so the handle
+/// is fully transparent until the pointer enters the scroll area. A panel
+/// whose content overflows then looks truncated rather than scrollable —
+/// which is exactly how the Settings tab's last card and the rule dialog's
+/// Nice/I-O rows read.
+///
+/// `foreground_color` takes the handle from the text colour rather than
+/// `widgets.*.bg_fill`, so this needs no palette change; bg_fill is shared
+/// with checkbox and slider backgrounds and is the wrong knob for this.
+fn scroll_style() -> egui::style::ScrollStyle {
+    let mut s = egui::style::ScrollStyle::solid();
+    s.bar_width = 10.0;
+    s.foreground_color = true;
+    s.dormant_handle_opacity = 0.32;
+    s.active_handle_opacity = 0.55;
+    s.interact_handle_opacity = 0.85;
+    s.dormant_background_opacity = 0.12;
+    s
+}
+
 pub fn apply(ctx: &Context, native_ppp: f32) {
     // Ensure the rendering scale matches the display's native DPI so fonts
     // don't shrink when the theme is reapplied (e.g. after toggling system theme).
@@ -987,6 +1009,7 @@ pub fn apply(ctx: &Context, native_ppp: f32) {
     // ── Spacing — comfortable row height ─────────────────────────────────
     style.spacing.interact_size.y = 24.0;
     style.spacing.item_spacing = egui::vec2(8.0, 4.0);
+    style.spacing.scroll = scroll_style();
 
     // ── Striped table — more visible alt row ─────────────────────────────
     // faint_bg_color is set in vis above; override again after style.visuals assignment
@@ -1081,6 +1104,7 @@ pub fn apply_light(ctx: &Context, native_ppp: f32) {
 
     style.spacing.interact_size.y = 24.0;
     style.spacing.item_spacing = egui::vec2(8.0, 4.0);
+    style.spacing.scroll = scroll_style();
     // Striped table alternate row — explicitly set after visuals assignment
     style.visuals.faint_bg_color = alt_base;
 

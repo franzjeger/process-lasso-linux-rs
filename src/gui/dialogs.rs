@@ -787,8 +787,13 @@ impl RuleEditDialog {
                         width: crate::icon::W,
                         height: crate::icon::H,
                     })
-                    .with_inner_size([560.0, 400.0])
-                    .with_min_inner_size([560.0, 320.0])
+                    // Wide enough for the affinity picker's quick-select row,
+                    // which is sized from the CPU topology and overflowed a
+                    // 560px dialog; tall enough that Nice and I/O priority are
+                    // visible with the picker expanded rather than below the
+                    // fold.
+                    .with_inner_size([720.0, 620.0])
+                    .with_min_inner_size([640.0, 420.0])
                     .with_transparent(true)
                     .with_resizable(true),
                 |vp_ui, _class| {
