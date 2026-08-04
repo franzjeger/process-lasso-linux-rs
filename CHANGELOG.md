@@ -7,6 +7,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-04
+
 ### Security
 
 - **The privileged helper no longer installs a blanket `NOPASSWD` sudoers rule.**
@@ -207,7 +209,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - Virtualized the process table; dropped per-frame clones and sysfs reads.
 
-[Unreleased]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.9...v1.1.0
 [1.0.9]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.7...v1.0.8
