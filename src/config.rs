@@ -328,3 +328,99 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
     log::debug!("Config saved to {}", path.display());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A config with every shape the file uses: nested tables, string and
+    /// float arrays, a map of profiles, and an Option that is Some.
+    fn populated() -> Config {
+        let mut cfg = Config::default();
+        cfg.cpu.default_affinity = Some("0-7,16-23".into());
+        cfg.probalance.exempt_patterns = vec!["kwin".into(), "some app".into()];
+        cfg.probalance.cpu_threshold_percent = 73.5;
+        cfg.ui.opacity = 0.85;
+        cfg.ui.theme = "BreezeLight".into();
+        cfg.ui.col_widths = vec![61.0, 0.0, 91.5];
+        cfg.ui.hidden_columns = vec!["GPU%".into()];
+        cfg.rules = vec![RuleConfig {
+            name: "Steam → V-Cache".into(),
+            pattern: "steam".into(),
+            match_type: "contains".into(),
+            affinity: Some("0-7".into()),
+            nice: Some(-5),
+            ..Default::default()
+        }];
+        cfg.rule_profiles.insert("gaming".into(), cfg.rules.clone());
+        cfg
+    }
+
+    /// The round trip is what `save` then `load` does on every settings
+    /// change. A serialiser that cannot read back what it wrote silently
+    /// resets the user's config to defaults — `load` logs and falls back.
+    #[test]
+    fn config_survives_a_toml_round_trip() {
+        let cfg = populated();
+        let text = toml::to_string_pretty(&cfg).expect("serialise");
+        let back: Config = toml::from_str(&text).expect("deserialise");
+
+        assert_eq!(back.cpu.default_affinity, cfg.cpu.default_affinity);
+        assert_eq!(
+            back.probalance.exempt_patterns,
+            cfg.probalance.exempt_patterns
+        );
+        assert!(
+            (back.probalance.cpu_threshold_percent - 73.5).abs() < 0.001,
+            "float lost precision: {}",
+            back.probalance.cpu_threshold_percent
+        );
+        assert!((back.ui.opacity - 0.85).abs() < 0.001);
+        assert_eq!(back.ui.theme, "BreezeLight");
+        assert_eq!(back.ui.col_widths, cfg.ui.col_widths);
+        assert_eq!(back.ui.hidden_columns, cfg.ui.hidden_columns);
+        assert_eq!(back.rules.len(), 1);
+        assert_eq!(back.rules[0].name, "Steam → V-Cache");
+        assert_eq!(back.rules[0].nice, Some(-5));
+        assert_eq!(back.rule_profiles.get("gaming").map(|v| v.len()), Some(1));
+    }
+
+    /// Missing keys must fall back to defaults rather than failing the parse
+    /// — that is what lets an old config survive a new release.
+    #[test]
+    fn a_partial_config_fills_in_defaults() {
+        let cfg: Config = toml::from_str("[ui]\ntheme = \"BreezeLight\"\n").expect("parse");
+        assert_eq!(cfg.ui.theme, "BreezeLight");
+        assert_eq!(
+            cfg.monitor.display_refresh_interval_ms,
+            MonitorConfig::default().display_refresh_interval_ms
+        );
+        assert!(cfg.rules.is_empty());
+    }
+
+    /// Guards the actual on-disk format, not just the in-memory types.
+    #[test]
+    fn the_installed_config_shape_parses() {
+        let sample = r#"
+[cpu]
+default_affinity = "8-15,24-31"
+
+[probalance]
+enabled = true
+exempt_patterns = ["kwin", "plasmashell"]
+
+[ui]
+opacity = 1.0
+theme = "BreezeDark"
+col_widths = [60.0, 0.0, 90.0]
+
+[[rules]]
+name = "test"
+pattern = "foo"
+match_type = "exact"
+"#;
+        let cfg: Config = toml::from_str(sample).expect("the shipped config shape must parse");
+        assert_eq!(cfg.cpu.default_affinity.as_deref(), Some("8-15,24-31"));
+        assert_eq!(cfg.rules.len(), 1);
+    }
+}
