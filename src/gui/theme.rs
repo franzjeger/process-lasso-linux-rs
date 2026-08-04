@@ -714,7 +714,20 @@ pub fn card_hinted(
 /// Full-width alert/notice banner with semantic colour and an optional action
 /// button. Returns true if the action button was clicked.
 pub fn banner(ui: &mut egui::Ui, color: Color32, text: &str, action: Option<&str>) -> bool {
+    banner_dismissible(ui, color, text, action, false).0
+}
+
+/// Banner with an optional ✕ that closes it. Returns
+/// (action_clicked, dismiss_clicked).
+pub fn banner_dismissible(
+    ui: &mut egui::Ui,
+    color: Color32,
+    text: &str,
+    action: Option<&str>,
+    dismissible: bool,
+) -> (bool, bool) {
     let mut clicked = false;
+    let mut dismissed = false;
     egui::Frame::new()
         .fill(Color32::from_rgba_unmultiplied(
             color.r(),
@@ -731,8 +744,18 @@ pub fn banner(ui: &mut egui::Ui, color: Color32, text: &str, action: Option<&str
                 let (dot, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                 ui.painter().circle_filled(dot.center(), 4.0, color);
                 ui.colored_label(color, text);
-                if let Some(label) = action {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Right-to-left: the ✕ is added first so it sits outermost,
+                    // past the primary action.
+                    if dismissible
+                        && ui
+                            .add(egui::Button::new("✕").frame(false))
+                            .on_hover_text("Dismiss")
+                            .clicked()
+                    {
+                        dismissed = true;
+                    }
+                    if let Some(label) = action {
                         let btn = egui::Button::new(
                             egui::RichText::new(label)
                                 .color(sem(ui).on_accent)
@@ -742,11 +765,11 @@ pub fn banner(ui: &mut egui::Ui, color: Color32, text: &str, action: Option<&str
                         if ui.add(btn).clicked() {
                             clicked = true;
                         }
-                    });
-                }
+                    }
+                });
             });
         });
-    clicked
+    (clicked, dismissed)
 }
 
 // ── Semantic colour system ────────────────────────────────────────────────────

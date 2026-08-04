@@ -3,7 +3,7 @@
 # update pkgver, run `updpkgsums` (replaces the SKIP checksum), then
 # `makepkg --printsrcinfo > .SRCINFO`.
 pkgname=argus-lasso
-pkgver=1.1.0
+pkgver=1.1.1
 pkgrel=1
 pkgdesc="Linux process manager with CPU affinity, ProBalance, Gaming Mode CPU parking, and HW monitoring"
 arch=(x86_64 aarch64)
