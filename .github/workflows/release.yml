@@ -109,15 +109,47 @@ jobs:
           generate_release_notes: false
 
   release-notes:
-    name: regenerate release notes
+    name: release notes from CHANGELOG
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Overwrite notes with freshly generated ones (idempotent)
+      # The previous version of this job called generate-notes, which needs no
+      # checkout. Reading the changelog does.
+      - uses: actions/checkout@v7
+
+      - name: Publish the CHANGELOG section for this tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           tag="${{ inputs.tag || github.ref_name }}"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f tag_name="$tag" --jq .body > notes.md
+          version="${tag#v}"
+
+          # Everything between this version's heading and the next one.
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/         { exit }
+            found                      { print }
+          ' CHANGELOG.md > notes.md
+
+          # Refuse rather than publish something empty or stale: a release
+          # whose notes silently fall back to a commit list is worse than one
+          # that fails and tells you the changelog was not updated.
+          if [ ! -s notes.md ] || ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no '## [${version}]' section." \
+                 "Rename the [Unreleased] heading to [${version}] and add a" \
+                 "compare link before tagging."
+            exit 1
+          fi
+
+          # The section body cites references like ([#27]) whose definitions
+          # live in the changelog's footer, outside the slice — without them
+          # the notes render literal brackets instead of links.
+          {
+            echo
+            grep -E '^\[[^]]+\]: https?://' CHANGELOG.md || true
+            echo
+            echo "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${tag}/CHANGELOG.md) for the full history."
+          } >> notes.md
+
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
