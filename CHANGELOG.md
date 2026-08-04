@@ -72,13 +72,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Performance
 
-- **Idle CPU cut from 1.31% to 0.58% of a core** (578-process machine, 120 s
-  windows). Process names and command lines are cached per PID instead of
-  being re-read every pass; affinity, I/O priority and disk rates are sampled
-  on the display cadence rather than the enforce cadence; an enforce pass with
-  no rules and no default affinity no longer drives a `/proc` walk; and the
-  published snapshot moved behind an `Arc` instead of being deep-cloned twice
-  per display tick. ([#29])
+- **Idle CPU cut from 1.31% to 0.58% of a core.** Process names and command
+  lines are cached per PID instead of being re-read every pass; affinity, I/O
+  priority and disk rates are sampled on the display cadence rather than the
+  enforce cadence; an enforce pass with no rules and no default affinity no
+  longer drives a `/proc` walk; and the published snapshot moved behind an
+  `Arc` instead of being deep-cloned twice per display tick. ([#29])
+
+  Measured on a 578-process machine over 120 s windows, warm, with the window
+  hidden (`--minimized --no-tray`). That condition matters and was missing
+  from the original note: with a visible window the figure is dominated by
+  rendering rather than by any of the above. On a machine that falls back to
+  Mesa's software rasteriser it is several times higher and moves with whether
+  the window is exposed at all, so a number quoted without saying which state
+  it was taken in says very little.
 
 ### Changed
 
