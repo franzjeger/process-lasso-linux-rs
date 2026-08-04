@@ -314,6 +314,10 @@ removes both the old helper and the sudoers file.
 
 ---
 
+## Changelog
+
+Release history is in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
