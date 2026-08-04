@@ -195,6 +195,26 @@ impl SettingsTab {
         // Reserve room for the apply bar, then scroll everything above it.
         let bar_h = 44.0;
         let body_h = (ui.available_height() - bar_h).max(120.0);
+        // The content is taller than the panel at most window heights, and
+        // egui's default bar floats in colours close to the page — so the
+        // last card read as cut off rather than scrollable. A solid bar
+        // reserves its width, and the handle is coloured explicitly: egui
+        // takes it from widgets.{inactive,hovered}.bg_fill and the track from
+        // extreme_bg_color, so those are what have to differ. Scoped to this
+        // ui, because bg_fill is shared with other widget backgrounds.
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        ui.spacing_mut().scroll.bar_width = 10.0;
+        {
+            let v = ui.visuals_mut();
+            let handle = if v.dark_mode {
+                egui::Color32::from_rgb(0x5c, 0x62, 0x68)
+            } else {
+                egui::Color32::from_rgb(0xb0, 0xb4, 0xb8)
+            };
+            v.widgets.inactive.bg_fill = handle;
+            v.widgets.hovered.bg_fill = handle.gamma_multiply(1.3);
+            v.widgets.active.bg_fill = handle.gamma_multiply(1.5);
+        }
         egui::ScrollArea::vertical()
             .id_salt("settings_body")
             .max_height(body_h)
@@ -337,7 +357,23 @@ impl SettingsTab {
                     });
 
                     form_row(ui, "Window opacity", |ui| {
-                        ui.add(egui::Slider::new(&mut self.opacity, 0.1f32..=1.0).show_value(true));
+                        // A short slider with a low-contrast track reads as an
+                        // empty box in the dark theme, and 0.1–1.0 shown to
+                        // three decimals is milli-precision on what is a
+                        // percentage. Widen it and show it as one.
+                        ui.spacing_mut().slider_width = 200.0;
+                        ui.add(
+                            egui::Slider::new(&mut self.opacity, 0.1f32..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                                .custom_parser(|s| {
+                                    s.trim_end_matches('%')
+                                        .trim()
+                                        .parse::<f64>()
+                                        .ok()
+                                        .map(|p| p / 100.0)
+                                })
+                                .show_value(true),
+                        );
                     });
 
                     form_row(ui, "Scaling governor", |ui| {
