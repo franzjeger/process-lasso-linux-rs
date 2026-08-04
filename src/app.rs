@@ -1265,9 +1265,17 @@ impl eframe::App for ArgusLassoApp {
                         "Update now"
                     };
                     ui.add_space(4.0);
-                    if crate::gui::theme::banner(ui, s.accent, &text, Some(action))
-                        && !self.updates.busy
-                    {
+                    let (act, dismiss) = crate::gui::theme::banner_dismissible(
+                        ui,
+                        s.accent,
+                        &text,
+                        Some(action),
+                        true,
+                    );
+                    if dismiss {
+                        self.updates.banner_dismissed = true;
+                    }
+                    if act && !self.updates.busy {
                         if self.updates.installed {
                             self.updates.restart_requested = true;
                         } else {
