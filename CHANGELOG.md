@@ -37,6 +37,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **The Settings scroll bar is visible**, so the last card stops looking cut
+  off. The content is taller than the panel at the default window size, so it
+  scrolls correctly — but egui's default bar floats in colours close to the
+  page, so nothing signalled that scrolling was possible. ([#41])
+- The window opacity slider was short and low-contrast, reading as an empty
+  box followed by a number in the dark theme, and showed `1.000` where it
+  means `100%`. ([#41])
+- The update banner can be dismissed. ([#38])
 - **Restarting into an update no longer strands parked CPUs.** "Restart now"
   exec'd straight over the process image, so `on_exit` never ran and the
   daemon never restored nice values, throttles or parked cores — and the
@@ -79,9 +87,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   against their mockups, the Benchmark tab's pre-run state, consistent apply-bar
   placement, card framing around the Processes plot row, and a dozen smaller
   corrections. ([#28])
+- **The egui stack moves to 0.34.** `App::ui` replaces the deprecated
+  `App::update` as the entry point, panels are shown with `show_inside`, and
+  `show_viewport_immediate` hands its callback a `Ui` rather than a `Context` —
+  so all seven dialogs changed with it. 0.34 also flips eframe's default
+  renderer to wgpu; glow is now selected explicitly, since wgpu pulls a far
+  larger tree and changes the surface eframe hands to the Wayland opacity
+  code. ([#40])
 - The minimum supported Rust version is declared and checked in CI. It is
-  **1.88** — the floor `egui`, `eframe` and `image` impose. The README had
-  claimed 1.75. ([#31])
+  **1.92** — the floor the egui 0.34 stack imposes. The README had claimed
+  1.75, and the field had been unset. ([#31], [#40])
 
 ### Added
 
@@ -206,3 +221,6 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 [#29]: https://github.com/franzjeger/process-lasso-linux-rs/pull/29
 [#30]: https://github.com/franzjeger/process-lasso-linux-rs/pull/30
 [#31]: https://github.com/franzjeger/process-lasso-linux-rs/pull/31
+[#38]: https://github.com/franzjeger/process-lasso-linux-rs/pull/38
+[#40]: https://github.com/franzjeger/process-lasso-linux-rs/pull/40
+[#41]: https://github.com/franzjeger/process-lasso-linux-rs/pull/41
