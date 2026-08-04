@@ -798,7 +798,11 @@ impl eframe::App for ArgusLassoApp {
         crate::monitor::shutdown_and_wait(&self.state, &self.cmd_tx);
     }
 
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    /// 0.34 makes `ui` the required entry point and deprecates `update`.
+    /// The body still works in terms of a `Context` — panels are the only
+    /// thing that had to change — so it is taken from the `Ui` we are given.
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &root_ui.ctx().clone();
         // --ui-tour drives the UI from a script rather than from the user.
         // Applied before the frame is built so the capture at the end of it
         // shows the screen this step is meant to document.
@@ -960,7 +964,7 @@ impl eframe::App for ArgusLassoApp {
         });
         let mut undo_requested = false;
 
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+        egui::Panel::bottom("status_bar").show_inside(root_ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("Processes: {}", self.proc_count));
                 ui.separator();
@@ -1070,7 +1074,7 @@ impl eframe::App for ArgusLassoApp {
             self.pending_kill = None;
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(root_ui, |ui| {
             // Tab bar: five primary workflow tabs on the left; the occasional
             // tools live behind a "Tools ▾" menu and Settings behind the gear,
             // so nine equal flat tabs no longer bury the ones people live in.
@@ -1454,7 +1458,7 @@ impl eframe::App for ArgusLassoApp {
                             // compositor sees a semi-transparent clear colour.
                             let alpha = (new_opacity * 255.0) as u8;
                             let theme = &self.settings_tab.theme;
-                            ctx.style_mut(|s| {
+                            ctx.global_style_mut(|s| {
                                 let (r, g, b) = crate::gui::theme::window_bg_rgb(theme);
                                 let col = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
                                 s.visuals.window_fill = col;

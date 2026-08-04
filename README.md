@@ -147,7 +147,7 @@ argus-lasso status --top 10
 ### Build
 | Dependency | Purpose |
 |-----------|---------|
-| Rust ≥ 1.88 (stable) | Compiler — the floor `egui`/`eframe` impose |
+| Rust ≥ 1.92 (stable) | Compiler — the floor `egui`/`eframe` impose |
 | `pkg-config` | Used by wayland-sys |
 | `libwayland-client` | Wayland client library |
 | OpenGL (Mesa / any GL driver) | egui glow renderer |

@@ -447,7 +447,7 @@ fn dual_io_graph(
             // The row zeroes item_spacing.x so its own arithmetic is exact,
             // and child uis inherit that — which would run "0.2" and "MB/s"
             // together. Restore the theme default for the card's contents.
-            ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            ui.spacing_mut().item_spacing.x = ui.ctx().global_style().spacing.item_spacing.x;
             let content_w = (outer_width - PANEL_CHROME).max(0.0);
             ui.set_min_width(content_w);
             ui.set_max_width(content_w);
