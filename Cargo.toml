@@ -2,6 +2,10 @@
 name = "argus-lasso"
 version = "1.1.0"
 edition = "2021"
+# The floor the dependency tree actually imposes — egui/eframe 0.33 and image
+# all declare 1.88. Enforced by cargo, and checked in CI so it cannot drift
+# back into being a guess.
+rust-version = "1.88"
 description = "Argus-Lasso — Linux process manager with CPU affinity, ProBalance, Gaming Mode, and HW monitoring"
 authors = ["franzjeger"]
 
