@@ -1,0 +1,208 @@
+# Changelog
+
+All notable changes to Argus-Lasso are recorded here.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Security
+
+- **The privileged helper no longer installs a blanket `NOPASSWD` sudoers rule.**
+  One helper covering every privileged operation could only ever have one
+  policy, so the rule granted any process running as the user passwordless
+  root for all of them — including `renice-pid` against *any* PID on the
+  system. It is replaced by three separate root-owned helpers under
+  `/usr/local/lib/argus-lasso/`, each with its own polkit action:
+  `cpu-park`, `power-profile` and `renice`. Installing removes
+  `/etc/sudoers.d/argus-lasso` and the old helper. ([#30])
+- **`renice` is confined to the caller's own processes.** It compares
+  `PKEXEC_UID` against the owner of the target PID and refuses anything else,
+  including when invoked outside pkexec where it cannot tell who is asking.
+  ([#30])
+- **Releases are verified with a minisign signature** before anything is
+  written, against a public key compiled into the binary. The `.sha256` alone
+  never established authenticity — it shipped from the same release as the
+  tarball. ([#28])
+
+  > The shipped `dist/argus-lasso.pub` is a placeholder. A build carrying it
+  > refuses to self-install and says so; update checks still work. See
+  > `docs/design-updates.md` before cutting a release.
+
+- The root-password fallback for helper installation is gone. The helpers are
+  authorised by polkit, so on a system without it they would have been
+  installed and then permanently unusable — and the fallback put a plaintext
+  password through the process for no benefit. ([#30])
+
+### Fixed
+
+- **Restarting into an update no longer strands parked CPUs.** "Restart now"
+  exec'd straight over the process image, so `on_exit` never ran and the
+  daemon never restored nice values, throttles or parked cores — and the
+  originals live only in the replaced process's memory. ([#28])
+- **Self-update refreshes the desktop entry, systemd unit and icons**, which
+  previously stayed frozen at whatever version first installed them. Only
+  files that already exist are rewritten. ([#28])
+- **Disk I/O rates were wrong by the sampling cadence.** Raw byte deltas were
+  labelled "bytes/s", so the figure read twice the real rate at the default
+  500 ms interval. ([#29])
+- **The dashboard cards no longer overflow the panel.** The KPI row's width
+  arithmetic ignored `item_spacing`, pushing the ProBalance card off the right
+  edge. ([#28])
+- `argus-lasso --version` errored with "unexpected argument". ([#31])
+- **The AUR package's systemd unit pointed at a path it never installed.** The
+  package puts the binary in `/usr/bin` but shipped a unit with
+  `ExecStart=%h/.local/bin/argus-lasso`, so the service failed to start. It
+  also installed only the 256px icon, skipping the scalable and tiered small
+  masters. ([#31])
+- A `tar` archive containing two `argus-lasso` entries would have been spliced
+  into one file and marked executable; the updater now refuses anything but a
+  single match. ([#28])
+- The update UI could wedge on "Checking for updates…" until restart if the
+  worker thread died before reporting. ([#28])
+
+### Performance
+
+- **Idle CPU cut from 1.31% to 0.58% of a core** (578-process machine, 120 s
+  windows). Process names and command lines are cached per PID instead of
+  being re-read every pass; affinity, I/O priority and disk rates are sampled
+  on the display cadence rather than the enforce cadence; an enforce pass with
+  no rules and no default affinity no longer drives a `/proc` walk; and the
+  published snapshot moved behind an `Arc` instead of being deep-cloned twice
+  per display tick. ([#29])
+
+### Changed
+
+- **Round 4 of the design review**, covering all ten cross-cutting findings
+  and the per-tab list: the Rules empty state and the rule dialog rebuilt
+  against their mockups, the Benchmark tab's pre-run state, consistent apply-bar
+  placement, card framing around the Processes plot row, and a dozen smaller
+  corrections. ([#28])
+- The minimum supported Rust version is declared and checked in CI. It is
+  **1.88** — the floor `egui`, `eframe` and `image` impose. The README had
+  claimed 1.75. ([#31])
+
+### Added
+
+- **`--ui-tour DIR`** (hidden): walks every screen, captures each through
+  egui's own screenshot command, and exits — so the README screenshots can be
+  regenerated consistently. The affinity, nice and I/O-priority dialogs are
+  not covered; they are separate OS windows the glow backend will not
+  screenshot. ([#28])
+
+## [1.1.0] — 2026-08-02
+
+### Added
+
+- In-app update check and self-install from GitHub releases. ([#27])
+
+## [1.0.9] — 2026-08-02
+
+### Fixed
+
+- Icons redrawn as tiered vector masters; icon size is no longer hardcoded, so
+  small sizes stop turning to mush. ([#25])
+
+### Changed
+
+- Settings tab finished against its mockup. ([#26])
+
+## [1.0.8] — 2026-07-31
+
+### Changed
+
+- The design package implemented against its actual mockups. ([#24])
+
+## [1.0.7] — 2026-07-31
+
+### Fixed
+
+- Rendering defects found by running the redesigned UI. ([#23])
+
+## [1.0.6] — 2026-07-31
+
+### Changed
+
+- The whole UI redesigned against the design handoff spec. ([#22])
+
+## [1.0.5] — 2026-07-31
+
+### Changed
+
+- Design round 2: heatmap cells, quick-filter chips, light-theme contrast.
+- Design pass over navigation, the notification centre, the kill toast and the
+  layout system.
+- README brought up to date with the new features and UI.
+
+## [1.0.4] — 2026-07-31
+
+### Added
+
+- cgroup v2 ProBalance backend, opt-in. See `docs/design-cgroup-probalance.md`.
+
+### Fixed
+
+- Seven defects from review of the preceding feature rounds.
+
+## [1.0.3] — 2026-07-30
+
+### Added
+
+- Per-process GPU%, automatic game detection, a persistent log, and
+  `status --json`.
+- Process details window, Overview disk and network graphs, regex filtering.
+- Column chooser, daemon unit tests, and an AUR PKGBUILD.
+
+### Fixed
+
+- Eight defects found reviewing the new feature code.
+- `status --json` rounded `cpu_percent` as f64 to avoid f32 noise.
+
+## [1.0.2] — 2026-07-30
+
+### Added
+
+- pkexec install path, "remember settings" rules, and power profiles.
+
+### Fixed
+
+- CPU graph area fill.
+
+## [1.0.1] — 2026-07-30
+
+### Added
+
+- Dependabot, a security-audit workflow, and a tag-triggered release workflow
+  building both x86_64 and aarch64.
+
+### Fixed
+
+- Twenty-four bugs found in a deep code review.
+- A single-instance lock, so two instances stop clobbering each other's config.
+
+### Performance
+
+- Virtualized the process table; dropped per-frame clones and sysfs reads.
+
+[Unreleased]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.9...v1.1.0
+[1.0.9]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.8...v1.0.9
+[1.0.8]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.7...v1.0.8
+[1.0.7]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.6...v1.0.7
+[1.0.6]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.5...v1.0.6
+[1.0.5]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.4...v1.0.5
+[1.0.4]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.3...v1.0.4
+[1.0.3]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/franzjeger/process-lasso-linux-rs/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/franzjeger/process-lasso-linux-rs/releases/tag/v1.0.1
+[#22]: https://github.com/franzjeger/process-lasso-linux-rs/pull/22
+[#23]: https://github.com/franzjeger/process-lasso-linux-rs/pull/23
+[#24]: https://github.com/franzjeger/process-lasso-linux-rs/pull/24
+[#25]: https://github.com/franzjeger/process-lasso-linux-rs/pull/25
+[#26]: https://github.com/franzjeger/process-lasso-linux-rs/pull/26
+[#27]: https://github.com/franzjeger/process-lasso-linux-rs/pull/27
+[#28]: https://github.com/franzjeger/process-lasso-linux-rs/pull/28
+[#29]: https://github.com/franzjeger/process-lasso-linux-rs/pull/29
+[#30]: https://github.com/franzjeger/process-lasso-linux-rs/pull/30
+[#31]: https://github.com/franzjeger/process-lasso-linux-rs/pull/31
