@@ -337,7 +337,23 @@ impl SettingsTab {
                     });
 
                     form_row(ui, "Window opacity", |ui| {
-                        ui.add(egui::Slider::new(&mut self.opacity, 0.1f32..=1.0).show_value(true));
+                        // A short slider with a low-contrast track reads as an
+                        // empty box in the dark theme, and 0.1–1.0 shown to
+                        // three decimals is milli-precision on what is a
+                        // percentage. Widen it and show it as one.
+                        ui.spacing_mut().slider_width = 200.0;
+                        ui.add(
+                            egui::Slider::new(&mut self.opacity, 0.1f32..=1.0)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                                .custom_parser(|s| {
+                                    s.trim_end_matches('%')
+                                        .trim()
+                                        .parse::<f64>()
+                                        .ok()
+                                        .map(|p| p / 100.0)
+                                })
+                                .show_value(true),
+                        );
                     });
 
                     form_row(ui, "Scaling governor", |ui| {
