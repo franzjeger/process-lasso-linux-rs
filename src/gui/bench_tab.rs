@@ -319,11 +319,12 @@ impl BenchTab {
                         width: crate::icon::W,
                         height: crate::icon::H,
                     }),
-                |ctx, _class| {
+                |vp_ui, _class| {
+                    let ctx = &vp_ui.ctx().clone();
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_requested = true;
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show_inside(vp_ui, |ui| {
                         new_hover =
                             show_results(ui, &points, &cache, old_hover, csv_tx_clone.clone());
                     });

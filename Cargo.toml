@@ -2,10 +2,10 @@
 name = "argus-lasso"
 version = "1.1.1"
 edition = "2021"
-# The floor the dependency tree actually imposes — egui/eframe 0.33 and image
-# all declare 1.88. Enforced by cargo, and checked in CI so it cannot drift
+# The floor the dependency tree actually imposes — the egui 0.34 stack
+# declares 1.92. Enforced by cargo, and checked in CI so it cannot drift
 # back into being a guess.
-rust-version = "1.88"
+rust-version = "1.92"
 description = "Argus-Lasso — Linux process manager with CPU affinity, ProBalance, Gaming Mode, and HW monitoring"
 authors = ["franzjeger"]
 
@@ -15,9 +15,14 @@ path = "src/main.rs"
 
 [dependencies]
 # GUI
-eframe      = { version = "0.33" }  # default-features includes glow (OpenGL); no wgpu
-egui        = "0.33"
-egui_extras = "0.33"
+# 0.34 flipped the default renderer to wgpu. glow is selected explicitly to
+# keep the OpenGL backend this app has always used — wgpu pulls a much larger
+# tree and changes the surface eframe hands to the Wayland opacity code.
+eframe      = { version = "0.34", default-features = false, features = [
+    "accesskit", "default_fonts", "glow", "wayland", "x11",
+] }
+egui        = "0.34"
+egui_extras = "0.34"
 
 # Process enumeration
 procfs = "0.18"

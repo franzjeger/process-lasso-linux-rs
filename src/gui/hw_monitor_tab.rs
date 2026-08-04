@@ -73,7 +73,6 @@ impl HwMonitorTab {
             ui.add(
                 egui::TextEdit::singleline(&mut self.filter)
                     .desired_width(w)
-                    .frame(true)
                     .hint_text("🔍  Search sensors…"),
             );
             if !self.filter.is_empty() && ui.small_button("✕").clicked() {

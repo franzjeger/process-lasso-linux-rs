@@ -47,12 +47,12 @@ pub fn window_bg_rgb(theme: &AppTheme) -> (u8, u8, u8) {
 /// Call at the START of a `show_viewport_immediate` callback.
 /// Returns the original fills so they can be restored at the END of the callback.
 pub fn push_viewport_opacity(ctx: &Context, opacity: f32) -> (Color32, Color32) {
-    let orig_panel = ctx.style().visuals.panel_fill;
-    let orig_window = ctx.style().visuals.window_fill;
+    let orig_panel = ctx.global_style().visuals.panel_fill;
+    let orig_window = ctx.global_style().visuals.window_fill;
     if opacity < 0.999 {
         let a = (opacity * 255.0) as u8;
         let tint = |c: Color32| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
-        ctx.style_mut(|s| {
+        ctx.global_style_mut(|s| {
             s.visuals.panel_fill = tint(s.visuals.panel_fill);
             s.visuals.window_fill = tint(s.visuals.window_fill);
         });
@@ -62,7 +62,7 @@ pub fn push_viewport_opacity(ctx: &Context, opacity: f32) -> (Color32, Color32) 
 
 /// Restore panel/window fills saved by [`push_viewport_opacity`].
 pub fn pop_viewport_opacity(ctx: &Context, saved: (Color32, Color32)) {
-    ctx.style_mut(|s| {
+    ctx.global_style_mut(|s| {
         s.visuals.panel_fill = saved.0;
         s.visuals.window_fill = saved.1;
     });
@@ -506,7 +506,7 @@ pub fn kpi_card(
             // A row laying these out zeroes item_spacing.x to keep its width
             // arithmetic exact; child uis inherit it, so restore the theme
             // default for the card's own contents.
-            ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            ui.spacing_mut().item_spacing.x = ui.ctx().global_style().spacing.item_spacing.x;
             ui.set_width((outer_width - KPI_CARD_CHROME).max(0.0));
             ui.vertical(|ui| {
                 ui.label(
@@ -644,7 +644,7 @@ pub fn plot_card(
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = ui.ctx().style().spacing.item_spacing.x;
+            ui.spacing_mut().item_spacing.x = ui.ctx().global_style().spacing.item_spacing.x;
             // Both bounds, not just the minimum. Content that sizes itself
             // from available_height() — the CPU history plot does — otherwise
             // reads the whole remaining panel height and swallows everything
@@ -993,7 +993,7 @@ pub fn apply(ctx: &Context, native_ppp: f32) {
     // to ensure it survives (vis already set above, so we patch style.visuals here)
     style.visuals.faint_bg_color = Color32::from_rgb(0x3d, 0x41, 0x47); // visibly lighter than WINDOW_BG
 
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 }
 
 // ── Breeze Light theme ────────────────────────────────────────────────────────
@@ -1084,7 +1084,7 @@ pub fn apply_light(ctx: &Context, native_ppp: f32) {
     // Striped table alternate row — explicitly set after visuals assignment
     style.visuals.faint_bg_color = alt_base;
 
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 
     let _ = (button_dis, text_dis); // available for disabled-widget callers
 }

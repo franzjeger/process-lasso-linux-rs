@@ -381,12 +381,13 @@ impl AffinityDialog {
                     .with_min_inner_size([500.0, 440.0])
                     .with_transparent(true)
                     .with_resizable(true),
-                |ctx, _class| {
+                |vp_ui, _class| {
+                    let ctx = &vp_ui.ctx().clone();
                     let _opacity_saved = crate::gui::theme::push_viewport_opacity(ctx, opacity);
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_as = Some(false);
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show_inside(vp_ui, |ui| {
                         if !offline.is_empty() {
                             let offline_str = cpuset_to_cpulist(offline);
                             ui.colored_label(
@@ -565,12 +566,13 @@ impl NiceDialog {
                     .with_min_inner_size([380.0, 160.0])
                     .with_transparent(true)
                     .with_resizable(false),
-                |ctx, _class| {
+                |vp_ui, _class| {
+                    let ctx = &vp_ui.ctx().clone();
                     let _opacity_saved = crate::gui::theme::push_viewport_opacity(ctx, opacity);
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_as = Some(false);
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show_inside(vp_ui, |ui| {
                         ui.label(
                             "Nice priority: lower = higher priority. Negative values require root.",
                         );
@@ -665,12 +667,13 @@ impl IoNiceDialog {
                     .with_min_inner_size([340.0, 160.0])
                     .with_transparent(true)
                     .with_resizable(false),
-                |ctx, _class| {
+                |vp_ui, _class| {
+                    let ctx = &vp_ui.ctx().clone();
                     let _opacity_saved = crate::gui::theme::push_viewport_opacity(ctx, opacity);
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_as = Some(false);
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show_inside(vp_ui, |ui| {
                         ui.label("I/O class: Realtime requires root. Level 0=highest, 7=lowest.");
                         egui::ComboBox::from_label("I/O Class")
                             .selected_text(match *class {
@@ -788,7 +791,8 @@ impl RuleEditDialog {
                     .with_min_inner_size([560.0, 320.0])
                     .with_transparent(true)
                     .with_resizable(true),
-                |ctx, _class| {
+                |vp_ui, _class| {
+                    let ctx = &vp_ui.ctx().clone();
                     let _opacity_saved = crate::gui::theme::push_viewport_opacity(ctx, opacity);
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_as = Some(false);
@@ -799,7 +803,7 @@ impl RuleEditDialog {
                     // Action bar first: a bottom panel keeps Cancel/Save
                     // pinned to the dialog's edge instead of floating after
                     // however tall the form happened to be.
-                    egui::TopBottomPanel::bottom("rule_actions").show(ctx, |ui| {
+                    egui::Panel::bottom("rule_actions").show_inside(vp_ui, |ui| {
                         let s = th::sem(ui);
                         ui.add_space(tokens::SPACE_XS);
                         ui.horizontal(|ui| {
@@ -829,7 +833,7 @@ impl RuleEditDialog {
                         ui.add_space(tokens::SPACE_XS);
                     });
 
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show_inside(vp_ui, |ui| {
                         let s = th::sem(ui);
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             th::form_row_w(ui, LW, "Name", |ui| {
@@ -1199,7 +1203,8 @@ impl RulePresetsDialog {
                     .with_min_inner_size([640.0, 360.0])
                     .with_transparent(true)
                     .with_resizable(true),
-                |ctx, _class| {
+                |vp_ui, _class| {
+                    let ctx = &vp_ui.ctx().clone();
                     let _opacity_saved = crate::gui::theme::push_viewport_opacity(ctx, opacity);
                     if ctx.input(|i| i.viewport().close_requested()) {
                         close_as = Some(false);
@@ -1209,7 +1214,7 @@ impl RulePresetsDialog {
                     // Actions in a bottom panel, pinned to the dialog edge —
                     // same shape as the rule editor, so the two dialogs do not
                     // put the same controls in different places.
-                    egui::TopBottomPanel::bottom("preset_actions").show(ctx, |ui| {
+                    egui::Panel::bottom("preset_actions").show_inside(vp_ui, |ui| {
                         let s = th::sem(ui);
                         ui.add_space(tokens::SPACE_XS);
                         ui.horizontal(|ui| {
@@ -1241,7 +1246,7 @@ impl RulePresetsDialog {
                         ui.add_space(tokens::SPACE_XS);
                     });
 
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show_inside(vp_ui, |ui| {
                         ui.label(
                             egui::RichText::new(
                                 "Templates pre-fill a rule; you can edit it before saving.",
@@ -1421,12 +1426,13 @@ impl SteamGamePickerDialog {
                     .with_min_inner_size([560.0, 520.0])
                     .with_transparent(true)
                     .with_resizable(true),
-                |ctx, _class| {
+                |vp_ui, _class| {
+                    let ctx = &vp_ui.ctx().clone();
                     let _opacity_saved = crate::gui::theme::push_viewport_opacity(ctx, opacity);
                     if ctx.input(|i| i.viewport().close_requested()) {
                         cancelled = true;
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show_inside(vp_ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Filter:");
                             ui.text_edit_singleline(filter);
@@ -1614,12 +1620,13 @@ impl LutrisGamePickerDialog {
                     .with_min_inner_size([560.0, 520.0])
                     .with_transparent(true)
                     .with_resizable(true),
-                |ctx, _class| {
+                |vp_ui, _class| {
+                    let ctx = &vp_ui.ctx().clone();
                     let _opacity_saved = crate::gui::theme::push_viewport_opacity(ctx, opacity);
                     if ctx.input(|i| i.viewport().close_requested()) {
                         cancelled = true;
                     }
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show_inside(vp_ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Filter:");
                             ui.text_edit_singleline(filter);
