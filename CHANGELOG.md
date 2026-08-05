@@ -7,7 +7,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [1.2.0] — 2026-08-04
+## [1.2.0] — 2026-08-05
 
 ### Security
 
@@ -39,10 +39,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
-- **The Settings scroll bar is visible**, so the last card stops looking cut
-  off. The content is taller than the panel at the default window size, so it
-  scrolls correctly — but egui's default bar floats in colours close to the
-  page, so nothing signalled that scrolling was possible. ([#41])
+- **Scroll bars are visible without hovering them.** egui's `solid()` preset
+  leaves the handle fully transparent until the pointer enters the area, so
+  any panel whose content overflows looked truncated rather than scrollable —
+  the Settings tab's last card, and the rule dialog's Nice and I/O priority
+  rows. Fixed in the theme, so it covers every scroll area including the
+  dialogs. ([#41], [#47])
+- **The rule dialog fits its own content.** At 560x400 the affinity picker's
+  quick-select row was clipped horizontally — that row is sized from the CPU
+  topology, so a 32-core machine overflows it — and Nice and I/O priority sat
+  below the fold whenever the picker was expanded. ([#47])
 - The window opacity slider was short and low-contrast, reading as an empty
   box followed by a number in the dark theme, and showed `1.000` where it
   means `100%`. ([#41])
@@ -234,3 +240,4 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 [#38]: https://github.com/franzjeger/process-lasso-linux-rs/pull/38
 [#40]: https://github.com/franzjeger/process-lasso-linux-rs/pull/40
 [#41]: https://github.com/franzjeger/process-lasso-linux-rs/pull/41
+[#47]: https://github.com/franzjeger/process-lasso-linux-rs/pull/47
