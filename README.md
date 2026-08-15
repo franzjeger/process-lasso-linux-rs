@@ -99,6 +99,22 @@ Inspired by Windows Process Lasso, rebuilt from scratch for Linux with KDE/Wayla
 - `--no-tray` flag to disable the tray entirely
 - Config auto-migrated from `~/.config/process-lasso-rs/` on first launch
 
+### Auto-update
+- Checks the project's GitHub releases for a newer version (opt-out via
+  `check_updates_on_start = false` in the config)
+- In-app banner when an update is available, with an **Update now** action;
+  after install it offers **Restart now**
+- Self-installs in place — this works for the per-user install
+  (`~/.local/bin/argus-lasso`, what `make install` and the release tarball
+  produce). A system-wide or distro-packaged install is owned by root and is
+  left to the package manager, which the app detects and reports rather than
+  failing halfway through
+- Integrity: the release `.sha256` is checked, and the tarball is verified
+  against a **minisign signature** with a key compiled into the binary. A build
+  still carrying the placeholder key refuses to self-install (and says to
+  install manually) instead of falling back to the checksum alone — see
+  [docs/design-updates.md](docs/design-updates.md)
+
 ### CLI
 ```bash
 # Kill a process by PID
@@ -305,12 +321,17 @@ removes both the old helper and the sudoers file.
 | `uuid` | Stable rule IDs |
 | `ksni` | D-Bus `StatusNotifierItem` system tray |
 | `notify-rust` | Desktop notifications |
+| `nvml-wrapper` | NVIDIA per-process GPU utilisation (NVML, no `nvidia-smi` spawn) |
 | `wayland-client` / `wayland-protocols` | `wp_alpha_modifier_v1` opacity |
+| `wayland-backend` / `wayland-sys` | Wayland client backend for the opacity protocol |
 | `raw-window-handle` | Wayland surface pointer extraction |
 | `crossbeam-channel` | GUI ↔ daemon command channel |
 | `clap` | CLI argument parsing |
 | `log` + `env_logger` | Structured logging |
-| `png` *(build-dep)* | Icon embedding at compile time |
+| `ureq` | HTTPS client for the in-app update check |
+| `sha2` | Release tarball checksum verification |
+| `minisign-verify` | Release signature verification |
+| `png` | `--ui-tour` screenshot capture (also a build-dep for icon embedding) |
 
 ---
 
