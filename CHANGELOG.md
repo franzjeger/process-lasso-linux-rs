@@ -27,10 +27,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   written, against a public key compiled into the binary. The `.sha256` alone
   never established authenticity — it shipped from the same release as the
   tarball. ([#28])
-
-  > The shipped `dist/argus-lasso.pub` is a placeholder. A build carrying it
-  > refuses to self-install and says so; update checks still work. See
-  > `docs/design-updates.md` before cutting a release.
+- The minisign signing key is now configured: `dist/argus-lasso.pub` holds a
+  real public key and the release workflow signs each tarball, so the in-app
+  updater can verify and self-install.
 
 - The root-password fallback for helper installation is gone. The helpers are
   authorised by polkit, so on a system without it they would have been
@@ -71,6 +70,27 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   single match. ([#28])
 - The update UI could wedge on "Checking for updates…" until restart if the
   worker thread died before reporting. ([#28])
+- **A failed suspend no longer arms a dead kill-undo window.** `SIGSTOP`/`SIGCONT`
+  results were discarded; a failed `SIGSTOP` (e.g. `EPERM`) still armed the 5 s
+  undo countdown on a process that was never stopped. It now kills immediately
+  and reports instead. ([#53])
+- **Affinity / nice / I/O-priority failures are no longer silent.** They closed
+  the dialog with no log or notification; they now log and notify. ([#53])
+- **The updater detects an oversized download** instead of failing later as a
+  confusing "checksum mismatch". ([#53])
+- **A reversed cpulist range (e.g. `7-2`) is rejected** instead of silently
+  parsing to an accepted empty set. ([#53])
+- **The "Tools" button no longer strips every button's frame.** It mutated the
+  global widget visuals; the frame strip is now scoped to that one button. ([#53])
+- **Two `mem_bench` `start()` calls can no longer race** into two workers (and a
+  second large allocation); the `running` flag is now checked and set atomically. ([#53])
+- **HW Monitor merges sensor groups by `(category, name)`**, not name alone, so
+  two categories exposing the same group name no longer interleave. ([#53])
+- **The daemon is bounded-joined at exit**, so a stuck restore is logged rather
+  than abandoned. ([#53])
+- **The repaint interval has a 100 ms floor**, so `0` no longer means unbounded
+  60 fps. ([#53])
+- **The rule dialog skips regex recompile** when the pattern is unchanged. ([#53])
 
 ### Performance
 
@@ -106,6 +126,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - The minimum supported Rust version is declared and checked in CI. It is
   **1.92** — the floor the egui 0.34 stack imposes. The README had claimed
   1.75, and the field had been unset. ([#31], [#40])
+- **The README now matches the code.** The dependency table was missing
+  `nvml-wrapper`, `ureq`, `sha2`, `minisign-verify`, and `wayland-backend`/
+  `wayland-sys`, and the auto-update feature was undocumented; both are now
+  corrected. A stale "top-5" comment in the Overview tab is fixed to top-10. ([#54])
 
 ### Added
 
@@ -234,3 +258,5 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 [#38]: https://github.com/franzjeger/process-lasso-linux-rs/pull/38
 [#40]: https://github.com/franzjeger/process-lasso-linux-rs/pull/40
 [#41]: https://github.com/franzjeger/process-lasso-linux-rs/pull/41
+[#53]: https://github.com/franzjeger/process-lasso-linux-rs/pull/53
+[#54]: https://github.com/franzjeger/process-lasso-linux-rs/pull/54
