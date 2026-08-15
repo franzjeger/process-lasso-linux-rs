@@ -1158,11 +1158,19 @@ impl eframe::App for ArgusLassoApp {
             if let Some(ref pk) = self.pending_kill {
                 use nix::sys::signal::{self, Signal};
                 use nix::unistd::Pid;
-                let _ = signal::kill(Pid::from_raw(pk.pid as i32), Signal::SIGCONT);
+                let cont = signal::kill(Pid::from_raw(pk.pid as i32), Signal::SIGCONT);
                 let name = pk.name.clone();
                 let pid = pk.pid;
                 if let Ok(mut s) = self.state.lock() {
-                    s.append_log(format!("Kill cancelled — resumed {} ({})", name, pid));
+                    match cont {
+                        Ok(()) => {
+                            s.append_log(format!("Kill cancelled — resumed {} ({})", name, pid))
+                        }
+                        Err(e) => s.append_log(format!(
+                            "Kill cancelled but resume failed ({}); {} ({}) is still suspended",
+                            e, name, pid
+                        )),
+                    }
                 }
             }
             self.pending_kill = None;

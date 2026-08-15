@@ -842,8 +842,12 @@ pub fn apply_power_profile(profile: PowerProfile) -> (bool, String) {
     }
     let epp_note = if epp_supported {
         let epp = profile.epp();
-        let _ = run_helper(OP_POWER, &["epp", epp]);
-        format!(", EPP={epp}")
+        let (epp_ok, epp_msg) = run_helper(OP_POWER, &["epp", epp]);
+        if epp_ok {
+            format!(", EPP={epp}")
+        } else {
+            format!(", EPP={epp} (failed: {epp_msg})")
+        }
     } else {
         String::new()
     };
