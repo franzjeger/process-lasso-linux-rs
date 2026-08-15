@@ -112,7 +112,20 @@ pub enum TableAction {
     ShowDetails {
         pid: u32,
     },
+    KillTree {
+        pid: u32,
+        name: String,
+    },
+    Export {
+        format: ExportFormat,
+    },
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Csv,
+    Json,
 }
 
 // ── Pending kill (undo support) ───────────────────────────────────────────────
@@ -220,6 +233,12 @@ pub struct ProcessTab {
     pub hidden_cols: HashSet<String>,
     /// Set when hidden_cols changes so app.rs can persist it
     pub hidden_dirty: bool,
+    /// Optional port filter — when set, only show processes bound to this port
+    pub port_filter: String,
+    /// (port, timestamp, matching pids) — /proc/PID/fd reads are expensive, so
+    /// the result is cached and only refreshed when the port text changes or
+    /// the cache is older than ~1s.
+    port_pids_cache: Option<(String, std::time::Instant, std::collections::HashSet<u32>)>,
     // Offline CPUs, refreshed on the daemon's display cadence in update_cpu()
     // — reading /sys/devices/system/cpu/offline every repaint is wasted I/O.
     cached_offline: HashSet<u32>,
@@ -260,6 +279,8 @@ impl ProcessTab {
             chip_suspended: false,
             hidden_cols: cfg_hidden_cols.iter().cloned().collect(),
             hidden_dirty: false,
+            port_filter: String::new(),
+            port_pids_cache: None,
             cached_offline: get_offline_cpus(),
         }
     }
@@ -287,6 +308,8 @@ impl ProcessTab {
         gaming_active: bool,
         proc_cpu_history: &std::collections::HashMap<u32, std::collections::VecDeque<f32>>,
     ) -> TableAction {
+        // Hoisted so the toolbar (rendered before the table) can set it.
+        let mut action = TableAction::None;
         // CPU history chart and the per-core grid side by side — stacking them
         // cost ~90px of vertical space that the table wants.
         ui.horizontal_top(|ui| {
@@ -370,6 +393,18 @@ impl ProcessTab {
             }
             ui.add_space(theme::tokens::SPACE_S);
 
+            // Port filter — show only processes bound to this local port.
+            ui.label("port");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.port_filter)
+                    .hint_text("e.g. 8080")
+                    .desired_width(70.0),
+            );
+            if !self.port_filter.is_empty() && ui.small_button("✕").clicked() {
+                self.port_filter.clear();
+            }
+            ui.add_space(theme::tokens::SPACE_S);
+
             // Quick-filter chips (§4) — pills, filled when active
             for (state, label, hover) in [
                 (
@@ -398,6 +433,20 @@ impl ProcessTab {
             // Right side: view toggles + the column picker, which used to be
             // discoverable only via a header right-click.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("Export ▾", |ui| {
+                    if ui.button("CSV").clicked() {
+                        action = TableAction::Export {
+                            format: ExportFormat::Csv,
+                        };
+                        ui.close();
+                    }
+                    if ui.button("JSON").clicked() {
+                        action = TableAction::Export {
+                            format: ExportFormat::Json,
+                        };
+                        ui.close();
+                    }
+                });
                 ui.menu_button("Columns ▾", |ui| {
                     for (ci, c) in COLS.iter().enumerate() {
                         if ci == 1 {
@@ -454,6 +503,27 @@ impl ProcessTab {
                         || p.pid.to_string().contains(&filter_lower)
                         || p.cmdline.to_lowercase().contains(&filter_lower)
                 });
+            }
+        }
+        if !self.port_filter.trim().is_empty() {
+            if let Ok(port) = self.port_filter.trim().parse::<u16>() {
+                let key = format!("{}|{}", self.port_filter.trim(), self.filter);
+                let now = std::time::Instant::now();
+                let pids = match &self.port_pids_cache {
+                    Some((k, ts, set))
+                        if k == &key
+                            && now.duration_since(*ts) < std::time::Duration::from_secs(1) =>
+                    {
+                        set.clone()
+                    }
+                    _ => {
+                        let candidates: Vec<u32> = sorted.iter().map(|p| p.pid).collect();
+                        let set = crate::utils::pids_for_port(port, &candidates);
+                        self.port_pids_cache = Some((key, now, set.clone()));
+                        set
+                    }
+                };
+                sorted.retain(|p| pids.contains(&p.pid));
             }
         }
         if self.chip_high_cpu {
@@ -569,7 +639,6 @@ impl ProcessTab {
         let mut new_sort_col = sort_col_cur.clone();
         let mut new_sort_asc = sort_asc_cur;
         let mut new_selected = self.selected_pid;
-        let mut action = TableAction::None;
 
         // Delete key — kill the currently selected process.
         // Only when no widget (e.g. the filter text box) has keyboard focus,
@@ -1137,6 +1206,13 @@ impl ProcessTab {
                                         pid,
                                         name: name.clone(),
                                         force: true,
+                                    };
+                                    ui.close();
+                                }
+                                if ui.button(format!("Kill Tree {} ({})", name, pid)).clicked() {
+                                    action = TableAction::KillTree {
+                                        pid,
+                                        name: name.clone(),
                                     };
                                     ui.close();
                                 }

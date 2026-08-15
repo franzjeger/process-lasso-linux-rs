@@ -409,6 +409,172 @@ pub fn read_proc_details(pid: u32) -> Option<ProcDetails> {
     Some(d)
 }
 
+// ── Process tree ───────────────────────────────────────────────────────────────
+
+/// Collect `root_pid` and every descendant (children, grandchildren, …) from a
+/// snapshot's pid→ppid edges. Returns the root first, then descendants in
+/// breadth-first order, so killing in reverse order terminates leaves before
+/// their parents (avoids reparenting orphans to init mid-sweep).
+pub fn process_tree(root_pid: u32, snapshot: &[(u32, u32)]) -> Vec<u32> {
+    use std::collections::HashMap;
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut known = HashSet::new();
+    for &(pid, ppid) in snapshot {
+        children.entry(ppid).or_default().push(pid);
+        known.insert(pid);
+    }
+    if !known.contains(&root_pid) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(root_pid);
+    while let Some(pid) = queue.pop_front() {
+        out.push(pid);
+        if let Some(kids) = children.get(&pid) {
+            for &k in kids {
+                queue.push_back(k);
+            }
+        }
+    }
+    out
+}
+
+// ── Listening ports ────────────────────────────────────────────────────────────
+
+/// Parse a `/proc/net/tcp{,6}` table into a map of socket inode → local port.
+fn parse_tcp_file(path: &str, out: &mut HashMap<u64, u16>) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    for line in text.lines().skip(1) {
+        let mut f = line.split_whitespace();
+        let _ = f.next(); // sl
+        let Some(local) = f.next() else { continue };
+        let _rem = f.next();
+        let _st = f.next();
+        let _flags = f.next();
+        let _uid = f.next();
+        let Some(inode) = f.next() else { continue };
+        let Ok(inode) = inode.parse::<u64>() else {
+            continue;
+        };
+        if inode == 0 {
+            continue;
+        }
+        out.insert(inode, hex_port(local));
+    }
+}
+
+/// "0100007F:0016" → 22 (the ":0016" part is the port in hex, big-endian).
+fn hex_port(field: &str) -> u16 {
+    let Some(hex) = field.rsplit_once(':').map(|(_, p)| p) else {
+        return 0;
+    };
+    u16::from_str_radix(hex, 16).unwrap_or(0)
+}
+
+/// The socket inodes a PID currently holds (from `/proc/PID/fd`).
+fn socket_inodes_for_pid(pid: u32) -> HashSet<u64> {
+    let mut inodes = HashSet::new();
+    if let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) {
+        for entry in entries.flatten() {
+            if let Ok(target) = fs::read_link(entry.path()) {
+                if let Some(inner) = target.to_string_lossy().strip_prefix("socket:[") {
+                    if let Some(num) = inner.strip_suffix(']') {
+                        if let Ok(inode) = num.parse::<u64>() {
+                            inodes.insert(inode);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    inodes
+}
+
+/// Build an inode → local-port map from the kernel's TCP tables.
+fn socket_port_map() -> HashMap<u64, u16> {
+    let mut tables: HashMap<u64, u16> = HashMap::new();
+    parse_tcp_file("/proc/net/tcp", &mut tables);
+    parse_tcp_file("/proc/net/tcp6", &mut tables);
+    tables
+}
+
+/// The PIDs (from `snapshot`) that hold a socket bound to `port`.
+pub fn pids_for_port(port: u16, snapshot: &[u32]) -> HashSet<u32> {
+    let tables = socket_port_map();
+    let mut out = HashSet::new();
+    for &pid in snapshot {
+        if socket_inodes_for_pid(pid)
+            .iter()
+            .any(|inode| tables.get(inode) == Some(&port))
+        {
+            out.insert(pid);
+        }
+    }
+    out
+}
+
+// ── Snapshot export ────────────────────────────────────────────────────────────
+
+/// Serialize a process snapshot to CSV (header + one row per process).
+pub fn export_csv(procs: &[crate::monitor::ProcInfo]) -> String {
+    let mut out = String::from("pid,ppid,name,cpu_percent,gpu_percent,mem_rss_mb,nice,affinity,ionice,disk_read_bps,disk_write_bps,cmdline\n");
+    for p in procs {
+        out.push_str(&format!(
+            "{},{},{},{:.1},{:.1},{},{},{},{},{},{},{}\n",
+            p.pid,
+            p.ppid,
+            csv_field(&p.name),
+            p.cpu_percent,
+            p.gpu_percent,
+            p.mem_rss / 1024 / 1024,
+            p.nice,
+            csv_field(&p.affinity),
+            csv_field(&p.ionice),
+            p.disk_read_bps,
+            p.disk_write_bps,
+            csv_field(p.cmdline.as_str())
+        ));
+    }
+    out
+}
+
+/// Serialize a process snapshot to pretty JSON.
+pub fn export_json(procs: &[crate::monitor::ProcInfo]) -> String {
+    let items: Vec<serde_json::Value> = procs
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "pid": p.pid,
+                "ppid": p.ppid,
+                "name": p.name,
+                "cpu_percent": (p.cpu_percent * 10.0).round() / 10.0,
+                "gpu_percent": (p.gpu_percent * 10.0).round() / 10.0,
+                "mem_rss_mb": p.mem_rss / 1024 / 1024,
+                "nice": p.nice,
+                "affinity": p.affinity,
+                "ionice": p.ionice,
+                "disk_read_bps": p.disk_read_bps,
+                "disk_write_bps": p.disk_write_bps,
+                "cmdline": p.cmdline.as_str(),
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "processes": items }))
+        .unwrap_or_else(|_| "[]".into())
+}
+
+/// Quote a CSV field if it contains a comma, quote, or newline.
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,5 +602,79 @@ mod tests {
     fn cpulist_rejects_garbage() {
         assert!(cpulist_to_set("0-x").is_err());
         assert!(cpulist_to_set("abc").is_err());
+    }
+
+    #[test]
+    fn process_tree_collects_descendants() {
+        // 1 → 2,3 ; 2 → 4 ; 3 → 5,6
+        let snap = [
+            (1u32, 0u32),
+            (2, 1),
+            (3, 1),
+            (4, 2),
+            (5, 3),
+            (6, 3),
+            (99, 0),
+        ];
+        let tree = process_tree(1, &snap);
+        assert_eq!(tree[0], 1, "root must come first");
+        let set: std::collections::HashSet<u32> = tree.iter().copied().collect();
+        assert_eq!(set, [1, 2, 3, 4, 5, 6].into_iter().collect());
+        assert!(!set.contains(&99), "unrelated pid must be excluded");
+    }
+
+    #[test]
+    fn process_tree_single_root() {
+        let snap = [(42u32, 1u32)];
+        assert_eq!(process_tree(42, &snap), vec![42]);
+    }
+
+    #[test]
+    fn process_tree_unknown_root_is_empty() {
+        let snap = [(2u32, 1u32)];
+        assert!(process_tree(999, &snap).is_empty());
+    }
+
+    #[test]
+    fn hex_port_reads_high_nibble() {
+        assert_eq!(hex_port("0100007F:01BB"), 443); // 0x01BB
+        assert_eq!(hex_port("00000000:0050"), 80);
+        assert_eq!(hex_port("garbage"), 0);
+    }
+
+    #[test]
+    fn csv_field_quotes_when_needed() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn export_csv_has_header_and_rows() {
+        let p = crate::monitor::ProcInfo {
+            pid: 7,
+            ppid: 1,
+            name: "bash".into(),
+            cpu_percent: 12.345,
+            mem_rss: 2 * 1024 * 1024,
+            ..Default::default()
+        };
+        let out = export_csv(&[p]);
+        assert!(out.starts_with("pid,ppid,name,"));
+        assert!(out.contains("7,1,bash,12.3,0.0,2,"));
+        assert!(out.ends_with(",\n"));
+    }
+
+    #[test]
+    fn export_json_is_valid() {
+        let p = crate::monitor::ProcInfo {
+            pid: 7,
+            name: "bash".into(),
+            ..Default::default()
+        };
+        let out = export_json(&[p]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["processes"][0]["pid"], 7);
+        assert_eq!(v["processes"][0]["name"], "bash");
     }
 }

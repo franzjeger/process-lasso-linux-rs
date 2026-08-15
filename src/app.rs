@@ -558,7 +558,12 @@ impl ArgusLassoApp {
         result
     }
 
-    fn handle_table_action(&mut self, action: TableAction, _ctx: &Context) {
+    fn handle_table_action(
+        &mut self,
+        action: TableAction,
+        _ctx: &Context,
+        snapshot: &[crate::monitor::ProcInfo],
+    ) {
         match action {
             TableAction::Kill { pid, name, force } => {
                 use nix::sys::signal::{self, Signal};
@@ -668,6 +673,92 @@ impl ArgusLassoApp {
             TableAction::ShowDetails { pid } => {
                 self.detail_pid = Some(pid);
                 self.detail_info = None; // force immediate refresh
+            }
+            TableAction::KillTree { pid, name } => {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+                let edges: Vec<(u32, u32)> = snapshot.iter().map(|p| (p.pid, p.ppid)).collect();
+                let tree = crate::utils::process_tree(pid, &edges);
+                if tree.is_empty() {
+                    self.notify_error(&format!("No process tree found for {} ({})", name, pid));
+                    return;
+                }
+                let count = tree.len();
+                // Kill leaves first (reverse BFS) so children don't get
+                // reparented to init mid-sweep. SIGTERM first, then SIGKILL any
+                // survivors after a brief grace period; SIGCONT so a stopped
+                // target actually receives the signal.
+                let mut killed = 0u32;
+                let mut failed = 0u32;
+                let mut survivors: Vec<u32> = Vec::new();
+                for &t in tree.iter().rev() {
+                    match signal::kill(Pid::from_raw(t as i32), Signal::SIGTERM) {
+                        Ok(()) => {
+                            killed += 1;
+                            let _ = signal::kill(Pid::from_raw(t as i32), Signal::SIGCONT);
+                        }
+                        Err(_) => {
+                            failed += 1;
+                        }
+                    }
+                    survivors.push(t);
+                }
+                // Give well-behaved processes a moment to exit, then force-kill
+                // any that are still around.
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                for &t in &survivors {
+                    // ESRCH means it already exited — that's the success case.
+                    if let Err(nix::Error::ESRCH) =
+                        signal::kill(Pid::from_raw(t as i32), Signal::SIGKILL)
+                    {
+                        continue;
+                    }
+                    let _ = signal::kill(Pid::from_raw(t as i32), Signal::SIGCONT);
+                }
+                let msg = format!(
+                    "Killed {} of {} processes in tree of {} ({})",
+                    killed, count, name, pid
+                );
+                if let Ok(mut s) = self.state.lock() {
+                    s.append_log(msg.clone());
+                }
+                if failed > 0 {
+                    self.notify_error(&format!("{} — {} failed (permissions?)", msg, failed));
+                }
+            }
+            TableAction::Export { format } => {
+                let ext = match format {
+                    crate::gui::process_tab::ExportFormat::Csv => "csv",
+                    crate::gui::process_tab::ExportFormat::Json => "json",
+                };
+                let default_name = format!("processes.{}", ext);
+                let filter = match format {
+                    crate::gui::process_tab::ExportFormat::Csv => "*.csv",
+                    crate::gui::process_tab::ExportFormat::Json => "*.json",
+                };
+                let Some(path) = crate::file_dialog::save(&default_name, filter) else {
+                    return; // user cancelled
+                };
+                let content = match format {
+                    crate::gui::process_tab::ExportFormat::Csv => {
+                        crate::utils::export_csv(snapshot)
+                    }
+                    crate::gui::process_tab::ExportFormat::Json => {
+                        crate::utils::export_json(snapshot)
+                    }
+                };
+                match std::fs::write(&path, content) {
+                    Ok(_) => {
+                        if let Ok(mut s) = self.state.lock() {
+                            s.append_log(format!(
+                                "Exported {} processes to {}",
+                                snapshot.len(),
+                                path.display()
+                            ));
+                        }
+                    }
+                    Err(e) => self.notify_error(&format!("Export failed: {e}")),
+                }
             }
             TableAction::None => {}
         }
@@ -1417,7 +1508,7 @@ impl eframe::App for ArgusLassoApp {
                         gaming_active,
                         &proc_cpu_history,
                     );
-                    self.handle_table_action(action, ctx);
+                    self.handle_table_action(action, ctx, &snapshot);
                     // Persist col_widths when user drags a column divider
                     // (debounced — see col_save_due).
                     if self.process_tab.cols_dirty {
