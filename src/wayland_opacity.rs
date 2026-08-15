@@ -90,14 +90,10 @@ impl WaylandOpacity {
         let alpha_modifier: WpAlphaModifierV1 = match globals.bind(&qh, 1..=1, ()) {
             Ok(am) => {
                 log::info!("wayland_opacity: bound wp_alpha_modifier_v1");
-                eprintln!(
-                    "[wayland_opacity] wp_alpha_modifier_v1 BOUND — compositor opacity available"
-                );
                 am
             }
             Err(e) => {
                 log::warn!("wayland_opacity: wp_alpha_modifier_v1 not available — {e}");
-                eprintln!("[wayland_opacity] wp_alpha_modifier_v1 NOT available: {e}");
                 return None;
             }
         };
@@ -157,8 +153,7 @@ impl WaylandOpacity {
         let val = (opacity.clamp(0.0, 1.0) as f64 * u32::MAX as f64) as u32;
         self.surface_alpha.set_multiplier(val);
         let _ = self.conn.flush();
-        log::info!("wayland_opacity: set_multiplier({val:#010x}) opacity={opacity:.3}");
-        eprintln!("[wayland_opacity] set_multiplier({val:#010x}) opacity={opacity:.3}");
+        log::debug!("wayland_opacity: set_multiplier({val:#010x}) opacity={opacity:.3}");
     }
 }
 

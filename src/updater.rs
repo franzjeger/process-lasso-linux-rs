@@ -333,12 +333,38 @@ fn fetch(url: &str) -> Result<Vec<u8>, String> {
         .get(url)
         .call()
         .map_err(|e| format!("download failed: {e}"))?;
-    let mut buf = Vec::new();
-    resp.body_mut()
-        .as_reader()
-        .take(MAX_DOWNLOAD_BYTES)
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("download failed: {e}"))?;
+
+    // A `take(MAX)` that silently truncates an oversized body would surface
+    // later as a confusing "checksum mismatch". Detect the cap up front
+    // (Content-Length) and while reading, and fail with a clear message.
+    if let Some(len) = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if len > MAX_DOWNLOAD_BYTES {
+            return Err(format!(
+                "download is {len} bytes, exceeds the {MAX_DOWNLOAD_BYTES}-byte limit"
+            ));
+        }
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut reader = resp.body_mut().as_reader();
+    let mut chunk = [0u8; 8192];
+    loop {
+        if buf.len() as u64 >= MAX_DOWNLOAD_BYTES {
+            return Err(format!(
+                "download exceeds the {MAX_DOWNLOAD_BYTES}-byte limit"
+            ));
+        }
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) => return Err(format!("download failed: {e}")),
+        }
+    }
     if buf.is_empty() {
         return Err("download was empty".into());
     }

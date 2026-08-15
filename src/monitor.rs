@@ -214,6 +214,20 @@ pub fn spawn(
     })
 }
 
+/// Bounded join: wait up to `timeout` for the daemon thread to finish so a
+/// restore still in flight (unparking CPUs, restoring nices) gets a real
+/// chance to complete before the process image is torn down. Returns true if
+/// the thread finished in time. A thread that never finishes is left alone —
+/// the process exit will reap it, but at least we logged that it was stuck.
+pub fn join_daemon(handle: std::thread::JoinHandle<()>, timeout: Duration) -> bool {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = handle.join();
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(timeout).is_ok()
+}
+
 fn run_loop(
     state: Arc<Mutex<AppState>>,
     cmd_rx: Receiver<DaemonCmd>,

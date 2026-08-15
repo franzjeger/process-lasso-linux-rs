@@ -174,6 +174,12 @@ pub struct ArgusLassoApp {
     events_seen: usize,
     // CPU model string for status bar
     cpu_model: String,
+    // Debounce config saves during column-resize drags: cols_dirty is true on
+    // every frame while a divider is dragged, so saving immediately would
+    // fsync the config ~60×/sec. Persist at most once per 300ms instead.
+    // (The live value is already in shared state each frame; only the disk
+    // write is throttled.)
+    last_col_save: std::time::Instant,
     /// Set only by --ui-tour: drives the app through every screen, capturing
     /// each, then exits. None in every normal run.
     tour: Option<crate::ui_tour::Tour>,
@@ -293,7 +299,22 @@ impl ArgusLassoApp {
             }),
             events_seen: 0,
             cpu_model,
+            last_col_save: std::time::Instant::now(),
         }
+    }
+
+    /// Debounce gate for column-resize saves. `cols_dirty` is true on every
+    /// frame of a divider drag (including the release frame that applies the
+    /// final delta), so saving immediately would fsync the config ~60×/sec.
+    /// Allow at most one save per 300ms; the live width is already in shared
+    /// state each frame, so throttling only the disk write loses nothing.
+    fn col_save_due(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_col_save) < std::time::Duration::from_millis(300) {
+            return false;
+        }
+        self.last_col_save = now;
+        true
     }
 
     /// Details window for one process: procfs facts refreshed on the display
@@ -499,6 +520,28 @@ impl ArgusLassoApp {
         }
     }
 
+    /// Surface a user-action failure: a log line (always) plus a desktop
+    /// notification when the user has them enabled. Previously several
+    /// failure paths (signal send, affinity/nice/ionice apply) were silent,
+    /// so the user believed the change had taken effect.
+    fn notify_error(&self, msg: &str) {
+        let enabled = self
+            .state
+            .lock()
+            .map(|s| s.config.ui.notifications_enabled)
+            .unwrap_or(false);
+        if enabled {
+            let _ = notify_rust::Notification::new()
+                .summary("Argus-Lasso")
+                .body(msg)
+                .timeout(notify_rust::Timeout::Milliseconds(4000))
+                .show();
+        }
+        if let Ok(mut s) = self.state.lock() {
+            s.append_log(msg.to_string());
+        }
+    }
+
     /// Send the actual kill signal. The target was SIGSTOPped for the undo
     /// window, and a stopped process never sees SIGTERM — so always follow up
     /// with SIGCONT to deliver it (harmless for SIGKILL).
@@ -537,38 +580,72 @@ impl ArgusLassoApp {
                         s.append_log(msg);
                     }
                 }
-                let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGSTOP);
-                self.pending_kill = Some(crate::gui::process_tab::PendingKill {
-                    pid,
-                    name: name.clone(),
-                    force,
-                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
-                });
-                if let Ok(mut s) = self.state.lock() {
-                    s.append_log(format!(
-                        "Suspended {} ({}) — will {} in 5s",
-                        name,
-                        pid,
-                        if force { "force kill" } else { "kill" }
-                    ));
+                // If SIGSTOP fails (e.g. EPERM on another user's process) we
+                // must NOT arm the 5s undo window — the process was never
+                // stopped, so a later SIGTERM would hit a running target with
+                // no "undo" protection. Deliver immediately and report it.
+                match signal::kill(Pid::from_raw(pid as i32), Signal::SIGSTOP) {
+                    Ok(()) => {
+                        self.pending_kill = Some(crate::gui::process_tab::PendingKill {
+                            pid,
+                            name: name.clone(),
+                            force,
+                            deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                        });
+                        if let Ok(mut s) = self.state.lock() {
+                            s.append_log(format!(
+                                "Suspended {} ({}) — will {} in 5s",
+                                name,
+                                pid,
+                                if force { "force kill" } else { "kill" }
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        // Couldn't suspend — kill immediately and report what
+                        // happened instead of arming a dead undo window.
+                        let outcome = match Self::deliver_kill(pid, force) {
+                            Ok(()) => format!(
+                                "{}illed it immediately.",
+                                if force { "Force k" } else { "K" }
+                            ),
+                            Err(ke) => format!("kill also failed: {ke}"),
+                        };
+                        self.notify_error(&format!(
+                            "Suspend failed for {} ({}): {e}. {outcome}",
+                            name, pid
+                        ));
+                    }
                 }
             }
             TableAction::Suspend { pid, name } => {
                 use nix::sys::signal::{self, Signal};
                 use nix::unistd::Pid;
-                let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGSTOP);
-                if let Ok(mut s) = self.state.lock() {
-                    s.suspended_pids.insert(pid);
-                    s.append_log(format!("Suspended {} ({})", name, pid));
+                match signal::kill(Pid::from_raw(pid as i32), Signal::SIGSTOP) {
+                    Ok(()) => {
+                        if let Ok(mut s) = self.state.lock() {
+                            s.suspended_pids.insert(pid);
+                            s.append_log(format!("Suspended {} ({})", name, pid));
+                        }
+                    }
+                    Err(e) => {
+                        self.notify_error(&format!("Suspend failed for {} ({}): {e}", name, pid));
+                    }
                 }
             }
             TableAction::Resume { pid, name } => {
                 use nix::sys::signal::{self, Signal};
                 use nix::unistd::Pid;
-                let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGCONT);
-                if let Ok(mut s) = self.state.lock() {
-                    s.suspended_pids.remove(&pid);
-                    s.append_log(format!("Resumed {} ({})", name, pid));
+                match signal::kill(Pid::from_raw(pid as i32), Signal::SIGCONT) {
+                    Ok(()) => {
+                        if let Ok(mut s) = self.state.lock() {
+                            s.suspended_pids.remove(&pid);
+                            s.append_log(format!("Resumed {} ({})", name, pid));
+                        }
+                    }
+                    Err(e) => {
+                        self.notify_error(&format!("Resume failed for {} ({}): {e}", name, pid));
+                    }
                 }
             }
             TableAction::SetAffinity { pid, name, current } => {
@@ -602,7 +679,9 @@ impl ArgusLassoApp {
             let proc_name = dlg.title.clone();
             if let Some(result) = dlg.show(ctx, self.opacity) {
                 let cpulist = result.as_str();
-                if !cpulist.is_empty() && utils::set_affinity(pid, cpulist) {
+                if cpulist.is_empty() {
+                    self.affinity_dialog = None;
+                } else if utils::set_affinity(pid, cpulist) {
                     self.send(DaemonCmd::SetManualOverride {
                         pid,
                         duration_secs: 30.0,
@@ -611,6 +690,11 @@ impl ArgusLassoApp {
                         s.append_log(format!("[Manual] affinity={cpulist} → PID {pid}"));
                     }
                     self.offer_rule(proc_name, Some(result.clone()), None, None);
+                } else {
+                    self.notify_error(&format!(
+                        "Failed to set affinity '{cpulist}' on {} (PID {pid}) — needs root?",
+                        proc_name
+                    ));
                 }
                 self.affinity_dialog = None;
             }
@@ -626,6 +710,11 @@ impl ArgusLassoApp {
                             s.append_log(format!("[Manual] nice={nice} → PID {pid}"));
                         }
                         self.offer_rule(proc_name, None, Some(nice), None);
+                    } else {
+                        self.notify_error(&format!(
+                            "Failed to set nice {nice} on {} (PID {pid}) — needs root?",
+                            proc_name
+                        ));
                     }
                 }
                 self.nice_dialog = None;
@@ -644,6 +733,11 @@ impl ArgusLassoApp {
                             ));
                         }
                         self.offer_rule(proc_name, None, None, Some((class, level)));
+                    } else {
+                        self.notify_error(&format!(
+                            "Failed to set ionice {class}/{level} on {} (PID {pid}) — needs root?",
+                            proc_name
+                        ));
                     }
                 }
                 self.ionice_dialog = None;
@@ -1218,13 +1312,12 @@ impl eframe::App for ArgusLassoApp {
                     // the design review flagged it as looking active with the
                     // menu closed. Strip the frame so it sits in the bar like
                     // the tabs do; the accent text still marks a Tools tab.
-                    let w = &mut ui.visuals_mut().widgets;
-                    w.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-                    w.inactive.bg_stroke = egui::Stroke::NONE;
-                    w.hovered.bg_stroke = egui::Stroke::NONE;
-                    w.active.bg_stroke = egui::Stroke::NONE;
-                    w.open.bg_stroke = egui::Stroke::NONE;
-                    ui.menu_button(tools_label, |ui| {
+                    // Scoped to this one button (a global visuals_mut() here
+                    // would strip every button's frame app-wide).
+                    egui::containers::menu::MenuButton::from_button(
+                        egui::Button::new(tools_label).frame(false),
+                    )
+                    .ui(ui, |ui| {
                         for (label, tab) in [
                             ("HW Monitor", Tab::HwMonitor),
                             ("Benchmark", Tab::Benchmark),
@@ -1318,11 +1411,14 @@ impl eframe::App for ArgusLassoApp {
                     );
                     self.handle_table_action(action, ctx);
                     // Persist col_widths when user drags a column divider
+                    // (debounced — see col_save_due).
                     if self.process_tab.cols_dirty {
                         if let Ok(mut s) = self.state.lock() {
                             s.config.ui.col_widths = self.process_tab.col_widths.clone();
                         }
-                        self.save_config();
+                        if self.col_save_due() {
+                            self.save_config();
+                        }
                     }
                     // Persist column visibility from the header context menu
                     if self.process_tab.hidden_dirty {
@@ -1432,7 +1528,9 @@ impl eframe::App for ArgusLassoApp {
                         if let Ok(mut s) = self.state.lock() {
                             s.config.ui.hw_mon_col_widths = widths;
                         }
-                        self.save_config();
+                        if self.col_save_due() {
+                            self.save_config();
+                        }
                     }
                 }
 
@@ -1586,7 +1684,9 @@ impl eframe::App for ArgusLassoApp {
         let repaint_ms = if self.pending_kill.is_some() {
             250
         } else {
-            config.monitor.display_refresh_interval_ms
+            // A 0 (or a hand-edited config with a bogus value) would request a
+            // repaint every frame — unbounded 60fps. Clamp to a sane floor.
+            config.monitor.display_refresh_interval_ms.max(100)
         };
         ctx.request_repaint_after(std::time::Duration::from_millis(repaint_ms));
     }

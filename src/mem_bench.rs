@@ -128,18 +128,23 @@ impl MemLatencyBench {
 
     /// Spawn the benchmark thread.  No-op if already running.
     pub fn start(&self) {
-        if self.result.lock().unwrap().running {
-            return;
+        // Check-and-set `running` in a single locked section so two
+        // concurrent start() calls can't both pass the check and spawn two
+        // workers racing on the same result (and a second ≥512 MiB alloc).
+        {
+            let mut r = self.result.lock().unwrap();
+            if r.running {
+                return;
+            }
+            *r = MemLatencyResult {
+                running: true,
+                ..Default::default()
+            };
         }
 
         self.cancel.store(false, Ordering::Relaxed);
         let result = Arc::clone(&self.result);
         let cancel = Arc::clone(&self.cancel);
-
-        *result.lock().unwrap() = MemLatencyResult {
-            running: true,
-            ..Default::default()
-        };
 
         std::thread::Builder::new()
             .name("mem-latency".into())
@@ -330,22 +335,26 @@ impl MemBandwidthBench {
     pub fn start(&self) {
         // No-op if already running — a second click would spawn a concurrent
         // thread racing on `result` (and another ≥512 MiB allocation).
-        if self.result.lock().map(|r| r.running).unwrap_or(false) {
-            return;
-        }
-        let result = Arc::clone(&self.result);
-        let cancel = Arc::clone(&self.cancel);
-        cancel.store(false, Ordering::Relaxed);
-        if let Ok(mut r) = result.lock() {
+        // Check-and-set in one locked section so the check and the set are
+        // atomic with respect to a concurrent start().
+        {
+            let mut r = match self.result.lock() {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            if r.running {
+                return;
+            }
             *r = BandwidthResult {
                 running: true,
                 ..Default::default()
             };
         }
-        let result2 = Arc::clone(&result);
-        let cancel2 = Arc::clone(&cancel);
+        let result = Arc::clone(&self.result);
+        let cancel = Arc::clone(&self.cancel);
+        cancel.store(false, Ordering::Relaxed);
         std::thread::spawn(move || {
-            run_bandwidth(result2, cancel2);
+            run_bandwidth(result, cancel);
         });
     }
 
