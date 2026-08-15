@@ -25,6 +25,11 @@ pub struct Rule {
     pub enabled: bool,
     /// Compiled regex, populated lazily if match_type == "regex"
     cached_regex: Option<Result<Regex, String>>,
+    /// The `pattern` that `cached_regex` was compiled from. Lets
+    /// `refresh_regex` skip re-compiling when the pattern is unchanged — the
+    /// rule dialog's live match count calls it every frame, and recompiling a
+    /// regex per frame was wasted work.
+    regex_pattern: String,
 }
 
 impl Rule {
@@ -45,6 +50,7 @@ impl Rule {
             ionice_level: c.ionice_level,
             enabled: c.enabled,
             cached_regex,
+            regex_pattern: c.pattern.clone(),
         }
     }
 
@@ -74,6 +80,7 @@ impl Rule {
             ionice_level: None,
             enabled: true,
             cached_regex: None,
+            regex_pattern: String::new(),
         }
     }
 
@@ -104,12 +111,23 @@ impl Rule {
     }
 
     /// Invalidate cached regex after pattern/match_type change.
+    ///
+    /// Skips re-compiling when the pattern is unchanged — the rule dialog's
+    /// live match count calls this every frame, and recompiling the regex each
+    /// time was pure waste.
     pub fn refresh_regex(&mut self) {
-        self.cached_regex = if self.match_type == "regex" {
-            Some(Regex::new(&self.pattern).map_err(|e| e.to_string()))
-        } else {
-            None
-        };
+        if self.match_type != "regex" {
+            if self.cached_regex.is_some() {
+                self.cached_regex = None;
+                self.regex_pattern = String::new();
+            }
+            return;
+        }
+        if self.cached_regex.is_some() && self.regex_pattern == self.pattern {
+            return; // cache is still valid
+        }
+        self.regex_pattern = self.pattern.clone();
+        self.cached_regex = Some(Regex::new(&self.pattern).map_err(|e| e.to_string()));
     }
 }
 
@@ -353,6 +371,32 @@ mod tests {
         r.refresh_regex();
         assert!(r.matches("bar"));
         assert!(!r.matches("foo"));
+    }
+
+    #[test]
+    fn refresh_regex_keeps_cache_when_pattern_unchanged() {
+        // The rule dialog calls this every frame; it must be a no-op (and keep
+        // matching) when the pattern hasn't changed.
+        let mut r = rule_with("foo", "regex");
+        assert!(r.matches("foo"));
+        r.refresh_regex();
+        r.refresh_regex();
+        assert!(r.matches("foo"));
+        assert!(!r.matches("bar"));
+    }
+
+    #[test]
+    fn refresh_regex_clears_cache_when_leaving_regex() {
+        let mut r = rule_with("foo", "regex");
+        assert!(r.cached_regex.is_some());
+        r.match_type = "contains".into();
+        r.refresh_regex();
+        assert!(r.cached_regex.is_none());
+        // And back to regex recompiles from the current pattern.
+        r.match_type = "regex".into();
+        r.refresh_regex();
+        assert!(r.cached_regex.is_some());
+        assert!(r.matches("foo"));
     }
 
     #[test]

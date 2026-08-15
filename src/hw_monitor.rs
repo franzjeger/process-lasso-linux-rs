@@ -155,7 +155,16 @@ impl HwCollector {
     /// Merge new readings into `self.data`, preserving existing sensor history.
     fn merge(&mut self, readings: Vec<(&'static str, String, Vec<Reading>)>) {
         for (category, group_name, sensors) in readings {
-            let g_idx = match self.data.groups.iter().position(|g| g.name == group_name) {
+            // Match on (category, name), not name alone — two categories can
+            // legitimately expose the same group name (e.g. "coretemp" under
+            // both CPU and GPU), and merging them would interleave their
+            // sensors.
+            let g_idx = match self
+                .data
+                .groups
+                .iter()
+                .position(|g| g.category == category && g.name == group_name)
+            {
                 Some(i) => i,
                 None => {
                     self.data.groups.push(SensorGroup {

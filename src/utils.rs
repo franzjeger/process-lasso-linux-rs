@@ -27,6 +27,11 @@ pub fn cpulist_to_set(cpulist: &str) -> Result<HashSet<u32>, String> {
                 .trim()
                 .parse()
                 .map_err(|e| format!("bad cpulist range '{part}': {e}"))?;
+            if lo > hi {
+                // A reversed range ("7-2") would silently expand to nothing and
+                // be accepted as an empty set — reject it explicitly.
+                return Err(format!("reversed cpulist range '{part}' (lo > hi)"));
+            }
             for c in lo..=hi {
                 result.insert(c);
             }
@@ -402,4 +407,34 @@ pub fn read_proc_details(pid: u32) -> Option<ProcDetails> {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     Some(d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpulist_parses_ranges_and_items() {
+        let s = cpulist_to_set("0-2,5").unwrap();
+        assert_eq!(s, [0u32, 1, 2, 5].into_iter().collect());
+    }
+
+    #[test]
+    fn cpulist_accepts_empty() {
+        assert!(cpulist_to_set("").unwrap().is_empty());
+        assert!(cpulist_to_set("  ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn cpulist_rejects_reversed_range() {
+        // "7-2" used to silently parse to an empty set that was accepted.
+        assert!(cpulist_to_set("7-2").is_err());
+        assert!(cpulist_to_set("0-7,15-8").is_err());
+    }
+
+    #[test]
+    fn cpulist_rejects_garbage() {
+        assert!(cpulist_to_set("0-x").is_err());
+        assert!(cpulist_to_set("abc").is_err());
+    }
 }

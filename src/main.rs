@@ -306,9 +306,11 @@ fn main() {
         Arc::new(Mutex::new(re))
     };
 
-    // Spawn daemon thread
+    // Spawn daemon thread. Keep the JoinHandle: on exit we join it (bounded)
+    // so a daemon stuck mid-restore is detected and logged rather than
+    // silently abandoned when the process image is torn down.
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
-    monitor::spawn(
+    let daemon_handle = monitor::spawn(
         Arc::clone(&state),
         cmd_rx,
         cfg.clone(),
@@ -384,4 +386,12 @@ fn main() {
         }),
     )
     .expect("eframe launch failed");
+
+    // The window is closed and on_exit already asked the daemon to restore
+    // state (shutdown_and_wait). Give it a bounded grace period to finish
+    // (unparking CPUs, restoring nices) rather than tearing down the process
+    // image mid-restore.
+    if !monitor::join_daemon(daemon_handle, std::time::Duration::from_secs(2)) {
+        log::warn!("daemon thread did not finish within 2s of exit; it may be stuck mid-restore");
+    }
 }
