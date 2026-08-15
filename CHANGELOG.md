@@ -7,6 +7,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-08-15
+
+### Fixed
+
+- **EPP change failures are now reported.** A failed `power-profile epp` call
+  was silently discarded; the log now shows `(failed: …)` instead of claiming
+  success.
+- **Kill-undo SIGCONT failures are now reported.** If the resume signal fails,
+  the log says the process is still suspended instead of "resumed".
+- **Autostart enable/disable reports the actual result.** The systemd unit
+  write and `systemctl enable`/`disable` results were discarded; the status
+  message now reflects whether both XDG and systemd succeeded.
+- **Gaming Mode "Kill game" reports SIGTERM failures.** A failed signal is
+  logged as an error instead of "Sent SIGTERM".
+
 ## [1.2.0] — 2026-08-04
 
 ### Security
