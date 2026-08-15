@@ -337,13 +337,14 @@ impl SettingsTab {
                     });
 
                     form_row(ui, "Window opacity", |ui| {
-                        // A short slider with a low-contrast track reads as an
-                        // empty box in the dark theme, and 0.1–1.0 shown to
-                        // three decimals is milli-precision on what is a
-                        // percentage. Widen it and show it as one.
+                        // The track is painted with `inactive.bg_fill`, which
+                        // equals the window background — invisible without a
+                        // value fill. Enable the trailing fill (accent colour)
+                        // so the slider reads as a slider, not a floating box.
                         ui.spacing_mut().slider_width = 200.0;
                         ui.add(
                             egui::Slider::new(&mut self.opacity, 0.1f32..=1.0)
+                                .trailing_fill(true)
                                 .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
                                 .custom_parser(|s| {
                                     s.trim_end_matches('%')
