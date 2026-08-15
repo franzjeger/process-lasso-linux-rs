@@ -1,4 +1,4 @@
-//! Overview / Dashboard tab: live CPU graph, RAM, load average, top-5 processes.
+//! Overview / Dashboard tab: live CPU graph, RAM, load average, top-10 processes.
 
 use egui::{Color32, RichText, Vec2};
 use std::collections::VecDeque;
