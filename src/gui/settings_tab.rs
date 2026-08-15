@@ -160,16 +160,16 @@ impl SettingsTab {
         if self.autostart_enabled != self.saved_autostart {
             if self.autostart_enabled {
                 match write_autostart() {
-                    Ok(_) => {
-                        msgs.push("Autostart enabled (XDG + systemd)".into());
+                    Ok(note) => {
+                        msgs.push(note);
                         self.saved_autostart = true;
                     }
                     Err(e) => msgs.push(format!("Autostart failed: {e}")),
                 }
             } else {
                 match disable_autostart() {
-                    Ok(_) => {
-                        msgs.push("Autostart disabled".into());
+                    Ok(note) => {
+                        msgs.push(note);
                         self.saved_autostart = false;
                     }
                     Err(e) => msgs.push(format!("Disable failed: {e}")),
@@ -655,7 +655,7 @@ fn check_autostart_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn write_autostart() -> std::io::Result<()> {
+fn write_autostart() -> std::io::Result<String> {
     let home = std::env::var("HOME").unwrap_or_default();
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("argus-lasso"));
 
@@ -672,6 +672,7 @@ fn write_autostart() -> std::io::Result<()> {
 
     // ── systemd user service (KDE / systemd-based desktops) ──────────────────
     let systemd_dir = format!("{home}/.config/systemd/user");
+    let mut systemd_note = String::new();
     if std::fs::create_dir_all(&systemd_dir).is_ok() {
         let unit = format!(
             "[Unit]\nDescription=Argus-Lasso Linux\nAfter=graphical-session.target\n\n\
@@ -679,26 +680,44 @@ fn write_autostart() -> std::io::Result<()> {
              [Install]\nWantedBy=graphical-session.target\n",
             exe.display()
         );
-        let _ = std::fs::write(format!("{systemd_dir}/argus-lasso.service"), unit);
-        let _ = std::process::Command::new("systemctl")
-            .args(["--user", "enable", "argus-lasso.service"])
-            .output();
+        match std::fs::write(format!("{systemd_dir}/argus-lasso.service"), unit) {
+            Ok(()) => {
+                if std::process::Command::new("systemctl")
+                    .args(["--user", "enable", "argus-lasso.service"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+                {
+                    systemd_note = " + systemd".into();
+                } else {
+                    systemd_note = " (systemd unit written but not enabled)".into();
+                }
+            }
+            Err(e) => systemd_note = format!(" (systemd unit not written: {e})"),
+        }
     }
 
-    Ok(())
+    Ok(format!("Autostart enabled (XDG{systemd_note})"))
 }
 
-fn disable_autostart() -> std::io::Result<()> {
+fn disable_autostart() -> std::io::Result<String> {
     let home = std::env::var("HOME").unwrap_or_default();
 
-    // Remove XDG autostart entry.
+    // Remove XDG autostart entry (best-effort: it may not exist).
     let xdg = format!("{home}/.config/autostart/argus-lasso.desktop");
     let _ = std::fs::remove_file(&xdg);
 
     // Disable systemd unit if present.
-    let _ = std::process::Command::new("systemctl")
+    let systemd_ok = std::process::Command::new("systemctl")
         .args(["--user", "disable", "argus-lasso.service"])
-        .output();
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let systemd_note = if systemd_ok {
+        " + systemd"
+    } else {
+        " (systemd unit still enabled)"
+    };
 
-    Ok(())
+    Ok(format!("Autostart disabled (XDG{systemd_note})"))
 }

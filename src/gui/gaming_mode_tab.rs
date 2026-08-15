@@ -735,11 +735,17 @@ impl GamingModeTab {
                             .clicked()
                         {
                             if let Some(pid) = self.launched_pid {
-                                let _ = nix::sys::signal::kill(
+                                match nix::sys::signal::kill(
                                     nix::unistd::Pid::from_raw(pid as i32),
                                     nix::sys::signal::Signal::SIGTERM,
-                                );
-                                self.append_log(format!("[Launcher] Sent SIGTERM to PID {pid}"));
+                                ) {
+                                    Ok(()) => self.append_log(format!(
+                                        "[Launcher] Sent SIGTERM to PID {pid}"
+                                    )),
+                                    Err(e) => self.append_log(format!(
+                                        "[Launcher] SIGTERM to PID {pid} failed: {e}"
+                                    )),
+                                }
                             }
                             if self.auto_restore && self.parked {
                                 self.disable_gaming_mode();
