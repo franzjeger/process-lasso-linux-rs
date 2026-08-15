@@ -7,6 +7,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.2.3] — 2026-08-15
+
+### Fixed
+
+- **"Restart now" after a self-update works.** Once the updater renames over
+  the binary, the kernel marks the running image as `(deleted)`, so
+  `current_exe()` returned a path with that suffix and `canonicalize()`
+  failed with ENOENT. The suffix is now stripped before the restart `exec`.
+
 ## [1.2.2] — 2026-08-15
 
 ### Fixed
