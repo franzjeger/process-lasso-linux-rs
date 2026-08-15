@@ -7,6 +7,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-15
+
+### Added
+
+- **Kill a whole process tree.** Right-click a process and choose "Kill Tree"
+  to terminate it and every descendant. Children are signalled first (leaves
+  before parents) so they aren't reparented to init mid-sweep; SIGTERM is
+  sent, then any survivors are SIGKILLed after a 300 ms grace period.
+- **Export the process list.** The toolbar "Export ▾" menu writes the current
+  snapshot to a CSV or JSON file of your choice (pid, ppid, name, CPU/GPU %,
+  RSS, nice, affinity, I/O, disk rates, cmdline).
+- **Filter by listening port.** Type a local port (e.g. `8080`) in the filter
+  row to show only the processes holding a socket bound to it. Matches
+  `/proc/net/tcp{,6}` socket inodes against each candidate's `/proc/PID/fd`;
+  the result is cached for ~1 s to avoid per-frame `/proc` reads.
+
 ## [1.2.3] — 2026-08-15
 
 ### Fixed
