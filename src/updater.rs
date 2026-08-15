@@ -239,7 +239,23 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 fn install_target() -> Result<PathBuf, String> {
     let exe =
         std::env::current_exe().map_err(|e| format!("could not find the running binary: {e}"))?;
+    // Once the updater replaces the binary via rename, the kernel marks the
+    // running image as "(deleted)", so current_exe() returns a path with that
+    // suffix and canonicalize() fails with ENOENT. Strip the suffix: the new
+    // binary lives at the real path, which is what we want to exec.
+    let exe = strip_deleted_suffix(&exe);
     Ok(std::fs::canonicalize(&exe).unwrap_or(exe))
+}
+
+/// The kernel appends ` (deleted)` to `/proc/self/exe` after the running image
+/// is replaced (rename over it). Strip that suffix so the path points at the
+/// new binary rather than the deleted one.
+fn strip_deleted_suffix(path: &Path) -> PathBuf {
+    const SUFFIX: &str = " (deleted)";
+    match path.to_string_lossy().strip_suffix(SUFFIX) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path.to_path_buf(),
+    }
 }
 
 /// True when we can replace `path` — i.e. its directory is writable by us.
@@ -650,7 +666,25 @@ pub fn restart() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_binary, is_newer, sha256_hex, verify_signature};
+    use super::{extract_binary, is_newer, sha256_hex, strip_deleted_suffix, verify_signature};
+
+    #[test]
+    fn strips_kernel_deleted_suffix() {
+        let p = std::path::Path::new("/home/u/.local/bin/argus-lasso (deleted)");
+        assert_eq!(
+            strip_deleted_suffix(p),
+            std::path::PathBuf::from("/home/u/.local/bin/argus-lasso")
+        );
+    }
+
+    #[test]
+    fn leaves_normal_path_untouched() {
+        let p = std::path::Path::new("/home/u/.local/bin/argus-lasso");
+        assert_eq!(
+            strip_deleted_suffix(p),
+            std::path::PathBuf::from("/home/u/.local/bin/argus-lasso")
+        );
+    }
 
     #[test]
     fn newer_patch_minor_and_major() {
