@@ -7,6 +7,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.2.2] — 2026-08-15
+
+### Fixed
+
+- **The opacity slider's track is visible.** It was painted with the same
+  colour as the window background, so only the thumb and value showed and it
+  read as a floating box. The value fill (accent colour) is now enabled.
+
 ## [1.2.1] — 2026-08-15
 
 ### Fixed
